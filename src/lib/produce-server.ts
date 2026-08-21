@@ -35,6 +35,30 @@ function moneyStatus(total: number, paid: number) {
   return "open";
 }
 
+function poShortNum(poNumber: string) {
+  const m = poNumber.match(/(\d+)(?!.*\d)/);
+  return m ? String(Number(m[1])) : poNumber.replace(/^OC-/, "");
+}
+
+async function nextLotNumber(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  poId: number,
+  productId: number,
+) {
+  const [po] = await sql.query<{ po_number: string }>(`select po_number from purchase_orders where id = $1`, [poId]);
+  const [prod] = await sql.query<{ sku: string }>(`select sku from products where id = $1`, [productId]);
+  if (!po) return nextCode(sql, "lots", "lot_number", lotPrefix());
+  const short = poShortNum(po.po_number);
+  const prefix = (prod?.sku.split("-")[0] || "LOT").slice(0, 3).toUpperCase();
+  const stem = `${short}-${prefix}-`;
+  const [last] = await sql.query<{ c: string }>(
+    `select lot_number as c from lots where lot_number like $1 order by id desc limit 1`,
+    [`${stem}%`],
+  );
+  const seq = last?.c ? Number(last.c.match(/(\d+)$/)?.[1] || 0) + 1 : 1;
+  return `${stem}${seq}`;
+}
+
 async function insertLot(
   sql: Awaited<ReturnType<typeof getSql>>,
   args: {
@@ -48,21 +72,26 @@ async function insertLot(
     quality_state: string;
     quality_note: string | null;
     poId: number;
+    poLineId?: number | null;
+    pallets?: number | null;
     grade?: string | null;
     notes?: string | null;
   },
 ) {
-  const lot_number = await nextCode(sql, "lots", "lot_number", lotPrefix());
+  const lot_number = await nextLotNumber(sql, args.poId, args.product_id);
   const today = todayISO();
   const lotRows = await sql.query<{ id: number }>(
-    `insert into lots (lot_number, product_id, supplier_id, pack_style_id, original_qty, current_qty, unit, unit_cost,
-                       received_date, pack_date, quality_state, quality_note, grade, origin_country, status)
-     values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$8,$9,$10,$11,'México','active') returning id`,
+    `insert into lots (lot_number, product_id, supplier_id, pack_style_id, purchase_order_id, purchase_order_line_id,
+                       original_qty, current_qty, unit, unit_cost, received_date, pack_date, quality_state, quality_note,
+                       grade, origin_country, status, pallets)
+     values ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$10,$11,$12,$13,'México','active',$14) returning id`,
     [
       lot_number,
       args.product_id,
       args.supplier_id,
       args.pack_style_id,
+      args.poId,
+      args.poLineId ?? null,
       args.qty,
       args.unit,
       args.unit_cost,
@@ -70,6 +99,7 @@ async function insertLot(
       args.quality_state,
       args.quality_note,
       args.grade ?? null,
+      args.pallets ?? null,
     ],
   );
   const lotId = lotRows[0].id;
@@ -87,27 +117,47 @@ async function insertLot(
 }
 
 export const getDashboard = createServerFn({ method: "GET" }).handler(async () => {
-  const sql = await getSql();
-  const [counts] = await sql.query<{
-    products: number;
-    lots: number;
-    suppliers: number;
-    customers: number;
-    pos: number;
-    sos: number;
-    cpos: number;
-    retenidos: number;
-  }>(`
-    select
-      (select count(*)::int from products where is_active) as products,
-      (select count(*)::int from lots where status = 'active') as lots,
-      (select count(*)::int from suppliers where is_active) as suppliers,
-      (select count(*)::int from customers where is_active) as customers,
-      (select count(*)::int from purchase_orders) as pos,
-      (select count(*)::int from sales_orders) as sos,
-      (select count(*)::int from customer_pos where status = 'open') as cpos,
-      (select count(*)::int from lots where status = 'active' and current_qty > 0 and quality_state <> 'sano') as retenidos
-  `);
+  const empty = {
+    counts: { products: 0, lots: 0, suppliers: 0, customers: 0, pos: 0, sos: 0, cpos: 0, retenidos: 0 },
+    inventoryValue: 0,
+    cxc: 0,
+    cxp: 0,
+    cash: 0,
+    aging: [] as {
+      id: number;
+      lot_number: string;
+      product_name: string;
+      current_qty: number;
+      unit: string;
+      best_by_date: string | null;
+      received_date: string | null;
+      unit_cost: number;
+      quality_state: string;
+    }[],
+    openSales: [] as { so_number: string; customer: string; status: string; order_date: string }[],
+    alerts: [] as { kind: string; title: string; detail: string; href: string }[],
+  };
+  try {
+    const sql = await getSql();
+    const one = async (q: string) => n((await sql.query<{ c: string }>(q))[0]?.c);
+  const products = await one(`select count(*)::text as c from products where is_active`);
+  const lots = await one(`select count(*)::text as c from lots where status = 'active'`);
+  const suppliers = await one(`select count(*)::text as c from suppliers where is_active`);
+  const customers = await one(`select count(*)::text as c from customers where is_active`);
+  const pos = await one(`select count(*)::text as c from purchase_orders`);
+  const sos = await one(`select count(*)::text as c from sales_orders`);
+  const cpos = await one(`select count(*)::text as c from customer_pos where status = 'open'`);
+  const retenidos = await one(
+    `select count(*)::text as c from lots where status = 'active' and current_qty > 0 and quality_state <> 'sano'`,
+  );
+  const inventoryValue = await one(
+    `select coalesce(sum(current_qty * coalesce(unit_cost, 0)), 0)::text as c from lots where status = 'active'`,
+  );
+  const cxc = await one(`select coalesce(sum(total - paid), 0)::text as c from invoices where status <> 'cancelled'`);
+  const cxp = await one(
+    `select coalesce(sum(total - paid), 0)::text as c from supplier_bills where status <> 'cancelled'`,
+  );
+  const cash = await one(`select coalesce(sum(amount), 0)::text as c from cash_movements`);
 
   const aging = await sql.query<{
     id: number;
@@ -131,18 +181,6 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
     limit 8
   `);
 
-  const inventoryValue = await sql.query<{ value: string }>(`
-    select coalesce(sum(current_qty * coalesce(unit_cost, 0)), 0)::text as value
-    from lots where status = 'active'
-  `);
-
-  const moneyRow = await sql.query<{ cxc: string; cxp: string; cash: string }>(`
-    select
-      (select coalesce(sum(total - paid), 0)::text from invoices where status <> 'cancelled') as cxc,
-      (select coalesce(sum(total - paid), 0)::text from supplier_bills where status <> 'cancelled') as cxp,
-      (select coalesce(sum(amount), 0)::text from cash_movements) as cash
-  `);
-
   const openSales = await sql.query<{ so_number: string; customer: string; status: string; order_date: string }>(`
     select s.so_number, c.name as customer, s.status, s.order_date::text
     from sales_orders s join customers c on c.id = s.customer_id
@@ -150,50 +188,57 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
     order by s.id desc limit 5
   `);
 
-  const alerts = await sql.query<{ kind: string; title: string; detail: string; href: string }>(`
-    select 'cpo' as kind,
-           cpo.cpo_number as title,
-           (c.name || ' · ' || coalesce(cpo.customer_po_number, 'sin N° cliente') || ' · por convertir') as detail,
+  const alertsCpo = await sql.query<{ kind: string; title: string; detail: string; href: string }>(`
+    select 'cpo' as kind, cpo.cpo_number as title,
+           (c.name || ' · ' || coalesce(cpo.customer_po_number, 'no customer #') || ' · to convert') as detail,
            '/cpo' as href
     from customer_pos cpo join customers c on c.id = cpo.customer_id
-    where cpo.status = 'open'
-    union all
-    select 'calidad' as kind,
-           l.lot_number as title,
-           (p.name || ' · ' || coalesce(l.quality_state, 'retenido')) as detail,
+    where cpo.status = 'open' limit 4
+  `);
+  const alertsCal = await sql.query<{ kind: string; title: string; detail: string; href: string }>(`
+    select 'calidad' as kind, l.lot_number as title,
+           (p.name || ' · ' || coalesce(l.quality_state, 'hold')) as detail,
            '/inventario' as href
     from lots l join products p on p.id = l.product_id
     where l.status = 'active' and l.current_qty > 0 and coalesce(l.quality_state, 'sano') <> 'sano'
-    union all
-    select 'cxc', i.invoice_number,
-           (c.name || ' · vence ' || coalesce(i.due_date::text, '—')),
-           '/cxc'
+    limit 4
+  `);
+  const alertsCxc = await sql.query<{ kind: string; title: string; detail: string; href: string }>(`
+    select 'cxc' as kind, i.invoice_number as title,
+           (c.name || ' · due ' || coalesce(i.due_date::text, '—')) as detail,
+           '/cxc' as href
     from invoices i join customers c on c.id = i.customer_id
     where i.status <> 'cancelled' and i.total - i.paid > 0.009
       and i.due_date is not null and i.due_date < current_date
-    union all
-    select 'compra', po.po_number,
-           (s.name || ' · pendiente de recepción'),
-           '/compras'
+    limit 4
+  `);
+  const alertsPo = await sql.query<{ kind: string; title: string; detail: string; href: string }>(`
+    select 'compra' as kind, po.po_number as title,
+           (s.name || ' · pending receive') as detail,
+           '/compras' as href
     from purchase_orders po join suppliers s on s.id = po.supplier_id
     where po.status in ('confirmed', 'partial', 'draft')
-    limit 8
+    limit 4
   `);
 
   return {
-    counts: counts ?? { products: 0, lots: 0, suppliers: 0, customers: 0, pos: 0, sos: 0, cpos: 0, retenidos: 0 },
-    inventoryValue: n(inventoryValue[0]?.value),
-    cxc: n(moneyRow[0]?.cxc),
-    cxp: n(moneyRow[0]?.cxp),
-    cash: n(moneyRow[0]?.cash),
+    counts: { products, lots, suppliers, customers, pos, sos, cpos, retenidos },
+    inventoryValue,
+    cxc,
+    cxp,
+    cash,
     aging: aging.map((r) => ({
       ...r,
       current_qty: n(r.current_qty),
       unit_cost: n(r.unit_cost),
     })),
     openSales,
-    alerts,
+    alerts: [...alertsCpo, ...alertsCal, ...alertsCxc, ...alertsPo].slice(0, 8),
   };
+  } catch (err) {
+    console.error("[getDashboard]", err);
+    return empty;
+  }
 });
 
 export const listProducts = createServerFn({ method: "GET" }).handler(async () => {
@@ -218,13 +263,24 @@ export const listProducts = createServerFn({ method: "GET" }).handler(async () =
     sku_code: string | null;
     empaque: string | null;
     calibre: string | null;
+    units_per_pallet: string | null;
+    units_per_layer: string | null;
+    weight_per_pallet: string | null;
+    weight_unit_pallet: string | null;
   }>(`select id, product_id, name, unit_of_measure, net_weight::text, weight_unit, is_default,
-           sku_code, empaque, calibre from pack_styles order by id`);
+           sku_code, empaque, calibre, units_per_pallet::text, units_per_layer::text,
+           weight_per_pallet::text, weight_unit_pallet from pack_styles order by id`);
   return products.map((p) => ({
     ...p,
     packs: packs
       .filter((k) => k.product_id === p.id)
-      .map((k) => ({ ...k, net_weight: k.net_weight == null ? null : n(k.net_weight) })),
+      .map((k) => ({
+        ...k,
+        net_weight: k.net_weight == null ? null : n(k.net_weight),
+        units_per_pallet: n(k.units_per_pallet),
+        units_per_layer: n(k.units_per_layer),
+        weight_per_pallet: n(k.weight_per_pallet),
+      })),
   }));
 });
 
@@ -362,6 +418,37 @@ export const createSupplier = createServerFn({ method: "POST" })
     return { id, code, customer_code };
   });
 
+export const updateSupplier = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.number(),
+      name: z.string().min(1),
+      contact_name: z.string().optional(),
+      phone: z.string().optional(),
+      city: z.string().optional(),
+      country: z.string().optional(),
+      notes: z.string().optional(),
+      is_active: z.boolean().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    await sql.query(
+      `update suppliers set name=$1, contact_name=$2, phone=$3, city=$4, country=$5, notes=$6, is_active=coalesce($7, is_active) where id=$8`,
+      [
+        data.name.trim(),
+        data.contact_name || null,
+        data.phone || null,
+        data.city || null,
+        data.country || null,
+        data.notes || null,
+        data.is_active,
+        data.id,
+      ],
+    );
+    return { id: data.id };
+  });
+
 export const listCustomers = createServerFn({ method: "GET" }).handler(async () => {
   const sql = await getSql();
   return sql.query<{
@@ -426,6 +513,37 @@ export const createCustomer = createServerFn({ method: "POST" })
       supplier_code = supplier_code_n;
     }
     return { id, code, supplier_code };
+  });
+
+export const updateCustomer = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.number(),
+      name: z.string().min(1),
+      contact_name: z.string().optional(),
+      phone: z.string().optional(),
+      city: z.string().optional(),
+      payment_terms: z.string().optional(),
+      notes: z.string().optional(),
+      is_active: z.boolean().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    await sql.query(
+      `update customers set name=$1, contact_name=$2, phone=$3, city=$4, payment_terms=$5, notes=$6, is_active=coalesce($7, is_active) where id=$8`,
+      [
+        data.name.trim(),
+        data.contact_name || null,
+        data.phone || null,
+        data.city || null,
+        data.payment_terms || null,
+        data.notes || null,
+        data.is_active,
+        data.id,
+      ],
+    );
+    return { id: data.id };
   });
 
 export const listLocations = createServerFn({ method: "GET" }).handler(async () => {
@@ -521,6 +639,7 @@ export type LotRow = {
   sku: string;
   supplier_name: string | null;
   pack_name: string | null;
+  pack_style_id: number | null;
   original_qty: number;
   current_qty: number;
   unit: string;
@@ -534,6 +653,15 @@ export type LotRow = {
   status: string;
   quality_state: string;
   quality_note: string | null;
+  purchase_order_id: number | null;
+  po_number: string | null;
+  held: boolean;
+  closed_at: string | null;
+  waste_qty: number;
+  rts_qty: number;
+  pallets: number;
+  sold_qty: number;
+  revenue: number;
   asignable: boolean;
   locations: { location_id: number; location_name: string; quantity: number }[];
 };
@@ -548,6 +676,7 @@ export const listLots = createServerFn({ method: "GET" }).handler(async () => {
     sku: string;
     supplier_name: string | null;
     pack_name: string | null;
+    pack_style_id: number | null;
     original_qty: string;
     current_qty: string;
     unit: string;
@@ -561,17 +690,28 @@ export const listLots = createServerFn({ method: "GET" }).handler(async () => {
     status: string;
     quality_state: string;
     quality_note: string | null;
+    purchase_order_id: number | null;
+    po_number: string | null;
+    held: boolean;
+    closed_at: string | null;
+    waste_qty: string;
+    rts_qty: string;
+    pallets: string | null;
   }>(`
     select l.id, l.lot_number, l.product_id, p.name as product_name, p.sku,
-           s.name as supplier_name, ps.name as pack_name,
+           s.name as supplier_name, ps.name as pack_name, l.pack_style_id,
            l.original_qty::text, l.current_qty::text, l.unit, l.unit_cost::text,
            l.received_date::text, l.pack_date::text, l.best_by_date::text,
            l.grade, l.origin_farm, l.origin_country, l.status,
-           coalesce(l.quality_state, 'sano') as quality_state, l.quality_note
+           coalesce(l.quality_state, 'sano') as quality_state, l.quality_note,
+           l.purchase_order_id, po.po_number,
+           coalesce(l.held, false) as held, l.closed_at::text,
+           coalesce(l.waste_qty,0)::text, coalesce(l.rts_qty,0)::text, l.pallets::text
     from lots l
     join products p on p.id = l.product_id
     left join suppliers s on s.id = l.supplier_id
     left join pack_styles ps on ps.id = l.pack_style_id
+    left join purchase_orders po on po.id = l.purchase_order_id
     order by l.id desc
   `);
   const inv = await sql.query<{ lot_id: number; location_id: number; location_name: string; quantity: string }>(`
@@ -579,20 +719,38 @@ export const listLots = createServerFn({ method: "GET" }).handler(async () => {
     from inventory i join locations loc on loc.id = i.location_id
     where i.quantity > 0
   `);
-  return lots.map((l) => ({
-    ...l,
-    original_qty: n(l.original_qty),
-    current_qty: n(l.current_qty),
-    unit_cost: n(l.unit_cost),
-    asignable: l.status === "active" && n(l.current_qty) > 0 && (l.quality_state || "sano") === "sano",
-    locations: inv
-      .filter((i) => i.lot_id === l.id)
-      .map((i) => ({
-        location_id: i.location_id,
-        location_name: i.location_name,
-        quantity: n(i.quantity),
-      })),
-  })) satisfies LotRow[];
+  const sold = await sql.query<{ lot_id: number; qty: string; revenue: string }>(`
+    select sol.lot_id, coalesce(sum(sol.quantity_shipped),0)::text as qty,
+           coalesce(sum(sol.quantity_shipped * coalesce(sol.unit_price,0)),0)::text as revenue
+    from sales_order_lines sol
+    where sol.lot_id is not null
+    group by sol.lot_id
+  `);
+  const soldMap = new Map(sold.map((s) => [s.lot_id, { qty: n(s.qty), revenue: n(s.revenue) }]));
+  return lots.map((l) => {
+    const s = soldMap.get(l.id) ?? { qty: 0, revenue: 0 };
+    const held = Boolean(l.held);
+    return {
+      ...l,
+      original_qty: n(l.original_qty),
+      current_qty: n(l.current_qty),
+      unit_cost: n(l.unit_cost),
+      waste_qty: n(l.waste_qty),
+      rts_qty: n(l.rts_qty),
+      pallets: n(l.pallets),
+      sold_qty: s.qty,
+      revenue: s.revenue,
+      held,
+      asignable: l.status === "active" && !held && !l.closed_at && n(l.current_qty) > 0 && (l.quality_state || "sano") === "sano",
+      locations: inv
+        .filter((i) => i.lot_id === l.id)
+        .map((i) => ({
+          location_id: i.location_id,
+          location_name: i.location_name,
+          quantity: n(i.quantity),
+        })),
+    };
+  }) satisfies LotRow[];
 });
 
 export const getLotTrace = createServerFn({ method: "GET" })
@@ -619,19 +777,40 @@ export const getLotTrace = createServerFn({ method: "GET" })
     `,
       [data.lotId],
     );
-    const sales = await sql.query<{ so_number: string; customer: string; qty: string; unit_price: string | null }>(
+    const sales = await sql.query<{
+      so_id: number;
+      so_number: string;
+      customer: string;
+      qty: string;
+      unit_price: string | null;
+      invoice: string | null;
+      order_date: string;
+    }>(
       `
-      select so.so_number, c.name as customer, sol.quantity_shipped::text as qty, sol.unit_price::text
+      select so.id as so_id, so.so_number, c.name as customer, sol.quantity_shipped::text as qty,
+             sol.unit_price::text, i.invoice_number as invoice, so.order_date::text
       from sales_order_lines sol
       join sales_orders so on so.id = sol.sales_order_id
       join customers c on c.id = so.customer_id
+      left join invoices i on i.sales_order_id = so.id
       where sol.lot_id = $1 and sol.quantity_shipped > 0
+      order by so.id
     `,
+      [data.lotId],
+    );
+    const waste = await sql.query<{ id: number; quantity: string; reason: string; notes: string | null; created_at: string }>(
+      `select id, quantity::text, reason, notes, created_at::text from waste_events where lot_id = $1 order by id`,
       [data.lotId],
     );
     return {
       movements: movements.map((m) => ({ ...m, quantity: n(m.quantity) })),
-      sales: sales.map((s) => ({ ...s, qty: n(s.qty), unit_price: n(s.unit_price) })),
+      sales: sales.map((s) => ({
+        ...s,
+        qty: n(s.qty),
+        unit_price: n(s.unit_price),
+        revenue: n(s.qty) * n(s.unit_price),
+      })),
+      waste: waste.map((w) => ({ ...w, quantity: n(w.quantity) })),
     };
   });
 
@@ -657,6 +836,496 @@ export const setLotQuality = createServerFn({ method: "POST" })
     return { lot_number: lot.lot_number, quality_state: data.quality_state };
   });
 
+export const WASTE_REASONS = [
+  "Quality dump",
+  "Donation",
+  "Inventory adjustment",
+  "Other",
+  "Repack",
+  "Sample",
+] as const;
+
+type SettlementLot = {
+  id: number;
+  lot_number: string;
+  status: string;
+  product_name: string;
+  pack_name: string | null;
+  origin: string | null;
+  total: number;
+  rts: number;
+  sold: number;
+  waste: number;
+  remaining: number;
+  revenue: number;
+  t_cost: number;
+  expenses: number;
+  profit: number;
+  cost_unit: number;
+  profit_pct: number;
+  pallets: number;
+  unit: string;
+  unit_cost: number;
+  pas: boolean;
+};
+
+function computeSettlementLots(
+  lots: {
+    id: number;
+    lot_number: string;
+    status: string;
+    product_name: string;
+    pack_name: string | null;
+    origin: string | null;
+    original_qty: number;
+    current_qty: number;
+    waste_qty: number;
+    rts_qty: number;
+    pallets: number;
+    unit: string;
+    unit_cost: number;
+    sold: number;
+    revenue: number;
+  }[],
+  expenseTotal: number,
+  allocBy: "pallet" | "unit",
+  targetPct: number | null,
+) {
+  const palletTotal = lots.reduce((s, l) => s + (l.pallets || 0), 0);
+  const qtyTotal = lots.reduce((s, l) => s + l.original_qty, 0) || 1;
+  const usePallets = allocBy === "pallet" && palletTotal > 0;
+  return lots.map((l) => {
+    const share = usePallets ? (l.pallets || 0) / palletTotal : l.original_qty / qtyTotal;
+    const expenses = expenseTotal * share;
+    const pas = !(l.unit_cost > 0);
+    let t_cost = pas ? 0 : l.unit_cost * l.original_qty;
+    if (targetPct != null && l.revenue > 0) {
+      t_cost = Math.max(0, l.revenue * (1 - targetPct / 100) - expenses);
+    }
+    const profit = l.revenue - t_cost - expenses;
+    const profit_pct = l.revenue > 0 ? (profit / l.revenue) * 100 : 0;
+    const cost_unit = l.original_qty > 0 ? t_cost / l.original_qty : 0;
+    return {
+      id: l.id,
+      lot_number: l.lot_number,
+      status: l.status,
+      product_name: l.product_name,
+      pack_name: l.pack_name,
+      origin: l.origin,
+      total: l.original_qty,
+      rts: l.rts_qty,
+      sold: l.sold,
+      waste: l.waste_qty,
+      remaining: l.current_qty,
+      revenue: l.revenue,
+      t_cost,
+      expenses,
+      profit,
+      cost_unit,
+      profit_pct,
+      pallets: l.pallets,
+      unit: l.unit,
+      unit_cost: l.unit_cost,
+      pas: pas && targetPct == null,
+    } satisfies SettlementLot;
+  });
+}
+
+async function loadPoLots(sql: Awaited<ReturnType<typeof getSql>>, poId: number) {
+  const lots = await sql.query<{
+    id: number;
+    lot_number: string;
+    status: string;
+    product_name: string;
+    pack_name: string | null;
+    origin: string | null;
+    original_qty: string;
+    current_qty: string;
+    waste_qty: string;
+    rts_qty: string;
+    pallets: string | null;
+    unit: string;
+    unit_cost: string | null;
+  }>(
+    `select l.id, l.lot_number, l.status, p.name as product_name, ps.name as pack_name,
+            l.origin_country as origin, l.original_qty::text, l.current_qty::text,
+            coalesce(l.waste_qty,0)::text, coalesce(l.rts_qty,0)::text, l.pallets::text,
+            l.unit, l.unit_cost::text
+     from lots l
+     join products p on p.id = l.product_id
+     left join pack_styles ps on ps.id = l.pack_style_id
+     where l.purchase_order_id = $1
+     order by l.id`,
+    [poId],
+  );
+  const sold = await sql.query<{ lot_id: number; qty: string; revenue: string }>(
+    `select sol.lot_id, coalesce(sum(sol.quantity_shipped),0)::text as qty,
+            coalesce(sum(sol.quantity_shipped * coalesce(sol.unit_price,0)),0)::text as revenue
+     from sales_order_lines sol
+     join lots l on l.id = sol.lot_id
+     where l.purchase_order_id = $1
+     group by sol.lot_id`,
+    [poId],
+  );
+  const soldMap = new Map(sold.map((s) => [s.lot_id, { qty: n(s.qty), revenue: n(s.revenue) }]));
+  return lots.map((l) => {
+    const s = soldMap.get(l.id) ?? { qty: 0, revenue: 0 };
+    return {
+      id: l.id,
+      lot_number: l.lot_number,
+      status: l.status,
+      product_name: l.product_name,
+      pack_name: l.pack_name,
+      origin: l.origin,
+      original_qty: n(l.original_qty),
+      current_qty: n(l.current_qty),
+      waste_qty: n(l.waste_qty),
+      rts_qty: n(l.rts_qty),
+      pallets: n(l.pallets),
+      unit: l.unit,
+      unit_cost: n(l.unit_cost),
+      sold: s.qty,
+      revenue: s.revenue,
+    };
+  });
+}
+
+export const getSettlement = createServerFn({ method: "GET" })
+  .validator(z.object({ purchase_order_id: z.number() }))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [po] = await sql.query<{
+      id: number;
+      po_number: string;
+      supplier_name: string;
+      status: string;
+      costing_mode: string;
+      target_profit_pct: string | null;
+      vendor_share_level: string;
+      signed_off: boolean;
+    }>(
+      `select po.id, po.po_number, s.name as supplier_name, po.status,
+              coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
+              coalesce(po.vendor_share_level,'po') as vendor_share_level,
+              coalesce(po.signed_off,false) as signed_off
+       from purchase_orders po join suppliers s on s.id = po.supplier_id
+       where po.id = $1`,
+      [data.purchase_order_id],
+    );
+    if (!po) throw new Error("Purchase order not found");
+    const expenses = await sql.query<{ amount: string; alloc_by: string }>(
+      `select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`,
+      [data.purchase_order_id],
+    );
+    const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
+    const allocBy = (expenses[0]?.alloc_by === "unit" ? "unit" : "pallet") as "pallet" | "unit";
+    const lotsRaw = await loadPoLots(sql, data.purchase_order_id);
+    const target = po.target_profit_pct != null ? n(po.target_profit_pct) : null;
+    const lots = computeSettlementLots(lotsRaw, expense_total, allocBy, target);
+    const revenue = lots.reduce((s, l) => s + l.revenue, 0);
+    const t_cost = lots.reduce((s, l) => s + l.t_cost, 0);
+    const profit = lots.reduce((s, l) => s + l.profit, 0);
+    const paidRow = await sql.query<{ paid: string }>(
+      `select coalesce(sum(paid),0)::text as paid from supplier_bills where purchase_order_id = $1`,
+      [data.purchase_order_id],
+    );
+    const paid = n(paidRow[0]?.paid);
+    return {
+      po_id: po.id,
+      po_number: po.po_number,
+      supplier_name: po.supplier_name,
+      status: po.status,
+      costing_mode: po.costing_mode,
+      target_profit_pct: target,
+      vendor_share_level: po.vendor_share_level,
+      signed_off: po.signed_off,
+      revenue,
+      inventory_total: t_cost,
+      non_inventory_total: 0,
+      expenses: expense_total,
+      profit,
+      profit_pct: revenue > 0 ? (profit / revenue) * 100 : 0,
+      paid,
+      balance_due: Math.max(t_cost - paid, 0),
+      lots,
+    };
+  });
+
+export const applySettlement = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      purchase_order_id: z.number(),
+      target_profit_pct: z.number().min(0).max(100).optional(),
+      lot_costs: z.array(z.object({ lot_id: z.number(), unit_cost: z.number().min(0) })).optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    if (data.target_profit_pct != null) {
+      await sql.query(`update purchase_orders set target_profit_pct = $1 where id = $2`, [
+        data.target_profit_pct,
+        data.purchase_order_id,
+      ]);
+    }
+    const expenses = await sql.query<{ amount: string; alloc_by: string }>(
+      `select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`,
+      [data.purchase_order_id],
+    );
+    const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
+    const allocBy = (expenses[0]?.alloc_by === "unit" ? "unit" : "pallet") as "pallet" | "unit";
+    const lotsRaw = await loadPoLots(sql, data.purchase_order_id);
+    const target = data.target_profit_pct ?? null;
+    const computed = computeSettlementLots(lotsRaw, expense_total, allocBy, target);
+    const overrides = new Map((data.lot_costs ?? []).map((c) => [c.lot_id, c.unit_cost]));
+    for (const lot of computed) {
+      const cost = overrides.get(lot.id) ?? lot.cost_unit;
+      await sql.query(`update lots set unit_cost = $1 where id = $2`, [cost, lot.id]);
+      await sql.query(
+        `update purchase_order_lines set unit_cost = $1
+         where purchase_order_id = $2 and product_id = (select product_id from lots where id = $3)`,
+        [cost, data.purchase_order_id, lot.id],
+      );
+    }
+    await sql.query(`update purchase_orders set costing_mode = 'pas' where id = $1`, [data.purchase_order_id]);
+    return { ok: true, lots: computed.length };
+  });
+
+export const wasteLot = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      lot_id: z.number(),
+      quantity: z.number().positive(),
+      reason: z.string().min(1),
+      notes: z.string().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [lot] = await sql.query<{ id: number; current_qty: string; unit: string; lot_number: string }>(
+      `select id, current_qty::text, unit, lot_number from lots where id = $1`,
+      [data.lot_id],
+    );
+    if (!lot) throw new Error("Lot not found");
+    if (data.quantity > n(lot.current_qty) + 1e-9) throw new Error("Cannot waste more than on-hand");
+    await sql.query(`insert into waste_events (lot_id, quantity, reason, notes) values ($1,$2,$3,$4)`, [
+      data.lot_id,
+      data.quantity,
+      data.reason,
+      data.notes || null,
+    ]);
+    await sql.query(
+      `update lots set waste_qty = coalesce(waste_qty,0) + $1,
+              current_qty = current_qty - $1,
+              status = case when current_qty - $1 <= 0 then 'depleted' else status end
+       where id = $2`,
+      [data.quantity, data.lot_id],
+    );
+    await sql.query(
+      `update inventory set quantity = greatest(quantity - $1, 0) where lot_id = $2`,
+      [data.quantity, data.lot_id],
+    );
+    await sql.query(
+      `insert into inventory_movements (lot_id, movement_type, quantity, unit, reference_type, notes)
+       values ($1,'waste',$2,$3,'waste',$4)`,
+      [data.lot_id, -data.quantity, lot.unit, data.reason],
+    );
+    return { lot_number: lot.lot_number };
+  });
+
+export const holdLot = createServerFn({ method: "POST" })
+  .validator(z.object({ lot_id: z.number(), held: z.boolean() }))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    await sql.query(
+      `update lots set held = $1,
+              quality_state = case
+                when $1 then 'retenido'
+                when quality_state = 'retenido' then 'sano'
+                else quality_state
+              end
+       where id = $2`,
+      [data.held, data.lot_id],
+    );
+    return { ok: true };
+  });
+
+export const closeLot = createServerFn({ method: "POST" })
+  .validator(z.object({ lot_id: z.number() }))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    await sql.query(`update lots set closed_at = now(), status = case when current_qty <= 0 then 'depleted' else status end where id = $1`, [
+      data.lot_id,
+    ]);
+    return { ok: true };
+  });
+
+export const updatePalletDef = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      pack_style_id: z.number(),
+      units_per_pallet: z.number().optional(),
+      units_per_layer: z.number().optional(),
+      weight_per_pallet: z.number().optional(),
+      weight_unit_pallet: z.string().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    await sql.query(
+      `update pack_styles
+       set units_per_pallet = coalesce($1, units_per_pallet),
+           units_per_layer = coalesce($2, units_per_layer),
+           weight_per_pallet = coalesce($3, weight_per_pallet),
+           weight_unit_pallet = coalesce($4, weight_unit_pallet)
+       where id = $5`,
+      [
+        data.units_per_pallet ?? null,
+        data.units_per_layer ?? null,
+        data.weight_per_pallet ?? null,
+        data.weight_unit_pallet ?? null,
+        data.pack_style_id,
+      ],
+    );
+    return { ok: true };
+  });
+
+export const setVendorShare = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      purchase_order_id: z.number(),
+      level: z.enum(["po", "basic", "detailed"]),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    await sql.query(`update purchase_orders set vendor_share_level = $1 where id = $2`, [
+      data.level,
+      data.purchase_order_id,
+    ]);
+    return { ok: true };
+  });
+
+export const getVendorPortal = createServerFn({ method: "GET" })
+  .validator(z.object({ purchase_order_id: z.number() }))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const settlement = await getSettlement({ data: { purchase_order_id: data.purchase_order_id } });
+    const [po] = await sql.query<{
+      po_number: string;
+      supplier_name: string;
+      expected_date: string | null;
+      vendor_invoice: string | null;
+      bol: string | null;
+      shipping_ref: string | null;
+      vendor_share_level: string;
+    }>(
+      `select po.po_number, s.name as supplier_name, po.expected_date::text, po.vendor_invoice, po.bol, po.shipping_ref,
+              coalesce(po.vendor_share_level,'po') as vendor_share_level
+       from purchase_orders po join suppliers s on s.id = po.supplier_id where po.id = $1`,
+      [data.purchase_order_id],
+    );
+    if (!po) throw new Error("Purchase order not found");
+    const sales = await sql.query<{
+      order_date: string;
+      item: string;
+      lot_number: string;
+      qty: string;
+      unit_price: string;
+      total: string;
+    }>(
+      `select so.order_date::text, p.name as item, l.lot_number, sol.quantity_shipped::text as qty,
+              sol.unit_price::text, (sol.quantity_shipped * coalesce(sol.unit_price,0))::text as total
+       from sales_order_lines sol
+       join sales_orders so on so.id = sol.sales_order_id
+       join lots l on l.id = sol.lot_id
+       join products p on p.id = sol.product_id
+       where l.purchase_order_id = $1 and sol.quantity_shipped > 0
+       order by so.order_date, l.lot_number`,
+      [data.purchase_order_id],
+    );
+    const expenses = await sql.query<{ category: string; amount: string; notes: string | null }>(
+      `select category, amount::text, notes from expenses where purchase_order_id = $1 order by id`,
+      [data.purchase_order_id],
+    );
+    return {
+      ...settlement,
+      expected_date: po.expected_date,
+      vendor_invoice: po.vendor_invoice,
+      bol: po.bol,
+      shipping_ref: po.shipping_ref,
+      level: po.vendor_share_level,
+      sales: sales.map((s) => ({
+        order_date: s.order_date,
+        item: s.item,
+        lot_number: s.lot_number,
+        qty: n(s.qty),
+        unit_price: n(s.unit_price),
+        total: n(s.total),
+        status: "Unpaid",
+        type: "Sale",
+      })),
+      expense_rows: expenses.map((e) => ({ category: e.category, amount: n(e.amount), notes: e.notes })),
+    };
+  });
+
+export const getWarehouse = createServerFn({ method: "GET" }).handler(async () => {
+  const sql = await getSql();
+  const incoming = await sql.query<{ product_id: number; pack_style_id: number | null; qty: string }>(`
+    select product_id, pack_style_id, coalesce(sum(quantity_ordered - quantity_received),0)::text as qty
+    from purchase_order_lines
+    where quantity_ordered > quantity_received
+    group by product_id, pack_style_id
+  `);
+  const openSales = await sql.query<{ product_id: number; pack_style_id: number | null; qty: string }>(`
+    select product_id, pack_style_id, coalesce(sum(quantity_ordered - quantity_shipped),0)::text as qty
+    from sales_order_lines
+    where quantity_ordered > quantity_shipped
+    group by product_id, pack_style_id
+  `);
+  return {
+    incoming: incoming.map((r) => ({ ...r, qty: n(r.qty) })),
+    open_sales: openSales.map((r) => ({ ...r, qty: n(r.qty) })),
+  };
+});
+
+export const listPurchasedLots = createServerFn({ method: "GET" }).handler(async () => {
+  const sql = await getSql();
+  const rows = await sql.query<{
+    lot_number: string;
+    product_name: string;
+    pack_name: string | null;
+    origin: string | null;
+    po_number: string | null;
+    vendor: string | null;
+    received_date: string | null;
+    bol: string | null;
+    total_qty: string;
+    returned_qty: string;
+    unit_cost: string | null;
+    t_cost: string;
+  }>(`
+    select l.lot_number, p.name as product_name, ps.name as pack_name, l.origin_country as origin,
+           po.po_number, s.name as vendor, l.received_date::text, po.bol,
+           l.original_qty::text as total_qty, coalesce(l.rts_qty,0)::text as returned_qty,
+           l.unit_cost::text,
+           (l.original_qty * coalesce(l.unit_cost,0))::text as t_cost
+    from lots l
+    join products p on p.id = l.product_id
+    left join pack_styles ps on ps.id = l.pack_style_id
+    left join purchase_orders po on po.id = l.purchase_order_id
+    left join suppliers s on s.id = l.supplier_id
+    where l.purchase_order_id is not null
+    order by l.received_date desc nulls last, l.id desc
+  `);
+  return rows.map((r) => ({
+    ...r,
+    total_qty: n(r.total_qty),
+    returned_qty: n(r.returned_qty),
+    unit_cost: n(r.unit_cost),
+    t_cost: n(r.t_cost),
+  }));
+});
+
 export const listPurchaseOrders = createServerFn({ method: "GET" }).handler(async () => {
   const sql = await getSql();
   const orders = await sql.query<{
@@ -670,9 +1339,20 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).handler(asyn
     notes: string | null;
     sales_order_id: number | null;
     so_number: string | null;
+    order_type: string;
+    bol: string | null;
+    vendor_invoice: string | null;
+    shipping_ref: string | null;
+    costing_mode: string;
+    target_profit_pct: string | null;
+    vendor_share_level: string;
+    signed_off: boolean;
   }>(`
     select po.id, po.po_number, po.supplier_id, s.name as supplier_name, po.status,
-           po.order_date::text, po.expected_date::text, po.notes, po.sales_order_id, so.so_number
+           po.order_date::text, po.expected_date::text, po.notes, po.sales_order_id, so.so_number,
+           coalesce(po.order_type, 'entrega') as order_type, po.bol, po.vendor_invoice, po.shipping_ref,
+           coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
+           coalesce(po.vendor_share_level,'po') as vendor_share_level, coalesce(po.signed_off,false) as signed_off
     from purchase_orders po join suppliers s on s.id = po.supplier_id
     left join sales_orders so on so.id = po.sales_order_id
     order by po.id desc
@@ -690,10 +1370,14 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).handler(asyn
     sku_code: string | null;
     empaque: string | null;
     calibre: string | null;
+    pallets: string | null;
+    units_per_pallet: string | null;
+    origin_country: string | null;
   }>(`
     select l.id, l.purchase_order_id, l.product_id, p.name as product_name, l.pack_style_id,
            l.quantity_ordered::text, l.quantity_received::text, l.unit, l.unit_cost::text,
-           ps.sku_code, ps.empaque, ps.calibre
+           ps.sku_code, ps.empaque, ps.calibre,
+           l.pallets::text, l.units_per_pallet::text, l.origin_country
     from purchase_order_lines l
     join products p on p.id = l.product_id
     left join pack_styles ps on ps.id = l.pack_style_id
@@ -722,21 +1406,56 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).handler(asyn
   const bills = await sql.query<{ purchase_order_id: number; bill_number: string; status: string }>(
     `select purchase_order_id, bill_number, status from supplier_bills where purchase_order_id is not null`,
   );
-  return orders.map((o) => ({
-    ...o,
-    bill: bills.find((b) => b.purchase_order_id === o.id) ?? null,
-    receptions: recs
-      .filter((r) => r.purchase_order_id === o.id)
-      .map((r) => ({ ...r, quantity: n(r.quantity) })),
-    lines: lines
+  const expenses = await sql.query<{
+    id: number;
+    purchase_order_id: number | null;
+    expense_number: string;
+    category: string;
+    quantity: string | null;
+    unit_cost: string | null;
+    amount: string;
+    invoice_number: string | null;
+    status: string;
+    notes: string | null;
+  }>(`
+    select id, purchase_order_id, expense_number, category, quantity::text, unit_cost::text,
+           amount::text, invoice_number, status, notes
+    from expenses
+  `);
+  return orders.map((o) => {
+    const poLines = lines
       .filter((l) => l.purchase_order_id === o.id)
       .map((l) => ({
         ...l,
         quantity_ordered: n(l.quantity_ordered),
         quantity_received: n(l.quantity_received),
         unit_cost: n(l.unit_cost),
-      })),
-  }));
+        pallets: n(l.pallets),
+        units_per_pallet: n(l.units_per_pallet),
+      }));
+    const poExpenses = expenses
+      .filter((e) => e.purchase_order_id === o.id)
+      .map((e) => ({
+        ...e,
+        quantity: n(e.quantity),
+        unit_cost: n(e.unit_cost),
+        amount: n(e.amount),
+      }));
+    const merch_total = poLines.reduce((s, l) => s + l.quantity_ordered * l.unit_cost, 0);
+    const expense_total = poExpenses.reduce((s, e) => s + e.amount, 0);
+    return {
+      ...o,
+      bill: bills.find((b) => b.purchase_order_id === o.id) ?? null,
+      receptions: recs
+        .filter((r) => r.purchase_order_id === o.id)
+        .map((r) => ({ ...r, quantity: n(r.quantity) })),
+      lines: poLines,
+      expenses: poExpenses,
+      merch_total,
+      expense_total,
+      order_total: merch_total + expense_total,
+    };
+  });
 });
 
 export const createPurchaseOrder = createServerFn({ method: "POST" })
@@ -746,6 +1465,10 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
       expected_date: z.string().optional(),
       notes: z.string().optional(),
       sales_order_id: z.number().optional(),
+      order_type: z.string().optional(),
+      bol: z.string().optional(),
+      vendor_invoice: z.string().optional(),
+      shipping_ref: z.string().optional(),
       lines: z
         .array(
           z.object({
@@ -754,6 +1477,9 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
             quantity_ordered: z.number().positive(),
             unit: z.string(),
             unit_cost: z.number().optional(),
+            pallets: z.number().optional(),
+            units_per_pallet: z.number().optional(),
+            origin_country: z.string().optional(),
           }),
         )
         .min(1),
@@ -763,19 +1489,157 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
     const sql = await getSql();
     const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
     const rows = await sql.query<{ id: number }>(
-      `insert into purchase_orders (po_number, supplier_id, status, expected_date, notes, sales_order_id)
-       values ($1,$2,'confirmed',$3,$4,$5) returning id`,
-      [po_number, data.supplier_id, data.expected_date || null, data.notes || null, data.sales_order_id ?? null],
+      `insert into purchase_orders (po_number, supplier_id, status, expected_date, notes, sales_order_id, order_type, bol, vendor_invoice, shipping_ref)
+       values ($1,$2,'confirmed',$3,$4,$5,$6,$7,$8,$9) returning id`,
+      [
+        po_number,
+        data.supplier_id,
+        data.expected_date || null,
+        data.notes || null,
+        data.sales_order_id ?? null,
+        data.order_type || "entrega",
+        data.bol || null,
+        data.vendor_invoice || null,
+        data.shipping_ref || null,
+      ],
     );
     const id = rows[0].id;
     for (const line of data.lines) {
       await sql.query(
-        `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost)
-         values ($1,$2,$3,$4,$5,$6)`,
-        [id, line.product_id, line.pack_style_id ?? null, line.quantity_ordered, line.unit, line.unit_cost ?? null],
+        `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, pallets, units_per_pallet, origin_country)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          id,
+          line.product_id,
+          line.pack_style_id ?? null,
+          line.quantity_ordered,
+          line.unit,
+          line.unit_cost ?? null,
+          line.pallets ?? null,
+          line.units_per_pallet ?? null,
+          line.origin_country || null,
+        ],
       );
     }
     return { id, po_number };
+  });
+
+export const listExpenses = createServerFn({ method: "GET" }).handler(async () => {
+  const sql = await getSql();
+  const rows = await sql.query<{
+    id: number;
+    expense_number: string;
+    category: string;
+    supplier_id: number;
+    supplier_name: string;
+    purchase_order_id: number | null;
+    po_number: string | null;
+    quantity: string | null;
+    unit_cost: string | null;
+    amount: string;
+    invoice_number: string | null;
+    payable: boolean;
+    status: string;
+    issue_date: string;
+    paid: string;
+    notes: string | null;
+  }>(`
+    select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
+           e.purchase_order_id, po.po_number, e.quantity::text, e.unit_cost::text,
+           e.amount::text, e.invoice_number, e.payable, e.status, e.issue_date::text,
+           e.paid::text, e.notes
+    from expenses e
+    join suppliers s on s.id = e.supplier_id
+    left join purchase_orders po on po.id = e.purchase_order_id
+    order by e.id desc
+  `);
+  return rows.map((r) => {
+    const amount = n(r.amount);
+    const paid = n(r.paid);
+    return {
+      ...r,
+      quantity: n(r.quantity),
+      unit_cost: n(r.unit_cost),
+      amount,
+      paid,
+      saldo: Math.max(amount - paid, 0),
+    };
+  });
+});
+
+export const createExpense = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      category: z.string().min(1),
+      supplier_id: z.number(),
+      purchase_order_id: z.number().optional(),
+      amount: z.number().positive(),
+      quantity: z.number().optional(),
+      unit_cost: z.number().optional(),
+      invoice_number: z.string().optional(),
+      notes: z.string().optional(),
+      payable: z.boolean().optional(),
+      alloc_by: z.enum(["pallet", "unit"]).optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const expense_number = await nextCode(sql, "expenses", "expense_number", "EXP-");
+    const payable = data.payable !== false;
+    const amount = data.amount;
+    const paid = payable ? 0 : amount;
+    const status = payable ? "open" : "paid";
+    const rows = await sql.query<{ id: number }>(
+      `insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
+      [
+        expense_number,
+        data.category,
+        data.supplier_id,
+        data.purchase_order_id ?? null,
+        data.quantity ?? 1,
+        data.unit_cost ?? amount,
+        amount,
+        data.invoice_number || null,
+        payable,
+        status,
+        todayISO(),
+        paid,
+        data.notes || null,
+        data.alloc_by || "pallet",
+      ],
+    );
+    return { id: rows[0].id, expense_number };
+  });
+
+export const registerPagoGasto = createServerFn({ method: "POST" })
+  .validator(z.object({ expense_id: z.number(), amount: z.number().positive(), notes: z.string().optional() }))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [exp] = await sql.query<{
+      id: number;
+      expense_number: string;
+      supplier_name: string;
+      amount: string;
+      paid: string;
+    }>(
+      `select e.id, e.expense_number, s.name as supplier_name, e.amount::text, e.paid::text
+       from expenses e join suppliers s on s.id = e.supplier_id where e.id = $1`,
+      [data.expense_id],
+    );
+    if (!exp) throw new Error("Expense not found");
+    const remaining = n(exp.amount) - n(exp.paid);
+    if (data.amount > remaining + 0.009) throw new Error(`Balance on ${exp.expense_number} is ${remaining.toFixed(2)}`);
+    const paid = n(exp.paid) + data.amount;
+    const status = moneyStatus(n(exp.amount), paid);
+    await sql.query(`update expenses set paid = $1, status = $2 where id = $3`, [paid, status, exp.id]);
+    const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
+    await sql.query(
+      `insert into cash_movements (folio, mov_date, kind, counterparty, expense_id, amount, notes)
+       values ($1,$2,'pago',$3,$4,$5,$6)`,
+      [folio, todayISO(), exp.supplier_name, exp.id, -data.amount, data.notes || `Pay ${exp.expense_number}`],
+    );
+    return { folio, paid, status, remaining: n(exp.amount) - paid };
   });
 
 export const receiveMerchandise = createServerFn({ method: "POST" })
@@ -891,6 +1755,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
           quality_state: "sano",
           quality_note: null,
           poId: po.id,
+          poLineId: line.id,
           notes: "Recepción aceptada",
         });
         lotSanoId = lot.lotId;
@@ -912,6 +1777,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
             quality_state: "sano",
             quality_note: null,
             poId: po.id,
+            poLineId: line.id,
             notes: "Parte sana de recepción con incidencia",
           });
           lotSanoId = lot.lotId;
@@ -932,6 +1798,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
           quality_state: "retenido",
           quality_note: note,
           poId: po.id,
+          poLineId: line.id,
           notes: note,
         });
         lotRetId = ret.lotId;
@@ -979,7 +1846,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
        from purchase_order_lines where purchase_order_id = $1`,
       [data.purchase_order_id],
     );
-    const status = n(pend?.pending) <= 0 ? "completed" : "partial";
+    const status = n(pend?.pending) <= 0 ? "received" : "partial";
     await sql.query(`update purchase_orders set status = $1 where id = $2`, [status, data.purchase_order_id]);
 
     return { receptionId, status, warning, lineas: created, po_number: po.po_number };
@@ -1384,11 +2251,12 @@ export const shipSalesLine = createServerFn({ method: "POST" })
     const remaining = n(line.quantity_ordered) - n(line.quantity_shipped);
     if (data.quantity > remaining + 0.0001) throw new Error("Cantidad mayor a lo pendiente");
 
-    const [lot] = await sql.query<{ product_id: number; current_qty: string; quality_state: string; lot_number: string }>(
-      `select product_id, current_qty::text, coalesce(quality_state, 'sano') as quality_state, lot_number from lots where id = $1`,
+    const [lot] = await sql.query<{ product_id: number; current_qty: string; quality_state: string; lot_number: string; held: boolean }>(
+      `select product_id, current_qty::text, coalesce(quality_state, 'sano') as quality_state, lot_number, coalesce(held,false) as held from lots where id = $1`,
       [data.lot_id],
     );
     if (!lot || lot.product_id !== line.product_id) throw new Error("El lote no corresponde al producto");
+    if (lot.held) throw new Error(`Lot ${lot.lot_number} is on hold.`);
     if (lot.quality_state !== "sano") {
       throw new Error(
         `No se puede despachar el lote ${lot.lot_number}: está ${lot.quality_state}. Libéralo a Sano en Inventario.`,

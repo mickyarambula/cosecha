@@ -48,10 +48,10 @@ function Page() {
       });
       setOpen(false);
       setForm({ name: "", location_type: "bodega", owner_kind: "propia", city: "", contact_name: "", notes: "" });
-      setMsg(`Destino ${r.code} creado — ya aparece en recepción`);
+      setMsg(`Route ${r.code} created`);
       await locs.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "No se pudo crear");
+      setMsg(err instanceof Error ? err.message : "Could not create");
     } finally {
       setSaving(false);
     }
@@ -60,28 +60,28 @@ function Page() {
   return (
     <div>
       <PageHeader
-        title="Destinos"
-        subtitle="SHIP TO real: bodega propia, de cliente o cross-dock. McAllen y Nogales ya están."
-        action={<Button onClick={() => setOpen(true)}>Nuevo destino</Button>}
+        title="Delivery routes"
+        subtitle="SHIP TO locations: owned warehouse, customer dock, or cross-dock."
+        action={<Button onClick={() => setOpen(true)}>New destination</Button>}
       />
       <div className="mb-5 grid grid-cols-3 gap-3">
-        <Kpi label="Destinos" value={String(kpis.total)} />
-        <Kpi label="Propias" value={String(kpis.propias)} />
-        <Kpi label="De cliente" value={String(kpis.cliente)} />
+        <Kpi label="Destinations" value={String(kpis.total)} />
+        <Kpi label="Owned" value={String(kpis.propias)} />
+        <Kpi label="Customer" value={String(kpis.cliente)} />
       </div>
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
-      {locs.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {locs.loading ? <p className="text-sm text-muted">Loading…</p> : null}
       {locs.error ? <p className="text-sm text-danger">{locs.error}</p> : null}
       <div className="overflow-x-auto rounded-xl border border-border bg-surface">
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="border-b border-border text-xs text-muted">
             <tr>
-              <th className="px-4 py-3 font-medium">Código</th>
-              <th className="px-4 py-3 font-medium">Nombre</th>
-              <th className="px-4 py-3 font-medium">Tipo</th>
-              <th className="px-4 py-3 font-medium">Dueño</th>
-              <th className="px-4 py-3 font-medium">Ciudad</th>
-              <th className="px-4 py-3 text-right font-medium">En piso</th>
+              <th className="px-4 py-3 font-medium">Code</th>
+              <th className="px-4 py-3 font-medium">Name</th>
+              <th className="px-4 py-3 font-medium">Type</th>
+              <th className="px-4 py-3 font-medium">Owner</th>
+              <th className="px-4 py-3 font-medium">City</th>
+              <th className="px-4 py-3 text-right font-medium">On hand</th>
             </tr>
           </thead>
           <tbody>
@@ -107,13 +107,13 @@ function Page() {
       </div>
 
       {open ? (
-        <Modal title="Nuevo destino" subtitle="Se usa como destino al recibir mercancía." onClose={() => setOpen(false)}>
+        <Modal title="New destination" subtitle="Used as the receive-to location on inbound POs." onClose={() => setOpen(false)}>
           <form className="grid gap-3" onSubmit={submit}>
-            <Field label="Nombre">
+            <Field label="Name">
               <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Bodega McAllen 2" />
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Tipo">
+              <Field label="Type">
                 <Select value={form.location_type} onChange={(e) => setForm({ ...form, location_type: e.target.value })}>
                   {Object.entries(DESTINO_TIPO).map(([k, v]) => (
                     <option key={k} value={k}>
@@ -122,7 +122,7 @@ function Page() {
                   ))}
                 </Select>
               </Field>
-              <Field label="Dueño">
+              <Field label="Owner">
                 <Select value={form.owner_kind} onChange={(e) => setForm({ ...form, owner_kind: e.target.value })}>
                   {Object.entries(DESTINO_DUENO).map(([k, v]) => (
                     <option key={k} value={k}>
@@ -133,10 +133,10 @@ function Page() {
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Ciudad">
+              <Field label="City">
                 <Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
               </Field>
-              <Field label="Contacto">
+              <Field label="Contact">
                 <Input value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} />
               </Field>
             </div>
@@ -144,7 +144,7 @@ function Page() {
               <Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </Field>
             <Button type="submit" disabled={saving}>
-              {saving ? "Guardando…" : "Crear destino"}
+              {saving ? "Saving…" : "Create destination"}
             </Button>
           </form>
         </Modal>

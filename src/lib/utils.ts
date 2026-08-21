@@ -28,6 +28,11 @@ export function qty(value: unknown, unit?: string): string {
   return unit ? `${formatted} ${unit}` : formatted;
 }
 
+export function pct(value: unknown, digits = 1): string {
+  const v = num(value);
+  return `${v.toFixed(digits)}%`;
+}
+
 export function daysUntil(dateStr: string | null | undefined): number | null {
   if (!dateStr) return null;
   const d = new Date(`${dateStr}T00:00:00`);
@@ -48,7 +53,14 @@ export function fecha(f: string | null | undefined): string {
   if (!f) return "—";
   const d = new Date(String(f).length <= 10 ? `${f}T12:00:00` : f);
   if (Number.isNaN(d.getTime())) return String(f);
-  return d.toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "2-digit" });
+  return d.toLocaleDateString("en-US", { month: "numeric", day: "2-digit", year: "numeric" });
+}
+
+export function fechaLong(f: string | null | undefined): string {
+  if (!f) return "—";
+  const d = new Date(String(f).length <= 10 ? `${f}T12:00:00` : f);
+  if (Number.isNaN(d.getTime())) return String(f);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 export function todayISO(): string {
@@ -80,24 +92,51 @@ export const DEFECTOS = {
 } as const;
 
 export const CALIDAD_LABEL: Record<string, string> = {
-  sano: "Sano",
-  retenido: "Retenido",
-  castigado: "Castigado",
-  destruido: "Destruido",
+  sano: "Sound",
+  retenido: "Hold",
+  castigado: "Culled",
+  destruido: "Destroyed",
 };
 
 export const DESTINO_TIPO: Record<string, string> = {
-  camara: "Cámara",
-  bodega: "Bodega",
-  empaque: "Empaque",
+  camara: "Cooler",
+  bodega: "Warehouse",
+  empaque: "Packing",
   cross_dock: "Cross-dock",
 };
 
 export const DESTINO_DUENO: Record<string, string> = {
-  propia: "Propia",
-  cliente: "De cliente",
-  proveedor: "De proveedor",
+  propia: "Owned",
+  tercero: "Third party",
+  cliente: "Customer",
+  grower: "Grower",
 };
+
+export const GASTO_CATEGORIAS = [
+  "Freight",
+  "Inspection Services",
+  "Quality Control",
+  "Boxes",
+  "Advertising",
+  "Commissions and fees",
+  "Cost of Labor",
+  "Disposal fees",
+  "Dues & Subscriptions",
+  "Equipment",
+  "Supplies",
+  "Inspección",
+  "Cajas/empaque",
+  "Flete",
+] as const;
+
+export const WASTE_REASONS = [
+  "Quality dump",
+  "Donation",
+  "Inventory adjustment",
+  "Other",
+  "Repack",
+  "Sample",
+] as const;
 
 export function skuLabel(s: {
   sku_code?: string | null;

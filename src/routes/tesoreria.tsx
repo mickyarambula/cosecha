@@ -14,9 +14,9 @@ function kindTone(kind: string) {
 }
 
 function kindLabel(kind: string) {
-  if (kind === "cobro") return "Cobro";
-  if (kind === "pago") return "Pago";
-  if (kind === "ajuste") return "Ajuste";
+  if (kind === "cobro") return "Receipt";
+  if (kind === "pago") return "Payment";
+  if (kind === "ajuste") return "Adjustment";
   return kind;
 }
 
@@ -29,13 +29,13 @@ function Page() {
 
   return (
     <div>
-      <PageHeader title="Tesorería" subtitle="Movimientos de caja. El banco manda: cobro y pago quedan rastreados." />
+      <PageHeader title="Debt aging" subtitle="Cash movements. Receipts and vendor payments stay on the ledger." />
       <div className="mb-5 grid grid-cols-3 gap-3">
-        <Kpi label="Saldo" value={money(data?.balance ?? 0)} tone={(data?.balance ?? 0) >= 0 ? "ok" : "danger"} />
-        <Kpi label="Cobros" value={money(cobros)} tone="ok" />
-        <Kpi label="Pagos" value={money(pagos)} tone="danger" />
+        <Kpi label="Balance" value={money(data?.balance ?? 0)} tone={(data?.balance ?? 0) >= 0 ? "ok" : "danger"} />
+        <Kpi label="Receipts" value={money(cobros)} tone="ok" />
+        <Kpi label="Payments" value={money(pagos)} tone="danger" />
       </div>
-      {cash.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {cash.loading ? <p className="text-sm text-muted">Loading…</p> : null}
       {cash.error ? <p className="text-sm text-danger">{cash.error}</p> : null}
       <Panel className="overflow-hidden p-0">
         <div className="overflow-x-auto">
@@ -43,11 +43,11 @@ function Page() {
             <thead className="border-b border-border text-xs text-muted">
               <tr>
                 <th className="px-4 py-3 font-medium">Folio</th>
-                <th className="px-4 py-3 font-medium">Fecha</th>
-                <th className="px-4 py-3 font-medium">Tipo</th>
-                <th className="px-4 py-3 font-medium">Contraparte</th>
+                <th className="px-4 py-3 font-medium">Date</th>
+                <th className="px-4 py-3 font-medium">Type</th>
+                <th className="px-4 py-3 font-medium">Counterparty</th>
                 <th className="px-4 py-3 font-medium">Ref</th>
-                <th className="px-4 py-3 text-right font-medium">Monto</th>
+                <th className="px-4 py-3 text-right font-medium">Amount</th>
               </tr>
             </thead>
             <tbody>

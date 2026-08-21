@@ -91,15 +91,15 @@ function ProductosPage() {
   return (
     <div>
       <PageHeader
-        title="Productos"
-        subtitle="El SKU es producto × empaque × calibre. Northgate pide PAP-CARTON-10CT, no «papaya»."
-        action={<Button onClick={() => setOpen(true)}>Nuevo producto</Button>}
+        title="Pack-outs & repacks"
+        subtitle="An inventory SKU is product × pack × count. Northgate orders PAP-CARTON-10CT, not just papaya."
+        action={<Button onClick={() => setOpen(true)}>New product</Button>}
       />
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
-      {loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {loading ? <p className="text-sm text-muted">Loading…</p> : null}
       {error ? <p className="text-sm text-danger">{error}</p> : null}
       <div className="mb-4">
-        <Input placeholder="Buscar producto, SKU o calibre…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Input placeholder="Search product, SKU or count…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <div className="grid gap-3">
         {filtered.map((p) => {
@@ -112,7 +112,7 @@ function ProductosPage() {
                     {p.name} {p.variety ? <span className="text-muted">· {p.variety}</span> : null}
                   </h2>
                   <p className="text-xs text-muted">
-                    {p.sku} · {p.category ?? "Sin categoría"} · {p.packs.length} SKU
+                    {p.sku} · {p.category ?? "Uncategorized"} · {p.packs.length} SKU
                   </p>
                 </div>
                 <Button
@@ -148,7 +148,7 @@ function ProductosPage() {
       </div>
 
       {open ? (
-        <Modal title="Nuevo producto" onClose={() => setOpen(false)}>
+        <Modal title="New product" onClose={() => setOpen(false)}>
           <form className="grid gap-3" onSubmit={submit}>
             <Field label="Nombre">
               <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -157,7 +157,7 @@ function ProductosPage() {
               <Field label="Variedad">
                 <Input value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} />
               </Field>
-              <Field label="Categoría">
+              <Field label="Category">
                 <Select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
                   <option>Fruta</option>
                   <option>Verdura</option>
@@ -188,7 +188,7 @@ function ProductosPage() {
               </Field>
             </div>
             <Button type="submit" disabled={saving}>
-              {saving ? "Guardando…" : "Guardar"}
+              {saving ? "Saving…" : "Save"}
             </Button>
           </form>
         </Modal>
@@ -225,7 +225,7 @@ function ProductosPage() {
               <Input type="number" step="0.01" value={skuForm.net_weight} onChange={(e) => setSkuForm({ ...skuForm, net_weight: e.target.value })} />
             </Field>
             <Button type="submit" disabled={saving}>
-              {saving ? "Creando…" : "Crear SKU"}
+              {saving ? "Creating…" : "Create SKU"}
             </Button>
           </form>
         </Modal>
@@ -296,7 +296,7 @@ function SkuMatrix({
           ))}
         </tbody>
       </table>
-      <p className="mt-2 text-[11px] text-subtle">{packs.filter((p) => p.sku_code).length} SKUs · el hueco vacío arma el que falta</p>
+      <p className="mt-2 text-[11px] text-subtle">{packs.filter((p) => p.sku_code).length} SKUs · empty slot builds the missing one</p>
     </div>
   );
 }

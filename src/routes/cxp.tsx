@@ -39,10 +39,10 @@ function Page() {
     try {
       const r = await registerPago({ data: { bill_id: pago.id, amount: Number(amount) } });
       setPago(null);
-      setMsg(`Pago ${r.folio} · queda ${money(r.remaining)}`);
+      setMsg(`Payment ${r.folio} · remaining ${money(r.remaining)}`);
       await bills.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "No se pudo registrar el pago");
+      setMsg(err instanceof Error ? err.message : "Could not record payment");
     } finally {
       setSaving(false);
     }
@@ -51,19 +51,19 @@ function Page() {
   return (
     <div>
       <PageHeader
-        title="Cuentas por pagar"
-        subtitle="Factura del proveedor contra lo pedido y lo recibido (three-way match)."
+        title="Payments"
+        subtitle="Vendor invoices matched against what was ordered and received."
       />
       <div className="mb-5 grid grid-cols-3 gap-3">
-        <Kpi label="Saldo" value={money(kpis.saldo)} />
-        <Kpi label="Abiertas" value={String(kpis.abiertas)} tone={kpis.abiertas ? "warn" : "ok"} />
-        <Kpi label="Descuadre recepción" value={String(kpis.descuadre)} tone={kpis.descuadre ? "warn" : "ok"} />
+        <Kpi label="Balance" value={money(kpis.saldo)} />
+        <Kpi label="Open" value={String(kpis.abiertas)} tone={kpis.abiertas ? "warn" : "ok"} />
+        <Kpi label="Receive mismatch" value={String(kpis.descuadre)} tone={kpis.descuadre ? "warn" : "ok"} />
       </div>
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
-      {bills.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {bills.loading ? <p className="text-sm text-muted">Loading…</p> : null}
       {bills.error ? <p className="text-sm text-danger">{bills.error}</p> : null}
       {rows.length === 0 && !bills.loading ? (
-        <p className="text-sm text-muted">Sin facturas de proveedor. Recibe una compra y captura su factura.</p>
+        <p className="text-sm text-muted">No vendor invoices yet. Receive a purchase and capture its invoice.</p>
       ) : null}
       <div className="grid gap-3">
         {rows.map((b) => (
@@ -81,26 +81,26 @@ function Page() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Badge tone={matchTone(b.match)}>
-                  {b.match === "cuadrado" ? "Match" : b.match === "faltante" ? "Faltante vs pedido" : "De más"}
+                  {b.match === "cuadrado" ? "Match" : b.match === "faltante" ? "Short vs ordered" : "Over received"}
                 </Badge>
                 <Badge tone={orderTone(b.status)}>{orderLabel(b.status)}</Badge>
               </div>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
               <div>
-                <p className="text-xs text-muted">Pedido</p>
+                <p className="text-xs text-muted">Ordered</p>
                 <p className="tabular-nums">{qty(b.ordered_qty)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted">Recibido</p>
+                <p className="text-xs text-muted">Received</p>
                 <p className="tabular-nums">{qty(b.received_qty)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted">Facturado</p>
+                <p className="text-xs text-muted">Invoiced</p>
                 <p className="tabular-nums font-medium">{money(b.total)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted">Saldo</p>
+                <p className="text-xs text-muted">Balance</p>
                 <p className="tabular-nums font-semibold">{money(b.saldo)}</p>
               </div>
             </div>
@@ -113,7 +113,7 @@ function Page() {
                     setAmount(String(b.saldo));
                   }}
                 >
-                  Registrar pago
+                  Record payment
                 </Button>
               </div>
             ) : null}
@@ -122,14 +122,14 @@ function Page() {
       </div>
 
       {pago ? (
-        <Modal title={`Pago ${pago.number}`} onClose={() => setPago(null)}>
+        <Modal title={`Pay ${pago.number}`} onClose={() => setPago(null)}>
           <form className="grid gap-3" onSubmit={pagar}>
-            <p className="text-sm text-muted">Saldo {money(pago.saldo)}</p>
-            <Field label="Monto">
+            <p className="text-sm text-muted">Balance {money(pago.saldo)}</p>
+            <Field label="Amount">
               <Input required type="number" min="0.01" step="0.01" max={pago.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
             </Field>
             <Button type="submit" disabled={saving}>
-              {saving ? "Registrando…" : "Aplicar pago"}
+              {saving ? "Saving…" : "Apply payment"}
             </Button>
           </form>
         </Modal>

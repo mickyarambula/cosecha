@@ -1,27 +1,34 @@
-@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Outfit:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap");
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #f1ece3;
-  --color-surface: #faf7f1;
-  --color-surface-2: #efe8db;
-  --color-fg: #1c1914;
-  --color-muted: #6d675c;
-  --color-subtle: #8a8376;
-  --color-primary: #1e5b3a;
-  --color-primary-fg: #f6f2ea;
-  --color-border: #ddd4c4;
-  --color-ring: #1e5b3a;
-  --color-ok: #1e5b3a;
-  --color-warn: #c98a2d;
-  --color-danger: #b3402e;
-  --color-paper: #fffdf8;
-  --font-display: "Fraunces", "Times New Roman", serif;
-  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
-  --radius-sm: 0.5rem;
-  --radius-md: 0.75rem;
-  --radius-lg: 1.125rem;
-  --radius-xl: 1.5rem;
+  --color-bg: #f4f6f8;
+  --color-surface: #ffffff;
+  --color-surface-2: #f3f4f6;
+  --color-fg: #1c2430;
+  --color-muted: #5b6573;
+  --color-subtle: #8b95a3;
+  --color-primary: #1b6b4c;
+  --color-primary-fg: #ffffff;
+  --color-action: #2563eb;
+  --color-action-fg: #ffffff;
+  --color-border: #e5e8ee;
+  --color-ring: #2563eb;
+  --color-ok: #15803d;
+  --color-warn: #b45309;
+  --color-danger: #dc2626;
+  --color-tab: #1b5e45;
+  --color-tab-fg: #ffffff;
+  --color-seller: #1d4f91;
+  --color-seller-fg: #ffffff;
+  --color-link: #2f5bd7;
+  --color-paper: #ffffff;
+  --font-display: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
 }
 
 @layer base {
@@ -36,7 +43,8 @@
     background: var(--color-bg);
     color: var(--color-fg);
     font-family: var(--font-sans);
-    line-height: 1.5;
+    line-height: 1.45;
+    font-feature-settings: "ss01" on, "tnum" on;
   }
 
   button:not(:disabled),
@@ -46,6 +54,22 @@
 
   * {
     border-color: var(--color-border);
+  }
+
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+  }
+}
+
+@layer utilities {
+  .label-caps {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-subtle);
   }
 }
 

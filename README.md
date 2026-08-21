@@ -11,6 +11,7 @@ El producto se llama **Cosecha**. Los documentos que salen al cliente/proveedor 
 - Ventas: tablero Pedido / Despachado / Comprado / Open · Generar compra al grower
 - Compras: OC ligada a la OV → recepción PACA (Aceptada / incidencia / Rechazada) → lote sano o retenido
 - Inventario por lote y cámara; no se despacha lo retenido
+- **Liquidación PAS**: calculadora de settlement por OC (revenue − gastos − margen casa = costo al grower). Merma con motivo, hold/cierre de lote, portal de vendor.
 - Documentos imprimibles (Invoice, Purchase Order, Sales Order) con aviso PACA
 - CxC / CxP / Tesorería
 
@@ -35,6 +36,9 @@ Sin `DATABASE_URL` corre Postgres embebido (PGLite) con semilla de demo. En prod
 8. CxC: **Documento** abre la Invoice; cobrar.
 9. CxP: capturar factura del proveedor y pagar.
 10. Tesorería: cobro y pago en caja.
+11. Compras → **OC-2608-004 Carrifoods** (PAS): Calculate settlement. Target 20% → Update lot costs. Share vendor portal (PO + Detailed).
+12. Warehouse → Lots: 4-BEL-1 / 4-BEL-2 / 4-BEL-3 con ventas Alpine Fresh. Waste units con motivo (Quality dump).
+13. Reports → Purchased Lots.
 
 ## Repo
 

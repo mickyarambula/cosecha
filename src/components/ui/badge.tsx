@@ -3,9 +3,10 @@ import { CALIDAD_LABEL, cn } from "@/lib/utils";
 
 const tones: Record<string, string> = {
   ok: "bg-ok/12 text-ok",
-  warn: "bg-warn/12 text-warn",
+  warn: "bg-surface-2 text-muted",
   danger: "bg-danger/12 text-danger",
   mute: "bg-surface-2 text-muted",
+  unpaid: "bg-rose-100 text-rose-700",
 };
 
 export function Badge({ children, tone = "mute" }: { children: ReactNode; tone?: keyof typeof tones }) {
@@ -18,26 +19,29 @@ export function Badge({ children, tone = "mute" }: { children: ReactNode; tone?:
 
 export function orderTone(status: string) {
   const s = status.toLowerCase();
-  if (s === "completed" || s === "active" || s === "paid" || s === "recibido" || s === "converted") return "ok" as const;
+  if (s === "completed" || s === "active" || s === "paid" || s === "recibido" || s === "converted" || s === "fulfilled" || s === "received")
+    return "ok" as const;
   if (s === "partial" || s === "confirmed" || s === "open") return "warn" as const;
-  if (s === "cancelled" || s === "expired" || s === "depleted" || s === "overdue") return "danger" as const;
+  if (s === "cancelled" || s === "expired" || s === "depleted" || s === "overdue" || s === "unpaid") return "danger" as const;
   return "mute" as const;
 }
 
 export function orderLabel(status: string) {
   const map: Record<string, string> = {
-    draft: "Borrador",
-    confirmed: "Confirmada",
-    partial: "Parcial",
-    completed: "Completada",
-    cancelled: "Cancelada",
-    active: "Activo",
-    depleted: "Agotado",
-    expired: "Vencido",
-    open: "Abierta",
-    converted: "Convertido",
-    paid: "Saldada",
-    overdue: "Vencida",
+    draft: "Draft",
+    confirmed: "Confirmed",
+    partial: "Partial",
+    completed: "Fulfilled",
+    received: "Received",
+    cancelled: "Cancelled",
+    active: "Active",
+    depleted: "Depleted",
+    expired: "Expired",
+    open: "Unpaid",
+    converted: "Converted",
+    paid: "Paid",
+    overdue: "Overdue",
+    unpaid: "Unpaid",
   };
   return map[status] ?? status;
 }
@@ -51,14 +55,14 @@ export function qualityTone(state: string | null | undefined) {
 }
 
 export function qualityLabel(state: string | null | undefined) {
-  return CALIDAD_LABEL[(state || "sano").toLowerCase()] ?? state ?? "Sano";
+  return CALIDAD_LABEL[(state || "sano").toLowerCase()] ?? state ?? "Sound";
 }
 
 export function RoleBadges({ proveedor, cliente }: { proveedor?: boolean; cliente?: boolean }) {
   return (
     <span className="inline-flex flex-wrap gap-1">
-      {proveedor ? <Badge tone="ok">Proveedor</Badge> : null}
-      {cliente ? <Badge>Cliente</Badge> : null}
+      {proveedor ? <Badge tone="ok">Vendor</Badge> : null}
+      {cliente ? <Badge>Customer</Badge> : null}
     </span>
   );
 }

@@ -5,8 +5,9 @@ export function Input({ className, ...props }: React.ComponentProps<"input">) {
   return (
     <input
       className={cn(
-        "flex h-11 w-full rounded-md border border-border bg-surface px-3 text-sm text-fg placeholder:text-subtle",
+        "flex h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-fg placeholder:text-subtle",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30",
+        "disabled:bg-surface-2 disabled:text-muted",
         className,
       )}
       {...props}
@@ -15,7 +16,7 @@ export function Input({ className, ...props }: React.ComponentProps<"input">) {
 }
 
 export function Label({ className, ...props }: React.ComponentProps<"label">) {
-  return <label className={cn("text-xs font-medium text-muted", className)} {...props} />;
+  return <label className={cn("label-caps", className)} {...props} />;
 }
 
 export function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
@@ -35,7 +36,7 @@ export function Select({ className, ...props }: React.ComponentProps<"select">) 
   return (
     <select
       className={cn(
-        "flex h-11 w-full rounded-md border border-border bg-surface px-3 text-sm text-fg",
+        "flex h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-fg",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30",
         className,
       )}
@@ -44,10 +45,10 @@ export function Select({ className, ...props }: React.ComponentProps<"select">) 
   );
 }
 
-export function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-medium text-muted">{label}</span>
+    <label className={cn("flex flex-col gap-1", className)}>
+      <span className="label-caps">{label}</span>
       {children}
     </label>
   );

@@ -1,8 +1,10 @@
-/** Letterhead for documents the trader actually sends. Edit here. */
+/** Letterhead and workspace identity. */
 export const COMPANY = {
   legalName: "Plein Produce LLC",
   shortName: "Plein",
-  tagline: "Fresh produce · Produce fresco",
+  userName: "Juan Mercado",
+  userEmail: "juan@pleinproduce.com",
+  tagline: "Fresh produce",
   city: "Nogales, Arizona",
   country: "USA",
   email: "",

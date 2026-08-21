@@ -9,9 +9,9 @@ import { useAsync } from "@/lib/use-async";
 export const Route = createFileRoute("/listas")({ component: Page });
 
 const KINDS = [
-  { id: "empaque" as const, title: "Empaque", hint: "Carton, Clamshell, Crate…" },
-  { id: "calibre" as const, title: "Calibre", hint: "7 ct, 10 ct, 12 ct…" },
-  { id: "grado" as const, title: "Grado", hint: "Fancy, Choice, Extra…" },
+  { id: "empaque" as const, title: "Pack", hint: "Carton, Clamshell, Crate…" },
+  { id: "calibre" as const, title: "Count", hint: "7 ct, 10 ct, 12 ct…" },
+  { id: "grado" as const, title: "Grade", hint: "Fancy, Choice, Extra…" },
 ];
 
 function Page() {
@@ -30,10 +30,10 @@ function Page() {
     try {
       await addValueList({ data: { kind, value } });
       setDraft((d) => ({ ...d, [kind]: "" }));
-      setMsg(`«${value}» agregado a ${kind}`);
+      setMsg(`“${value}” added to ${kind}`);
       await lists.reload();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "No se pudo agregar");
+      setErr(e instanceof Error ? e.message : "Could not add");
     } finally {
       setSaving(null);
     }
@@ -44,12 +44,12 @@ function Page() {
   return (
     <div>
       <PageHeader
-        title="Listas"
-        subtitle="Vocabulario que alimenta el armador de SKU. Agrégalo aquí o al vuelo desde Productos."
+        title="Price sheets"
+        subtitle="Pack, count and grade vocabulary that feeds SKU builders."
       />
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
       {err ? <p className="mb-3 text-sm text-danger">{err}</p> : null}
-      {lists.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {lists.loading ? <p className="text-sm text-muted">Loading…</p> : null}
       {lists.error ? <p className="text-sm text-danger">{lists.error}</p> : null}
       <div className="grid gap-4 lg:grid-cols-3">
         {KINDS.map((k) => {
@@ -64,7 +64,7 @@ function Page() {
                     {r.value}
                   </li>
                 ))}
-                {rows.length === 0 ? <li className="text-sm text-muted">Vacía</li> : null}
+                {rows.length === 0 ? <li className="text-sm text-muted">Empty</li> : null}
               </ul>
               <form
                 className="grid gap-2"
@@ -73,7 +73,7 @@ function Page() {
                   void add(k.id);
                 }}
               >
-                <Field label={`Nuevo ${k.title.toLowerCase()}`}>
+                <Field label={`New ${k.title.toLowerCase()}`}>
                   <Input
                     value={draft[k.id]}
                     onChange={(e) => setDraft((d) => ({ ...d, [k.id]: e.target.value }))}
@@ -81,7 +81,7 @@ function Page() {
                   />
                 </Field>
                 <Button type="submit" size="sm" disabled={saving === k.id || !draft[k.id].trim()}>
-                  {saving === k.id ? "Agregando…" : "Agregar"}
+                  {saving === k.id ? "Adding…" : "Add"}
                 </Button>
               </form>
             </Panel>

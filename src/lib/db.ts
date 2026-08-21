@@ -119,6 +119,7 @@ async function createPgliteSql(): Promise<Sql> {
       },
     });
     await pg.waitReady;
+    await pg.exec("set max_stack_depth = '2MB'");
     await pg.exec(
       "create table if not exists _migrations (name text primary key, applied_at timestamptz not null default now())",
     );
@@ -129,7 +130,7 @@ async function createPgliteSql(): Promise<Sql> {
   });
   const pg = await globalRef.__pgliteInstance__;
 
-  // Apply migrations/ (the single schema source) so preview matches production.
+  // Apply migrations/*.sql so preview matches production (incl. 0007_gastos).
   // SQL is inlined by the bundler via import.meta.glob (no runtime fs); applied
   // files are tracked in _migrations. The glob does not descend, so the opt-in
   // auth schema under migrations/auth/ stays out. Runs once per module instance

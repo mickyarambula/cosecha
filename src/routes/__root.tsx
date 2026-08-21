@@ -12,8 +12,8 @@ export const Route = createRootRoute({
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: APP_NAME },
-      { name: "theme-color", content: "#1E5B3A" },
-      { name: "description", content: "ERP de produce fresco: lotes, calidad PACA, compras, ventas, CxC y tesorería." },
+      { name: "theme-color", content: "#1B6B4C" },
+      { name: "description", content: "Produce operations for buyers and sellers: purchase orders, lots, sales, expenses, and reports." },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
@@ -23,7 +23,7 @@ export const Route = createRootRoute({
     ],
   }),
   component: () => (
-    <html lang="es" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>

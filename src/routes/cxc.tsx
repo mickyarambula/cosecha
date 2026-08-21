@@ -33,10 +33,10 @@ function Page() {
     try {
       const r = await registerCobro({ data: { invoice_id: cobro.id, amount: Number(amount) } });
       setCobro(null);
-      setMsg(`Cobro ${r.folio} · queda ${money(r.remaining)}`);
+      setMsg(`Receipt ${r.folio} · remaining ${money(r.remaining)}`);
       await inv.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "No se pudo registrar el cobro");
+      setMsg(err instanceof Error ? err.message : "Could not record receipt");
     } finally {
       setSaving(false);
     }
@@ -44,16 +44,16 @@ function Page() {
 
   return (
     <div>
-      <PageHeader title="Cuentas por cobrar" subtitle="Facturas al cliente. El cobro entra a tesorería." />
+      <PageHeader title="Credits" subtitle="Customer invoices. Receipts post to cash." />
       <div className="mb-5 grid grid-cols-3 gap-3">
-        <Kpi label="Saldo" value={money(kpis.saldo)} />
-        <Kpi label="Cartera vencida" value={money(kpis.vencida)} tone={kpis.vencida ? "danger" : "ok"} />
-        <Kpi label="Abiertas" value={String(kpis.abierta)} />
+        <Kpi label="Balance" value={money(kpis.saldo)} />
+        <Kpi label="Past due" value={money(kpis.vencida)} tone={kpis.vencida ? "danger" : "ok"} />
+        <Kpi label="Open" value={String(kpis.abierta)} />
       </div>
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
-      {inv.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {inv.loading ? <p className="text-sm text-muted">Loading…</p> : null}
       {inv.error ? <p className="text-sm text-danger">{inv.error}</p> : null}
-      {rows.length === 0 && !inv.loading ? <p className="text-sm text-muted">Sin facturas. Factura una venta despachada.</p> : null}
+      {rows.length === 0 && !inv.loading ? <p className="text-sm text-muted">No invoices yet. Invoice a fulfilled sales order.</p> : null}
       <div className="grid gap-3">
         {rows.map((i) => {
           const status = i.overdue ? "overdue" : i.status;
@@ -67,8 +67,8 @@ function Page() {
                   </p>
                   <h2 className="font-display text-lg font-semibold">{i.customer_name}</h2>
                   <p className="text-xs text-muted">
-                    Emitida {fecha(i.issue_date)} · vence {fecha(i.due_date)}
-                    {i.overdue ? ` · vencida ${i.days_overdue}d` : ""}
+                    Issued {fecha(i.issue_date)} · due {fecha(i.due_date)}
+                    {i.overdue ? ` · overdue ${i.days_overdue}d` : ""}
                   </p>
                 </div>
                 <Badge tone={orderTone(status)}>{orderLabel(status)}</Badge>
@@ -79,11 +79,11 @@ function Page() {
                   <p className="tabular-nums font-medium">{money(i.total)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted">Cobrado</p>
+                  <p className="text-xs text-muted">Received</p>
                   <p className="tabular-nums">{money(i.paid)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted">Saldo</p>
+                  <p className="text-xs text-muted">Balance</p>
                   <p className="tabular-nums font-semibold">{money(i.saldo)}</p>
                 </div>
               </div>
@@ -105,11 +105,11 @@ function Page() {
                       setAmount(String(i.saldo));
                     }}
                   >
-                    Registrar cobro
+                    Record receipt
                   </Button>
                   <Button size="sm" variant="outline" asChild>
                     <Link to="/doc/$tipo/$id" params={{ tipo: "factura", id: String(i.id) }}>
-                      Documento
+                      Document
                     </Link>
                   </Button>
                 </div>
@@ -117,7 +117,7 @@ function Page() {
                 <div className="mt-3">
                   <Button size="sm" variant="outline" asChild>
                     <Link to="/doc/$tipo/$id" params={{ tipo: "factura", id: String(i.id) }}>
-                      Documento
+                      Document
                     </Link>
                   </Button>
                 </div>
@@ -128,14 +128,14 @@ function Page() {
       </div>
 
       {cobro ? (
-        <Modal title={`Cobro ${cobro.number}`} onClose={() => setCobro(null)}>
+        <Modal title={`Receipt ${cobro.number}`} onClose={() => setCobro(null)}>
           <form className="grid gap-3" onSubmit={cobrar}>
-            <p className="text-sm text-muted">Saldo {money(cobro.saldo)}</p>
-            <Field label="Monto">
+            <p className="text-sm text-muted">Balance {money(cobro.saldo)}</p>
+            <Field label="Amount">
               <Input required type="number" min="0.01" step="0.01" max={cobro.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
             </Field>
             <Button type="submit" disabled={saving}>
-              {saving ? "Registrando…" : "Aplicar cobro"}
+              {saving ? "Saving…" : "Apply receipt"}
             </Button>
           </form>
         </Modal>

@@ -1,4 +1,5 @@
-import { Field, Select } from "@/components/ui/input";
+import { useMemo, useState } from "react";
+import { Field, Input, Select } from "@/components/ui/input";
 import { skuLabel } from "@/lib/utils";
 
 export type SkuOption = {
@@ -61,23 +62,38 @@ export function SkuSelect({
   required?: boolean;
   label?: string;
 }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return skus;
+    return skus.filter((x) => skuLabel(x).toLowerCase().includes(s));
+  }, [skus, q]);
+  const shown = filtered.slice(0, 80);
+  const currentOk = value && shown.some((s) => String(s.id) === value);
+  const options = currentOk ? shown : [...skus.filter((s) => String(s.id) === value), ...shown];
+
   return (
-    <Field label={label}>
-      <Select
-        required={required}
-        value={value}
-        onChange={(e) => {
-          const sku = skus.find((s) => String(s.id) === e.target.value) ?? null;
-          onPick(sku);
-        }}
-      >
-        <option value="">Seleccionar SKU</option>
-        {skus.map((s) => (
-          <option key={s.id} value={s.id}>
-            {skuLabel(s)}
-          </option>
-        ))}
-      </Select>
-    </Field>
+    <div className="grid gap-2">
+      <Field label="Buscar SKU">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="papaya, 10 ct, carton…" />
+      </Field>
+      <Field label={label}>
+        <Select
+          required={required}
+          value={value}
+          onChange={(e) => {
+            const sku = skus.find((s) => String(s.id) === e.target.value) ?? null;
+            onPick(sku);
+          }}
+        >
+          <option value="">Seleccionar SKU{q ? ` · ${shown.length} coincidencias` : ""}</option>
+          {options.map((s) => (
+            <option key={s.id} value={s.id}>
+              {skuLabel(s)}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    </div>
   );
 }

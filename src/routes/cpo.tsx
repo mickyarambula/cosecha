@@ -121,10 +121,10 @@ function Page() {
     try {
       const r = await convertCustomerPOToSO({ data: { customer_po_id: id } });
       setDetail(null);
-      setMsg(`${r.cpo_number} convertido a venta ${r.so_number}`);
+      setMsg(`${r.cpo_number} converted to ${r.so_number}`);
       await cpos.reload();
     } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : "No se pudo convertir");
+      setErr(e2 instanceof Error ? e2.message : "Could not convert");
     } finally {
       setSaving(false);
     }
@@ -133,29 +133,29 @@ function Page() {
   return (
     <div>
       <PageHeader
-        title="Customer PO"
-        subtitle="Camino C · captura el PO del cliente y genera su orden de venta."
-        action={<Button onClick={() => setOpen(true)}>Nuevo Customer PO</Button>}
+        title="Online orders"
+        subtitle="Capture the customer PO and convert it to a sales order."
+        action={<Button onClick={() => setOpen(true)}>New customer PO</Button>}
       />
       <div className="mb-5 grid grid-cols-3 gap-3">
-        <Kpi label="CPOs abiertos" value={String(kpis.abiertos)} tone={kpis.abiertos ? "warn" : "ok"} />
-        <Kpi label="Convertidos" value={String(kpis.convertidos)} tone="ok" />
-        <Kpi label="Del mes" value={String(kpis.delMes)} />
+        <Kpi label="Open CPOs" value={String(kpis.abiertos)} tone={kpis.abiertos ? "warn" : "ok"} />
+        <Kpi label="Converted" value={String(kpis.convertidos)} tone="ok" />
+        <Kpi label="This month" value={String(kpis.delMes)} />
       </div>
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
       {err && !open && !detail ? <p className="mb-3 text-sm text-danger">{err}</p> : null}
-      {cpos.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {cpos.loading ? <p className="text-sm text-muted">Loading…</p> : null}
       {cpos.error ? <p className="text-sm text-danger">{cpos.error}</p> : null}
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Select className="max-w-44" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="all">Todos los estados</option>
-          <option value="open">Abiertos</option>
-          <option value="converted">Convertidos</option>
+          <option value="all">All statuses</option>
+          <option value="open">Open</option>
+          <option value="converted">Converted</option>
         </Select>
         <Input
           className="max-w-sm"
-          placeholder="Buscar folio, cliente o N° cliente…"
+          placeholder="Search folio, customer or PO #…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -169,12 +169,12 @@ function Page() {
           <thead className="border-b border-border text-xs uppercase tracking-wide text-muted">
             <tr>
               <th className="px-4 py-3 font-medium">Folio</th>
-              <th className="px-4 py-3 font-medium">Cliente</th>
-              <th className="px-4 py-3 font-medium">N° cliente</th>
-              <th className="px-4 py-3 font-medium">Fecha</th>
-              <th className="px-4 py-3 font-medium">Moneda</th>
-              <th className="px-4 py-3 font-medium">Estado</th>
-              <th className="px-4 py-3 font-medium">Adjunto</th>
+              <th className="px-4 py-3 font-medium">Customer</th>
+              <th className="px-4 py-3 font-medium">Customer PO #</th>
+              <th className="px-4 py-3 font-medium">Date</th>
+              <th className="px-4 py-3 font-medium">Currency</th>
+              <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">Attachment</th>
             </tr>
           </thead>
           <tbody>
@@ -227,9 +227,9 @@ function Page() {
       </div>
 
       {open ? (
-        <Modal wide title="Nuevo Customer PO" subtitle="Captura el PO que envió el cliente" onClose={() => setOpen(false)}>
+        <Modal wide title="New customer PO" subtitle="Capture the PO the customer sent" onClose={() => setOpen(false)}>
           <form className="grid gap-3" onSubmit={submit}>
-            <Field label="Cliente *">
+            <Field label="Customer *">
               <Select required value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })}>
                 <option value="">Seleccionar</option>
                 {(customers.data ?? []).map((c) => (
@@ -265,7 +265,7 @@ function Page() {
               />
             </Field>
             <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Líneas</p>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Lines</p>
               <div className="space-y-3">
                 {lines.map((line, i) => (
                   <div key={i} className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-4">
@@ -319,7 +319,7 @@ function Page() {
                 className="mt-2 text-xs font-medium text-primary underline-offset-2 hover:underline"
                 onClick={() => setLines((prev) => [...prev, emptyLine()])}
               >
-                + Agregar línea
+                + Add line
               </button>
             </div>
             <Field label="Nota">
@@ -328,7 +328,7 @@ function Page() {
             {err && open ? <p className="text-sm text-danger">{err}</p> : null}
             <div className="flex flex-wrap gap-2">
               <Button type="submit" disabled={saving}>
-                {saving ? "Guardando…" : "Crear Customer PO"}
+                {saving ? "Saving…" : "Create customer PO"}
               </Button>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancelar
@@ -347,7 +347,7 @@ function Page() {
         >
           <div className="grid gap-3 sm:grid-cols-3">
             <Panel className="p-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Cliente</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Customer</p>
               <p className="mt-1 text-sm font-medium">{selected.customer_name}</p>
             </Panel>
             <Panel className="p-3">
@@ -416,7 +416,7 @@ function Page() {
           <div className="mt-4 flex flex-wrap gap-2">
             {selected.status === "open" ? (
               <Button disabled={saving} onClick={() => void convertir(selected.id)}>
-                {saving ? "Convirtiendo…" : "Convertir a venta"}
+                {saving ? "Converting…" : "Convert to sales order"}
               </Button>
             ) : selected.so_number ? (
               <Link to="/ventas" className="inline-flex min-h-11 items-center text-sm font-medium text-primary underline-offset-2 hover:underline">
