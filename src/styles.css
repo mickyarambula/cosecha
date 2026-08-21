@@ -1,0 +1,76 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Outfit:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #f1ece3;
+  --color-surface: #faf7f1;
+  --color-surface-2: #efe8db;
+  --color-fg: #1c1914;
+  --color-muted: #6d675c;
+  --color-subtle: #8a8376;
+  --color-primary: #1e5b3a;
+  --color-primary-fg: #f6f2ea;
+  --color-border: #ddd4c4;
+  --color-ring: #1e5b3a;
+  --color-ok: #1e5b3a;
+  --color-warn: #c98a2d;
+  --color-danger: #b3402e;
+  --color-paper: #fffdf8;
+  --font-display: "Fraunces", "Times New Roman", serif;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1.125rem;
+  --radius-xl: 1.5rem;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  .doc-toolbar {
+    display: none !important;
+  }
+
+  body {
+    background: #fff !important;
+  }
+
+  .doc-sheet {
+    margin: 0 !important;
+    max-width: none !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+}
