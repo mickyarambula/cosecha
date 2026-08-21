@@ -430,21 +430,87 @@ export const createCustomer = createServerFn({ method: "POST" })
 
 export const listLocations = createServerFn({ method: "GET" }).handler(async () => {
   const sql = await getSql();
-  return sql.query<{ id: number; code: string; name: string; location_type: string }>(
-    `select id, code, name, location_type from locations where is_active order by id`,
+  return sql.query<{
+    id: number;
+    code: string;
+    name: string;
+    location_type: string;
+    city: string | null;
+    owner_kind: string;
+    contact_name: string | null;
+    notes: string | null;
+    lot_qty: string;
+  }>(`
+    select loc.id, loc.code, loc.name, loc.location_type, loc.city, loc.owner_kind, loc.contact_name, loc.notes,
+           coalesce((select sum(quantity) from inventory where location_id = loc.id), 0)::text as lot_qty
+    from locations loc
+    where loc.is_active
+    order by loc.id
+  `).then((rows) =>
+    rows.map((r) => ({ ...r, lot_qty: n(r.lot_qty) })),
   );
 });
 
 export const createLocation = createServerFn({ method: "POST" })
-  .validator(z.object({ name: z.string().min(1), location_type: z.string().default("camara") }))
+  .validator(
+    z.object({
+      name: z.string().min(1),
+      location_type: z.string().default("bodega"),
+      owner_kind: z.string().default("propia"),
+      city: z.string().optional(),
+      contact_name: z.string().optional(),
+      notes: z.string().optional(),
+    }),
+  )
   .handler(async ({ data }) => {
     const sql = await getSql();
-    const code = await nextCode(sql, "locations", "code", "UBI-");
+    const prefix =
+      data.location_type === "camara" ? "CAM-" : data.location_type === "cross_dock" ? "XD-" : data.location_type === "empaque" ? "EMP-" : "BOD-";
+    const code = await nextCode(sql, "locations", "code", prefix);
     const rows = await sql.query<{ id: number }>(
-      `insert into locations (code, name, location_type) values ($1,$2,$3) returning id`,
-      [code, data.name.trim(), data.location_type],
+      `insert into locations (code, name, location_type, city, owner_kind, contact_name, notes)
+       values ($1,$2,$3,$4,$5,$6,$7) returning id`,
+      [
+        code,
+        data.name.trim(),
+        data.location_type,
+        data.city?.trim() || null,
+        data.owner_kind || "propia",
+        data.contact_name?.trim() || null,
+        data.notes?.trim() || null,
+      ],
     );
     return { id: rows[0].id, code };
+  });
+
+export const listValueLists = createServerFn({ method: "GET" }).handler(async () => {
+  const sql = await getSql();
+  const rows = await sql.query<{ id: number; kind: string; value: string; sort_order: number }>(
+    `select id, kind, value, sort_order from value_lists where is_active order by kind, sort_order, value`,
+  );
+  const group = (kind: string) => rows.filter((r) => r.kind === kind);
+  return {
+    empaque: group("empaque"),
+    calibre: group("calibre"),
+    grado: group("grado"),
+  };
+});
+
+export const addValueList = createServerFn({ method: "POST" })
+  .validator(z.object({ kind: z.enum(["empaque", "calibre", "grado"]), value: z.string().min(1) }))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const value = data.value.trim();
+    const [dup] = await sql.query<{ id: number }>(`select id from value_lists where kind = $1 and lower(value) = lower($2)`, [
+      data.kind,
+      value,
+    ]);
+    if (dup) throw new Error(`«${value}» ya está en la lista`);
+    const [max] = await sql.query<{ m: string }>(`select coalesce(max(sort_order),0)::text as m from value_lists where kind = $1`, [
+      data.kind,
+    ]);
+    await sql.query(`insert into value_lists (kind, value, sort_order) values ($1,$2,$3)`, [data.kind, value, n(max?.m) + 1]);
+    return { value };
   });
 
 export type LotRow = {

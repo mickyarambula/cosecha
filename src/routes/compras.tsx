@@ -443,6 +443,7 @@ function Page() {
                   {(locations.data ?? []).map((l) => (
                     <option key={l.id} value={l.id}>
                       {l.name}
+                      {l.city ? ` · ${l.city}` : ""}
                     </option>
                   ))}
                 </Select>

@@ -86,6 +86,19 @@ export const CALIDAD_LABEL: Record<string, string> = {
   destruido: "Destruido",
 };
 
+export const DESTINO_TIPO: Record<string, string> = {
+  camara: "Cámara",
+  bodega: "Bodega",
+  empaque: "Empaque",
+  cross_dock: "Cross-dock",
+};
+
+export const DESTINO_DUENO: Record<string, string> = {
+  propia: "Propia",
+  cliente: "De cliente",
+  proveedor: "De proveedor",
+};
+
 export function skuLabel(s: {
   sku_code?: string | null;
   sku?: string | null;

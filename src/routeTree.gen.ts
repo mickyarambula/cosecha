@@ -15,7 +15,9 @@ import { Route as ComprasRouteImport } from './routes/compras'
 import { Route as CpoRouteImport } from './routes/cpo'
 import { Route as CxcRouteImport } from './routes/cxc'
 import { Route as CxpRouteImport } from './routes/cxp'
+import { Route as DestinosRouteImport } from './routes/destinos'
 import { Route as InventarioRouteImport } from './routes/inventario'
+import { Route as ListasRouteImport } from './routes/listas'
 import { Route as ProductosRouteImport } from './routes/productos'
 import { Route as ProveedoresRouteImport } from './routes/proveedores'
 import { Route as TesoreriaRouteImport } from './routes/tesoreria'
@@ -52,9 +54,19 @@ const CxpRoute = CxpRouteImport.update({
   path: '/cxp',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DestinosRoute = DestinosRouteImport.update({
+  id: '/destinos',
+  path: '/destinos',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const InventarioRoute = InventarioRouteImport.update({
   id: '/inventario',
   path: '/inventario',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ListasRoute = ListasRouteImport.update({
+  id: '/listas',
+  path: '/listas',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProductosRoute = ProductosRouteImport.update({
@@ -90,7 +102,9 @@ export interface FileRoutesByFullPath {
   '/cpo': typeof CpoRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
+  '/destinos': typeof DestinosRoute
   '/inventario': typeof InventarioRoute
+  '/listas': typeof ListasRoute
   '/productos': typeof ProductosRoute
   '/proveedores': typeof ProveedoresRoute
   '/tesoreria': typeof TesoreriaRoute
@@ -104,7 +118,9 @@ export interface FileRoutesByTo {
   '/cpo': typeof CpoRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
+  '/destinos': typeof DestinosRoute
   '/inventario': typeof InventarioRoute
+  '/listas': typeof ListasRoute
   '/productos': typeof ProductosRoute
   '/proveedores': typeof ProveedoresRoute
   '/tesoreria': typeof TesoreriaRoute
@@ -119,7 +135,9 @@ export interface FileRoutesById {
   '/cpo': typeof CpoRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
+  '/destinos': typeof DestinosRoute
   '/inventario': typeof InventarioRoute
+  '/listas': typeof ListasRoute
   '/productos': typeof ProductosRoute
   '/proveedores': typeof ProveedoresRoute
   '/tesoreria': typeof TesoreriaRoute
@@ -135,7 +153,9 @@ export interface FileRouteTypes {
     | '/cpo'
     | '/cxc'
     | '/cxp'
+    | '/destinos'
     | '/inventario'
+    | '/listas'
     | '/productos'
     | '/proveedores'
     | '/tesoreria'
@@ -149,7 +169,9 @@ export interface FileRouteTypes {
     | '/cpo'
     | '/cxc'
     | '/cxp'
+    | '/destinos'
     | '/inventario'
+    | '/listas'
     | '/productos'
     | '/proveedores'
     | '/tesoreria'
@@ -163,7 +185,9 @@ export interface FileRouteTypes {
     | '/cpo'
     | '/cxc'
     | '/cxp'
+    | '/destinos'
     | '/inventario'
+    | '/listas'
     | '/productos'
     | '/proveedores'
     | '/tesoreria'
@@ -178,7 +202,9 @@ export interface RootRouteChildren {
   CpoRoute: typeof CpoRoute
   CxcRoute: typeof CxcRoute
   CxpRoute: typeof CxpRoute
+  DestinosRoute: typeof DestinosRoute
   InventarioRoute: typeof InventarioRoute
+  ListasRoute: typeof ListasRoute
   ProductosRoute: typeof ProductosRoute
   ProveedoresRoute: typeof ProveedoresRoute
   TesoreriaRoute: typeof TesoreriaRoute
@@ -230,11 +256,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CxpRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/destinos': {
+      id: '/destinos'
+      path: '/destinos'
+      fullPath: '/destinos'
+      preLoaderRoute: typeof DestinosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/inventario': {
       id: '/inventario'
       path: '/inventario'
       fullPath: '/inventario'
       preLoaderRoute: typeof InventarioRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/listas': {
+      id: '/listas'
+      path: '/listas'
+      fullPath: '/listas'
+      preLoaderRoute: typeof ListasRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/productos': {
@@ -282,7 +322,9 @@ const rootRouteChildren: RootRouteChildren = {
   CpoRoute: CpoRoute,
   CxcRoute: CxcRoute,
   CxpRoute: CxpRoute,
+  DestinosRoute: DestinosRoute,
   InventarioRoute: InventarioRoute,
+  ListasRoute: ListasRoute,
   ProductosRoute: ProductosRoute,
   ProveedoresRoute: ProveedoresRoute,
   TesoreriaRoute: TesoreriaRoute,

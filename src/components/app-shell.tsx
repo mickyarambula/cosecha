@@ -8,6 +8,8 @@ import {
   Home,
   LayoutDashboard,
   Leaf,
+  List,
+  MapPin,
   Menu,
   Package,
   ShoppingCart,
@@ -63,6 +65,8 @@ const GROUPS: NavGroup[] = [
       { to: "/productos", label: "Productos", icon: Leaf },
       { to: "/proveedores", label: "Proveedores", icon: Boxes },
       { to: "/clientes", label: "Clientes", icon: Users },
+      { to: "/destinos", label: "Destinos", icon: MapPin },
+      { to: "/listas", label: "Listas", icon: List },
     ],
   },
 ];

@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
-import { createProduct, createSku, listProducts } from "@/lib/produce-server";
+import { createProduct, createSku, listProducts, listValueLists } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { qty, skuCodeOf } from "@/lib/utils";
 
@@ -14,6 +14,7 @@ const CALIBRES = ["7 ct", "8 ct", "9 ct", "10 ct", "12 ct", "14 ct", "16 ct", "1
 
 function ProductosPage() {
   const { data, loading, error, reload } = useAsync(() => listProducts(), []);
+  const vocab = useAsync(() => listValueLists(), []);
   const [open, setOpen] = useState(false);
   const [skuFor, setSkuFor] = useState<number | null>(null);
   const [q, setQ] = useState("");
@@ -33,6 +34,10 @@ function ProductosPage() {
   }, [list, q]);
 
   const skuProduct = list.find((p) => p.id === skuFor) ?? null;
+  const empaques = (vocab.data?.empaque ?? []).map((r) => r.value);
+  const calibres = (vocab.data?.calibre ?? []).map((r) => r.value);
+  const empOpts = empaques.length ? empaques : EMPAQUES;
+  const calOpts = calibres.length ? calibres : CALIBRES;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -204,14 +209,14 @@ function ProductosPage() {
           >
             <Field label="Empaque">
               <Select value={skuForm.empaque} onChange={(e) => setSkuForm({ ...skuForm, empaque: e.target.value })}>
-                {EMPAQUES.map((e) => (
+                {empOpts.map((e) => (
                   <option key={e}>{e}</option>
                 ))}
               </Select>
             </Field>
             <Field label="Calibre">
               <Select value={skuForm.calibre} onChange={(e) => setSkuForm({ ...skuForm, calibre: e.target.value })}>
-                {CALIBRES.map((c) => (
+                {calOpts.map((c) => (
                   <option key={c}>{c}</option>
                 ))}
               </Select>

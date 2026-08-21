@@ -6,7 +6,7 @@ El producto se llama **Cosecha**. Los documentos que salen al cliente/proveedor 
 
 ## Qué cubre hoy
 
-- Catálogos: matriz SKU Papaya × empaque × calibre; contraparte dual proveedor/cliente
+- Catálogos: matriz SKU, contrapartes duales, destinos (McAllen/Nogales) y listas de empaque/calibre
 - Customer PO: captura el PO del cliente (N° Northgate, adjunto Drive) y lo convierte a OV
 - Ventas: tablero Pedido / Despachado / Comprado / Open · Generar compra al grower
 - Compras: OC ligada a la OV → recepción PACA (Aceptada / incidencia / Rechazada) → lote sano o retenido
