@@ -53,3 +53,12 @@ export function qualityTone(state: string | null | undefined) {
 export function qualityLabel(state: string | null | undefined) {
   return CALIDAD_LABEL[(state || "sano").toLowerCase()] ?? state ?? "Sano";
 }
+
+export function RoleBadges({ proveedor, cliente }: { proveedor?: boolean; cliente?: boolean }) {
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {proveedor ? <Badge tone="ok">Proveedor</Badge> : null}
+      {cliente ? <Badge>Cliente</Badge> : null}
+    </span>
+  );
+}

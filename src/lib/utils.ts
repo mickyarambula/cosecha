@@ -51,7 +51,6 @@ export function fecha(f: string | null | undefined): string {
   return d.toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "2-digit" });
 }
 
-
 export function todayISO(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -86,3 +85,33 @@ export const CALIDAD_LABEL: Record<string, string> = {
   castigado: "Castigado",
   destruido: "Destruido",
 };
+
+export function skuLabel(s: {
+  sku_code?: string | null;
+  sku?: string | null;
+  product_name?: string | null;
+  name?: string | null;
+  variety?: string | null;
+  empaque?: string | null;
+  calibre?: string | null;
+}): string {
+  const code = s.sku_code || s.sku || "";
+  const name = [s.product_name || s.name, s.variety].filter(Boolean).join(" ");
+  const spec = [s.empaque, s.calibre].filter(Boolean).join(" · ");
+  return [code, name, spec].filter(Boolean).join(" · ");
+}
+
+export function skuCodeOf(productSku: string, empaque: string, calibre: string): string {
+  const prefix = (productSku.split("-")[0] || "SKU").toUpperCase();
+  const empKey = empaque.trim().toLowerCase();
+  const empMap: Record<string, string> = {
+    carton: "CARTON",
+    clamshell: "CLAM",
+    "plastic crate": "CRATE",
+    crate: "CRATE",
+    caja: "CAJA",
+  };
+  const emp = empMap[empKey] || empaque.replace(/[^a-zA-Z0-9]+/g, "").toUpperCase().slice(0, 10);
+  const cal = calibre.replace(/[^a-zA-Z0-9]+/g, "").toUpperCase();
+  return `${prefix}-${emp}-${cal}`;
+}

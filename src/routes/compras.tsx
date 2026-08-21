@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal, Kpi } from "@/components/app-shell";
-import { Badge, orderLabel, orderTone, qualityLabel, qualityTone } from "@/components/ui/badge";
+import { packsToSkus, SkuSelect } from "@/components/sku-select";
+import { Badge, orderLabel, orderTone, qualityLabel } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import {
@@ -50,6 +51,7 @@ function Page() {
   const products = useAsync(() => listProducts(), []);
   const suppliers = useAsync(() => listSuppliers(), []);
   const locations = useAsync(() => listLocations(), []);
+  const skus = packsToSkus(products.data ?? []);
   const [open, setOpen] = useState(false);
   const [recvPo, setRecvPo] = useState<number | null>(null);
   const [form, setForm] = useState({
@@ -57,6 +59,7 @@ function Page() {
     expected_date: "",
     notes: "",
     product_id: "",
+    pack_style_id: "",
     qty: "",
     unit_cost: "",
     unit: "caja",
@@ -90,7 +93,6 @@ function Page() {
     setSaving(true);
     setMsg(null);
     try {
-      const product = (products.data ?? []).find((p) => p.id === Number(form.product_id));
       const r = await createPurchaseOrder({
         data: {
           supplier_id: Number(form.supplier_id),
@@ -99,7 +101,7 @@ function Page() {
           lines: [
             {
               product_id: Number(form.product_id),
-              pack_style_id: product?.packs[0]?.id,
+              pack_style_id: form.pack_style_id ? Number(form.pack_style_id) : undefined,
               quantity_ordered: Number(form.qty),
               unit: form.unit,
               unit_cost: form.unit_cost ? Number(form.unit_cost) : undefined,
@@ -326,7 +328,10 @@ function Page() {
                   return (
                     <div key={line.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-2 px-3 py-2 text-sm">
                       <span>
-                        {line.product_name} · {qty(line.quantity_received, line.unit)} / {qty(line.quantity_ordered, line.unit)}
+                        {line.sku_code || line.product_name}
+                        {line.calibre ? ` · ${line.calibre}` : ""}
+                        {" · "}
+                        {qty(line.quantity_received, line.unit)} / {qty(line.quantity_ordered, line.unit)}
                         {line.unit_cost ? ` · ${money(line.unit_cost)}` : ""}
                       </span>
                       {rest > 0.0001 ? (
@@ -389,16 +394,19 @@ function Page() {
                 ))}
               </Select>
             </Field>
-            <Field label="Producto">
-              <Select required value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })}>
-                <option value="">Seleccionar</option>
-                {(products.data ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} {p.variety ?? ""}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            <SkuSelect
+              required
+              value={form.pack_style_id}
+              skus={skus}
+              onPick={(sku) =>
+                setForm({
+                  ...form,
+                  pack_style_id: sku ? String(sku.id) : "",
+                  product_id: sku ? String(sku.product_id) : "",
+                  unit: sku?.unit || form.unit,
+                })
+              }
+            />
             <div className="grid grid-cols-2 gap-3">
               <Field label="Cantidad">
                 <Input required type="number" min="0.01" step="0.01" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />

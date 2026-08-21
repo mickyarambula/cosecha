@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSql } from "@/lib/db";
-import { addDaysISO, num, termsDays, todayISO } from "@/lib/utils";
+import { addDaysISO, num, skuCodeOf, termsDays, todayISO } from "@/lib/utils";
 
 function n(v: unknown) {
   return num(v);
@@ -215,7 +215,11 @@ export const listProducts = createServerFn({ method: "GET" }).handler(async () =
     net_weight: string | null;
     weight_unit: string;
     is_default: boolean;
-  }>(`select id, product_id, name, unit_of_measure, net_weight::text, weight_unit, is_default from pack_styles order by id`);
+    sku_code: string | null;
+    empaque: string | null;
+    calibre: string | null;
+  }>(`select id, product_id, name, unit_of_measure, net_weight::text, weight_unit, is_default,
+           sku_code, empaque, calibre from pack_styles order by id`);
   return products.map((p) => ({
     ...p,
     packs: packs
@@ -247,11 +251,49 @@ export const createProduct = createServerFn({ method: "POST" })
     const id = rows[0].id;
     const packName = data.pack_name?.trim() || `Caja ${data.default_unit}`;
     await sql.query(
-      `insert into pack_styles (product_id, name, unit_of_measure, net_weight, is_default)
-       values ($1,$2,$3,$4,true)`,
-      [id, packName, data.default_unit, data.net_weight ?? null],
+      `insert into pack_styles (product_id, name, unit_of_measure, net_weight, is_default, sku_code)
+       values ($1,$2,$3,$4,true,$5)`,
+      [id, packName, data.default_unit, data.net_weight ?? null, sku],
     );
     return { id, sku };
+  });
+
+export const createSku = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      product_id: z.number(),
+      empaque: z.string().min(1),
+      calibre: z.string().min(1),
+      net_weight: z.number().optional(),
+      weight_unit: z.string().default("lb"),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [p] = await sql.query<{ id: number; sku: string; default_unit: string }>(
+      `select id, sku, default_unit from products where id = $1`,
+      [data.product_id],
+    );
+    if (!p) throw new Error("Producto no encontrado");
+    const sku_code = skuCodeOf(p.sku, data.empaque, data.calibre);
+    const [dup] = await sql.query<{ id: number }>(`select id from pack_styles where sku_code = $1`, [sku_code]);
+    if (dup) throw new Error(`Ya existe el SKU ${sku_code}`);
+    const name = `${data.empaque} ${data.calibre}`;
+    const rows = await sql.query<{ id: number }>(
+      `insert into pack_styles (product_id, name, unit_of_measure, net_weight, weight_unit, is_default, sku_code, empaque, calibre)
+       values ($1,$2,$3,$4,$5,false,$6,$7,$8) returning id`,
+      [
+        p.id,
+        name,
+        p.default_unit,
+        data.net_weight ?? null,
+        data.weight_unit || "lb",
+        sku_code,
+        data.empaque.trim(),
+        data.calibre.trim(),
+      ],
+    );
+    return { id: rows[0].id, sku_code };
   });
 
 export const listSuppliers = createServerFn({ method: "GET" }).handler(async () => {
@@ -266,7 +308,14 @@ export const listSuppliers = createServerFn({ method: "GET" }).handler(async () 
     country: string | null;
     notes: string | null;
     is_active: boolean;
-  }>(`select id, code, name, contact_name, phone, city, country, notes, is_active from suppliers order by name`);
+    es_proveedor: boolean;
+    es_cliente: boolean;
+    linked_customer_id: number | null;
+  }>(`select id, code, name, contact_name, phone, city, country, notes, is_active,
+           coalesce(es_proveedor, true) as es_proveedor,
+           coalesce(es_cliente, false) as es_cliente,
+           linked_customer_id
+    from suppliers order by name`);
 });
 
 export const createSupplier = createServerFn({ method: "POST" })
@@ -278,17 +327,39 @@ export const createSupplier = createServerFn({ method: "POST" })
       city: z.string().optional(),
       country: z.string().optional(),
       notes: z.string().optional(),
+      tambien_cliente: z.boolean().optional(),
     }),
   )
   .handler(async ({ data }) => {
     const sql = await getSql();
     const code = await nextCode(sql, "suppliers", "code", "PRO-");
     const rows = await sql.query<{ id: number }>(
-      `insert into suppliers (code, name, contact_name, phone, city, country, notes)
-       values ($1,$2,$3,$4,$5,$6,$7) returning id`,
-      [code, data.name.trim(), data.contact_name || null, data.phone || null, data.city || null, data.country || null, data.notes || null],
+      `insert into suppliers (code, name, contact_name, phone, city, country, notes, es_proveedor, es_cliente)
+       values ($1,$2,$3,$4,$5,$6,$7,true,$8) returning id`,
+      [
+        code,
+        data.name.trim(),
+        data.contact_name || null,
+        data.phone || null,
+        data.city || null,
+        data.country || null,
+        data.notes || null,
+        Boolean(data.tambien_cliente),
+      ],
     );
-    return { id: rows[0].id, code };
+    const id = rows[0].id;
+    let customer_code: string | null = null;
+    if (data.tambien_cliente) {
+      const customer_code_n = await nextCode(sql, "customers", "code", "CLI-");
+      const cust = await sql.query<{ id: number }>(
+        `insert into customers (code, name, contact_name, phone, city, payment_terms, notes, es_cliente, es_proveedor, linked_supplier_id)
+         values ($1,$2,$3,$4,$5,'Net 14',$6,true,true,$7) returning id`,
+        [customer_code_n, data.name.trim(), data.contact_name || null, data.phone || null, data.city || null, data.notes || null, id],
+      );
+      await sql.query(`update suppliers set linked_customer_id = $1 where id = $2`, [cust[0].id, id]);
+      customer_code = customer_code_n;
+    }
+    return { id, code, customer_code };
   });
 
 export const listCustomers = createServerFn({ method: "GET" }).handler(async () => {
@@ -303,7 +374,14 @@ export const listCustomers = createServerFn({ method: "GET" }).handler(async () 
     payment_terms: string | null;
     notes: string | null;
     is_active: boolean;
-  }>(`select id, code, name, contact_name, phone, city, payment_terms, notes, is_active from customers order by name`);
+    es_cliente: boolean;
+    es_proveedor: boolean;
+    linked_supplier_id: number | null;
+  }>(`select id, code, name, contact_name, phone, city, payment_terms, notes, is_active,
+           coalesce(es_cliente, true) as es_cliente,
+           coalesce(es_proveedor, false) as es_proveedor,
+           linked_supplier_id
+    from customers order by name`);
 });
 
 export const createCustomer = createServerFn({ method: "POST" })
@@ -315,17 +393,39 @@ export const createCustomer = createServerFn({ method: "POST" })
       city: z.string().optional(),
       payment_terms: z.string().optional(),
       notes: z.string().optional(),
+      tambien_proveedor: z.boolean().optional(),
     }),
   )
   .handler(async ({ data }) => {
     const sql = await getSql();
     const code = await nextCode(sql, "customers", "code", "CLI-");
     const rows = await sql.query<{ id: number }>(
-      `insert into customers (code, name, contact_name, phone, city, payment_terms, notes)
-       values ($1,$2,$3,$4,$5,$6,$7) returning id`,
-      [code, data.name.trim(), data.contact_name || null, data.phone || null, data.city || null, data.payment_terms || null, data.notes || null],
+      `insert into customers (code, name, contact_name, phone, city, payment_terms, notes, es_cliente, es_proveedor)
+       values ($1,$2,$3,$4,$5,$6,$7,true,$8) returning id`,
+      [
+        code,
+        data.name.trim(),
+        data.contact_name || null,
+        data.phone || null,
+        data.city || null,
+        data.payment_terms || null,
+        data.notes || null,
+        Boolean(data.tambien_proveedor),
+      ],
     );
-    return { id: rows[0].id, code };
+    const id = rows[0].id;
+    let supplier_code: string | null = null;
+    if (data.tambien_proveedor) {
+      const supplier_code_n = await nextCode(sql, "suppliers", "code", "PRO-");
+      const sup = await sql.query<{ id: number }>(
+        `insert into suppliers (code, name, contact_name, phone, city, country, notes, es_proveedor, es_cliente, linked_customer_id)
+         values ($1,$2,$3,$4,$5,'México',$6,true,true,$7) returning id`,
+        [supplier_code_n, data.name.trim(), data.contact_name || null, data.phone || null, data.city || null, data.notes || null, id],
+      );
+      await sql.query(`update customers set linked_supplier_id = $1 where id = $2`, [sup[0].id, id]);
+      supplier_code = supplier_code_n;
+    }
+    return { id, code, supplier_code };
   });
 
 export const listLocations = createServerFn({ method: "GET" }).handler(async () => {
@@ -521,10 +621,16 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).handler(asyn
     quantity_received: string;
     unit: string;
     unit_cost: string | null;
+    sku_code: string | null;
+    empaque: string | null;
+    calibre: string | null;
   }>(`
     select l.id, l.purchase_order_id, l.product_id, p.name as product_name, l.pack_style_id,
-           l.quantity_ordered::text, l.quantity_received::text, l.unit, l.unit_cost::text
-    from purchase_order_lines l join products p on p.id = l.product_id
+           l.quantity_ordered::text, l.quantity_received::text, l.unit, l.unit_cost::text,
+           ps.sku_code, ps.empaque, ps.calibre
+    from purchase_order_lines l
+    join products p on p.id = l.product_id
+    left join pack_styles ps on ps.id = l.pack_style_id
   `);
   const recs = await sql.query<{
     id: number;
@@ -848,23 +954,30 @@ export const listSalesOrders = createServerFn({ method: "GET" }).handler(async (
     unit: string;
     unit_price: string | null;
     unit_cost: string | null;
+    pack_style_id: number | null;
+    sku_code: string | null;
+    empaque: string | null;
+    calibre: string | null;
+    variety: string | null;
   }>(`
-    select l.id, l.sales_order_id, l.product_id, p.name as product_name, l.lot_id,
+    select l.id, l.sales_order_id, l.product_id, p.name as product_name, p.variety, l.lot_id,
            lots.lot_number, l.quantity_ordered::text, l.quantity_shipped::text, l.unit,
-           l.unit_price::text, lots.unit_cost::text
+           l.unit_price::text, lots.unit_cost::text, l.pack_style_id,
+           ps.sku_code, ps.empaque, ps.calibre
     from sales_order_lines l
     join products p on p.id = l.product_id
     left join lots on lots.id = l.lot_id
+    left join pack_styles ps on ps.id = l.pack_style_id
   `);
   const invoices = await sql.query<{ sales_order_id: number; invoice_number: string; status: string; id: number }>(
     `select id, sales_order_id, invoice_number, status from invoices where sales_order_id is not null`,
   );
-  const purchased = await sql.query<{ sales_order_id: number; product_id: number; qty: string }>(`
-    select po.sales_order_id, l.product_id, coalesce(sum(l.quantity_ordered), 0)::text as qty
+  const purchased = await sql.query<{ sales_order_id: number; product_id: number; pack_style_id: number | null; qty: string }>(`
+    select po.sales_order_id, l.product_id, l.pack_style_id, coalesce(sum(l.quantity_ordered), 0)::text as qty
     from purchase_orders po
     join purchase_order_lines l on l.purchase_order_id = po.id
     where po.sales_order_id is not null
-    group by po.sales_order_id, l.product_id
+    group by po.sales_order_id, l.product_id, l.pack_style_id
   `);
   const linkedPos = await sql.query<{ id: number; po_number: string; sales_order_id: number }>(
     `select id, po_number, sales_order_id from purchase_orders where sales_order_id is not null`,
@@ -878,7 +991,14 @@ export const listSalesOrders = createServerFn({ method: "GET" }).handler(async (
       .map((l) => {
         const required = n(l.quantity_ordered);
         const allocated = n(l.quantity_shipped);
-        const bought = n(purchased.find((p) => p.sales_order_id === o.id && p.product_id === l.product_id)?.qty);
+        const bought = n(
+          purchased.find(
+            (p) =>
+              p.sales_order_id === o.id &&
+              p.product_id === l.product_id &&
+              (l.pack_style_id == null || p.pack_style_id === l.pack_style_id),
+          )?.qty,
+        );
         return {
           ...l,
           quantity_ordered: required,
@@ -904,6 +1024,7 @@ export const createSalesOrder = createServerFn({ method: "POST" })
         .array(
           z.object({
             product_id: z.number(),
+            pack_style_id: z.number().optional(),
             lot_id: z.number().optional(),
             quantity_ordered: z.number().positive(),
             unit: z.string(),
@@ -924,9 +1045,9 @@ export const createSalesOrder = createServerFn({ method: "POST" })
     const id = rows[0].id;
     for (const line of data.lines) {
       await sql.query(
-        `insert into sales_order_lines (sales_order_id, product_id, lot_id, quantity_ordered, unit, unit_price)
-         values ($1,$2,$3,$4,$5,$6)`,
-        [id, line.product_id, line.lot_id ?? null, line.quantity_ordered, line.unit, line.unit_price ?? null],
+        `insert into sales_order_lines (sales_order_id, product_id, lot_id, quantity_ordered, unit, unit_price, pack_style_id)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, line.product_id, line.lot_id ?? null, line.quantity_ordered, line.unit, line.unit_price ?? null, line.pack_style_id ?? null],
       );
     }
     return { id, so_number };
@@ -965,10 +1086,18 @@ export const listCustomerPOs = createServerFn({ method: "GET" }).handler(async (
     unit: string;
     unit_price: string | null;
     notes: string | null;
+    pack_style_id: number | null;
+    sku_code: string | null;
+    empaque: string | null;
+    calibre: string | null;
+    variety: string | null;
   }>(`
-    select l.id, l.customer_po_id, l.product_id, p.name as product_name,
-           l.quantity::text, l.unit, l.unit_price::text, l.notes
-    from customer_po_lines l join products p on p.id = l.product_id
+    select l.id, l.customer_po_id, l.product_id, p.name as product_name, p.variety,
+           l.quantity::text, l.unit, l.unit_price::text, l.notes, l.pack_style_id,
+           ps.sku_code, ps.empaque, ps.calibre
+    from customer_po_lines l
+    join products p on p.id = l.product_id
+    left join pack_styles ps on ps.id = l.pack_style_id
   `);
   return orders.map((o) => ({
     ...o,
@@ -991,6 +1120,7 @@ export const createCustomerPO = createServerFn({ method: "POST" })
         .array(
           z.object({
             product_id: z.number(),
+            pack_style_id: z.number().optional(),
             quantity: z.number().positive(),
             unit: z.string(),
             unit_price: z.number().optional(),
@@ -1021,9 +1151,9 @@ export const createCustomerPO = createServerFn({ method: "POST" })
     const id = rows[0].id;
     for (const line of data.lines) {
       await sql.query(
-        `insert into customer_po_lines (customer_po_id, product_id, quantity, unit, unit_price, notes)
-         values ($1,$2,$3,$4,$5,$6)`,
-        [id, line.product_id, line.quantity, line.unit, line.unit_price ?? null, line.notes || null],
+        `insert into customer_po_lines (customer_po_id, product_id, quantity, unit, unit_price, notes, pack_style_id)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, line.product_id, line.quantity, line.unit, line.unit_price ?? null, line.notes || null, line.pack_style_id ?? null],
       );
     }
     return { id, cpo_number };
@@ -1058,9 +1188,11 @@ export const convertCustomerPOToSO = createServerFn({ method: "POST" })
       quantity: string;
       unit: string;
       unit_price: string | null;
-    }>(`select product_id, quantity::text, unit, unit_price::text from customer_po_lines where customer_po_id = $1`, [
-      cpo.id,
-    ]);
+      pack_style_id: number | null;
+    }>(
+      `select product_id, quantity::text, unit, unit_price::text, pack_style_id from customer_po_lines where customer_po_id = $1`,
+      [cpo.id],
+    );
     if (!lines.length) throw new Error("El Customer PO no tiene líneas");
 
     const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
@@ -1075,9 +1207,9 @@ export const convertCustomerPOToSO = createServerFn({ method: "POST" })
     const id = rows[0].id;
     for (const line of lines) {
       await sql.query(
-        `insert into sales_order_lines (sales_order_id, product_id, quantity_ordered, unit, unit_price)
-         values ($1,$2,$3,$4,$5)`,
-        [id, line.product_id, n(line.quantity), line.unit, n(line.unit_price) || null],
+        `insert into sales_order_lines (sales_order_id, product_id, quantity_ordered, unit, unit_price, pack_style_id)
+         values ($1,$2,$3,$4,$5,$6)`,
+        [id, line.product_id, n(line.quantity), line.unit, n(line.unit_price) || null, line.pack_style_id],
       );
     }
     await sql.query(`update customer_pos set status = 'converted' where id = $1`, [cpo.id]);
@@ -1106,26 +1238,31 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
       product_name: string;
       quantity_ordered: string;
       unit: string;
+      pack_style_id: number | null;
     }>(
-      `select l.product_id, p.name as product_name, l.quantity_ordered::text, l.unit
+      `select l.product_id, p.name as product_name, l.quantity_ordered::text, l.unit, l.pack_style_id
        from sales_order_lines l join products p on p.id = l.product_id
        where l.sales_order_id = $1`,
       [data.sales_order_id],
     );
     if (!lines.length) throw new Error("La venta no tiene líneas");
 
-    const bought = await sql.query<{ product_id: number; qty: string }>(
-      `select l.product_id, coalesce(sum(l.quantity_ordered),0)::text as qty
+    const bought = await sql.query<{ product_id: number; pack_style_id: number | null; qty: string }>(
+      `select l.product_id, l.pack_style_id, coalesce(sum(l.quantity_ordered),0)::text as qty
        from purchase_orders po
        join purchase_order_lines l on l.purchase_order_id = po.id
        where po.sales_order_id = $1
-       group by l.product_id`,
+       group by l.product_id, l.pack_style_id`,
       [data.sales_order_id],
     );
 
     const toBuy = lines
       .map((l) => {
-        const already = n(bought.find((b) => b.product_id === l.product_id)?.qty);
+        const already = n(
+          bought.find(
+            (b) => b.product_id === l.product_id && (l.pack_style_id == null || b.pack_style_id === l.pack_style_id),
+          )?.qty,
+        );
         return { ...l, remaining: n(l.quantity_ordered) - already };
       })
       .filter((l) => l.remaining > 0.0001);
@@ -1139,14 +1276,18 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
     );
     const id = rows[0].id;
     for (const line of toBuy) {
-      const [pack] = await sql.query<{ id: number }>(
-        `select id from pack_styles where product_id = $1 order by is_default desc, id limit 1`,
-        [line.product_id],
-      );
+      let packId = line.pack_style_id;
+      if (!packId) {
+        const [pack] = await sql.query<{ id: number }>(
+          `select id from pack_styles where product_id = $1 order by is_default desc, id limit 1`,
+          [line.product_id],
+        );
+        packId = pack?.id ?? null;
+      }
       await sql.query(
         `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost)
          values ($1,$2,$3,$4,$5,$6)`,
-        [id, line.product_id, pack?.id ?? null, line.remaining, line.unit, data.unit_cost],
+        [id, line.product_id, packId, line.remaining, line.unit, data.unit_cost],
       );
     }
     return { id, po_number, so_number: so.so_number };

@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Kpi, Modal, PageHeader, Panel } from "@/components/app-shell";
+import { packsToSkus, SkuSelect } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
@@ -12,20 +13,21 @@ import {
   listProducts,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { fecha, money, qty, todayISO } from "@/lib/utils";
+import { fecha, money, qty, skuLabel, todayISO } from "@/lib/utils";
 
 export const Route = createFileRoute("/cpo")({ component: Page });
 
-type LineDraft = { product_id: string; qty: string; unit: string; unit_price: string };
+type LineDraft = { product_id: string; pack_style_id: string; qty: string; unit: string; unit_price: string };
 
 function emptyLine(): LineDraft {
-  return { product_id: "", qty: "", unit: "caja", unit_price: "" };
+  return { product_id: "", pack_style_id: "", qty: "", unit: "caja", unit_price: "" };
 }
 
 function Page() {
   const cpos = useAsync(() => listCustomerPOs(), []);
   const customers = useAsync(() => listCustomers(), []);
   const products = useAsync(() => listProducts(), []);
+  const skus = packsToSkus(products.data ?? []);
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<number | null>(null);
   const [q, setQ] = useState("");
@@ -86,6 +88,7 @@ function Page() {
           notes: form.notes || undefined,
           lines: ready.map((l) => ({
             product_id: Number(l.product_id),
+            pack_style_id: l.pack_style_id ? Number(l.pack_style_id) : undefined,
             quantity: Number(l.qty),
             unit: l.unit || "caja",
             unit_price: l.unit_price ? Number(l.unit_price) : undefined,
@@ -267,29 +270,25 @@ function Page() {
                 {lines.map((line, i) => (
                   <div key={i} className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-4">
                     <div className="sm:col-span-2">
-                      <Field label="Producto">
-                        <Select
-                          required
-                          value={line.product_id}
-                          onChange={(e) => {
-                            const product = (products.data ?? []).find((p) => p.id === Number(e.target.value));
-                            setLines((prev) =>
-                              prev.map((l, idx) =>
-                                idx === i
-                                  ? { ...l, product_id: e.target.value, unit: product?.default_unit || l.unit }
-                                  : l,
-                              ),
-                            );
-                          }}
-                        >
-                          <option value="">Seleccionar</option>
-                          {(products.data ?? []).map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name} {p.variety ?? ""}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
+                      <SkuSelect
+                        required
+                        value={line.pack_style_id}
+                        skus={skus}
+                        onPick={(sku) => {
+                          setLines((prev) =>
+                            prev.map((l, idx) =>
+                              idx === i
+                                ? {
+                                    ...l,
+                                    pack_style_id: sku ? String(sku.id) : "",
+                                    product_id: sku ? String(sku.product_id) : "",
+                                    unit: sku?.unit || l.unit,
+                                  }
+                                : l,
+                            ),
+                          );
+                        }}
+                      />
                     </div>
                     <Field label="Cantidad">
                       <Input
@@ -389,7 +388,7 @@ function Page() {
             <table className="w-full text-left text-sm">
               <thead className="border-b border-border text-xs uppercase tracking-wide text-muted">
                 <tr>
-                  <th className="py-2 font-medium">Producto</th>
+                  <th className="py-2 font-medium">SKU</th>
                   <th className="py-2 text-right font-medium">Cantidad</th>
                   <th className="py-2 text-right font-medium">Precio</th>
                 </tr>
@@ -397,7 +396,14 @@ function Page() {
               <tbody>
                 {selected.lines.map((l) => (
                   <tr key={l.id} className="border-b border-border last:border-0">
-                    <td className="py-2">{l.product_name}</td>
+                    <td className="py-2">
+                      <span className="font-mono text-xs">{l.sku_code || l.product_name}</span>
+                      {l.calibre || l.empaque ? (
+                        <span className="block text-xs text-muted">{skuLabel({ name: l.product_name, variety: l.variety, empaque: l.empaque, calibre: l.calibre })}</span>
+                      ) : (
+                        <span className="block text-xs text-muted">{l.product_name}</span>
+                      )}
+                    </td>
                     <td className="py-2 text-right tabular-nums">{qty(l.quantity, l.unit)}</td>
                     <td className="py-2 text-right tabular-nums">{l.unit_price ? money(l.unit_price) : "—"}</td>
                   </tr>

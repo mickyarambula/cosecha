@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { PageHeader, Panel, Modal } from "@/components/app-shell";
+import { packsToSkus, SkuSelect } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone, qualityLabel } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
@@ -29,13 +30,14 @@ function Page() {
   const [open, setOpen] = useState(false);
   const [ship, setShip] = useState<{ line_id: number; product_id: number; pending: number; unit: string } | null>(null);
   const [buy, setBuy] = useState<{ so_id: number; so_number: string; openQty: number } | null>(null);
-  const [form, setForm] = useState({ customer_id: "", product_id: "", lot_id: "", qty: "", unit_price: "", unit: "caja" });
+  const [form, setForm] = useState({ customer_id: "", product_id: "", pack_style_id: "", lot_id: "", qty: "", unit_price: "", unit: "caja" });
   const [shipForm, setShipForm] = useState({ quantity: "", lot_id: "", location_id: "" });
   const [buyForm, setBuyForm] = useState({ supplier_id: "", unit_cost: "" });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   const allLots = lots.data ?? [];
+  const skus = packsToSkus(products.data ?? []);
   const availableLots = allLots.filter(
     (l) => l.asignable && (!form.product_id || l.product_id === Number(form.product_id)),
   );
@@ -54,6 +56,7 @@ function Page() {
           lines: [
             {
               product_id: Number(form.product_id),
+              pack_style_id: form.pack_style_id ? Number(form.pack_style_id) : undefined,
               lot_id: form.lot_id ? Number(form.lot_id) : undefined,
               quantity_ordered: Number(form.qty),
               unit: form.unit,
@@ -214,7 +217,10 @@ function Page() {
                       return (
                         <tr key={line.id} className="border-b border-border last:border-0">
                           <td className="py-2 pr-3">
-                            {line.product_name}
+                            <span className="font-mono text-xs">{line.sku_code || line.product_name}</span>
+                            <span className="block text-xs text-muted">
+                              {line.calibre ? `${line.product_name} · ${line.empaque ?? ""} ${line.calibre}` : line.product_name}
+                            </span>
                             {line.lot_number ? <span className="block font-mono text-[11px] text-muted">{line.lot_number}</span> : null}
                           </td>
                           <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">{qty(line.required, line.unit)}</td>
@@ -292,16 +298,20 @@ function Page() {
                 ))}
               </Select>
             </Field>
-            <Field label="Producto">
-              <Select required value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value, lot_id: "" })}>
-                <option value="">Seleccionar</option>
-                {(products.data ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            <SkuSelect
+              required
+              value={form.pack_style_id}
+              skus={skus}
+              onPick={(sku) =>
+                setForm({
+                  ...form,
+                  pack_style_id: sku ? String(sku.id) : "",
+                  product_id: sku ? String(sku.product_id) : "",
+                  unit: sku?.unit || form.unit,
+                  lot_id: "",
+                })
+              }
+            />
             <Field label="Lote sano (opcional)">
               <Select value={form.lot_id} onChange={(e) => setForm({ ...form, lot_id: e.target.value })}>
                 <option value="">Asignar al despachar</option>

@@ -6,7 +6,7 @@ El producto se llama **Cosecha**. Los documentos que salen al cliente/proveedor 
 
 ## Qué cubre hoy
 
-- Catálogos: productos, proveedores, clientes
+- Catálogos: matriz SKU Papaya × empaque × calibre; contraparte dual proveedor/cliente
 - Customer PO: captura el PO del cliente (N° Northgate, adjunto Drive) y lo convierte a OV
 - Ventas: tablero Pedido / Despachado / Comprado / Open · Generar compra al grower
 - Compras: OC ligada a la OV → recepción PACA (Aceptada / incidencia / Rechazada) → lote sano o retenido
@@ -25,14 +25,16 @@ Sin `DATABASE_URL` corre Postgres embebido (PGLite) con semilla de demo. En prod
 
 ## Semilla para probar
 
-1. Customer PO → **CPO-2608-001** Northgate **NGM247514**: Convertir a venta.
-2. Ventas: tablero RAPO 1,056 open → **Generar compra** a Papayas & More.
-3. Compras: la OC nueva (ligada a la OV) → recibir con incidencia.
-4. Inventario: lote Sano + lote Retenido. El retenido no se vende.
-5. Ventas: despachar solo el sano → Facturar.
-6. CxC: **Documento** abre la Invoice; cobrar.
-7. CxP: capturar factura del proveedor y pagar.
-8. Tesorería: cobro y pago en caja.
+1. Productos → Papaya Maradol: **PAP-CARTON-10CT** en la matriz (Carton / Clamshell / Crate × 7–18 ct).
+2. Proveedores y Clientes → **Papayas & More** es dual (te vende y te compra).
+3. Customer PO → **CPO-2608-001** Northgate **NGM247514**: Convertir a venta.
+4. Ventas: tablero RAPO 1,056 open → **Generar compra** a Papayas & More.
+5. Compras: la OC nueva (ligada a la OV) → recibir con incidencia.
+6. Inventario: lote Sano + lote Retenido. El retenido no se vende.
+7. Ventas: despachar solo el sano → Facturar.
+8. CxC: **Documento** abre la Invoice; cobrar.
+9. CxP: capturar factura del proveedor y pagar.
+10. Tesorería: cobro y pago en caja.
 
 ## Repo
 

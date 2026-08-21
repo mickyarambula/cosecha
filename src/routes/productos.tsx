@@ -1,23 +1,43 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
-import { createProduct, listProducts } from "@/lib/produce-server";
+import { createProduct, createSku, listProducts } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { qty } from "@/lib/utils";
+import { qty, skuCodeOf } from "@/lib/utils";
 
 export const Route = createFileRoute("/productos")({ component: ProductosPage });
+
+const EMPAQUES = ["Carton", "Clamshell", "Plastic Crate", "Caja"];
+const CALIBRES = ["7 ct", "8 ct", "9 ct", "10 ct", "12 ct", "14 ct", "16 ct", "18 ct"];
 
 function ProductosPage() {
   const { data, loading, error, reload } = useAsync(() => listProducts(), []);
   const [open, setOpen] = useState(false);
+  const [skuFor, setSkuFor] = useState<number | null>(null);
+  const [q, setQ] = useState("");
   const [form, setForm] = useState({ name: "", variety: "", category: "Fruta", default_unit: "caja", sku: "", pack_name: "", net_weight: "" });
+  const [skuForm, setSkuForm] = useState({ empaque: "Carton", calibre: "10 ct", net_weight: "35" });
   const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const list = data ?? [];
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return list;
+    return list.filter((p) => {
+      const blob = `${p.sku} ${p.name} ${p.variety ?? ""} ${p.packs.map((k) => `${k.sku_code ?? ""} ${k.calibre ?? ""} ${k.empaque ?? ""}`).join(" ")}`.toLowerCase();
+      return blob.includes(s);
+    });
+  }, [list, q]);
+
+  const skuProduct = list.find((p) => p.id === skuFor) ?? null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setMsg(null);
     try {
       await createProduct({
         data: {
@@ -33,6 +53,31 @@ function ProductosPage() {
       setOpen(false);
       setForm({ name: "", variety: "", category: "Fruta", default_unit: "caja", sku: "", pack_name: "", net_weight: "" });
       await reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "No se pudo crear");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addSku(productId: number, empaque: string, calibre: string, net_weight?: number) {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await createSku({
+        data: {
+          product_id: productId,
+          empaque,
+          calibre,
+          net_weight,
+          weight_unit: "lb",
+        },
+      });
+      setMsg(`SKU ${r.sku_code} creado`);
+      setSkuFor(null);
+      await reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "No se pudo armar el SKU");
     } finally {
       setSaving(false);
     }
@@ -42,35 +87,61 @@ function ProductosPage() {
     <div>
       <PageHeader
         title="Productos"
-        subtitle="Catálogo, variedades y empaques."
+        subtitle="El SKU es producto × empaque × calibre. Northgate pide PAP-CARTON-10CT, no «papaya»."
         action={<Button onClick={() => setOpen(true)}>Nuevo producto</Button>}
       />
+      {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
       {loading ? <p className="text-sm text-muted">Cargando…</p> : null}
       {error ? <p className="text-sm text-danger">{error}</p> : null}
-      <div className="grid gap-3">
-        {(data ?? []).map((p) => (
-          <Panel key={p.id} className="p-4">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <h2 className="font-display text-lg font-semibold">
-                  {p.name} {p.variety ? <span className="text-muted">· {p.variety}</span> : null}
-                </h2>
-                <p className="text-xs text-muted">
-                  {p.sku} · {p.category ?? "Sin categoría"} · unidad {p.default_unit}
-                </p>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {p.packs.map((pack) => (
-                <span key={pack.id} className="rounded-md bg-surface-2 px-2.5 py-1 text-xs text-fg">
-                  {pack.name}
-                  {pack.net_weight ? ` · ${qty(pack.net_weight, pack.weight_unit)}` : ""}
-                </span>
-              ))}
-            </div>
-          </Panel>
-        ))}
+      <div className="mb-4">
+        <Input placeholder="Buscar producto, SKU o calibre…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
+      <div className="grid gap-3">
+        {filtered.map((p) => {
+          const matrixable = p.packs.some((k) => k.empaque && k.calibre);
+          return (
+            <Panel key={p.id} className="p-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-lg font-semibold">
+                    {p.name} {p.variety ? <span className="text-muted">· {p.variety}</span> : null}
+                  </h2>
+                  <p className="text-xs text-muted">
+                    {p.sku} · {p.category ?? "Sin categoría"} · {p.packs.length} SKU
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setSkuFor(p.id);
+                    setSkuForm({ empaque: "Carton", calibre: "10 ct", net_weight: "35" });
+                  }}
+                >
+                  Armar SKU
+                </Button>
+              </div>
+              {matrixable ? (
+                <SkuMatrix
+                  packs={p.packs}
+                  onFill={(emp, cal) => void addSku(p.id, emp, cal)}
+                  saving={saving}
+                />
+              ) : (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {p.packs.map((pack) => (
+                    <span key={pack.id} className="rounded-md bg-surface-2 px-2.5 py-1 text-xs text-fg">
+                      {pack.sku_code || pack.name}
+                      {pack.net_weight ? ` · ${qty(pack.net_weight, pack.weight_unit)}` : ""}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </Panel>
+          );
+        })}
+      </div>
+
       {open ? (
         <Modal title="Nuevo producto" onClose={() => setOpen(false)}>
           <form className="grid gap-3" onSubmit={submit}>
@@ -111,10 +182,116 @@ function ProductosPage() {
                 <Input type="number" step="0.01" value={form.net_weight} onChange={(e) => setForm({ ...form, net_weight: e.target.value })} />
               </Field>
             </div>
-            <Button type="submit" disabled={saving}>{saving ? "Guardando…" : "Guardar"}</Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? "Guardando…" : "Guardar"}
+            </Button>
           </form>
         </Modal>
       ) : null}
+
+      {skuProduct ? (
+        <Modal
+          title="Armar SKU"
+          subtitle={`${skuProduct.name} ${skuProduct.variety ?? ""} · ${skuCodeOf(skuProduct.sku, skuForm.empaque, skuForm.calibre)}`}
+          onClose={() => setSkuFor(null)}
+        >
+          <form
+            className="grid gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addSku(skuProduct.id, skuForm.empaque, skuForm.calibre, skuForm.net_weight ? Number(skuForm.net_weight) : undefined);
+            }}
+          >
+            <Field label="Empaque">
+              <Select value={skuForm.empaque} onChange={(e) => setSkuForm({ ...skuForm, empaque: e.target.value })}>
+                {EMPAQUES.map((e) => (
+                  <option key={e}>{e}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Calibre">
+              <Select value={skuForm.calibre} onChange={(e) => setSkuForm({ ...skuForm, calibre: e.target.value })}>
+                {CALIBRES.map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Peso neto (lb)">
+              <Input type="number" step="0.01" value={skuForm.net_weight} onChange={(e) => setSkuForm({ ...skuForm, net_weight: e.target.value })} />
+            </Field>
+            <Button type="submit" disabled={saving}>
+              {saving ? "Creando…" : "Crear SKU"}
+            </Button>
+          </form>
+        </Modal>
+      ) : null}
+    </div>
+  );
+}
+
+function SkuMatrix({
+  packs,
+  onFill,
+  saving,
+}: {
+  packs: { id: number; sku_code?: string | null; empaque?: string | null; calibre?: string | null; net_weight: number | null; weight_unit: string }[];
+  onFill: (empaque: string, calibre: string) => void;
+  saving: boolean;
+}) {
+  const empaques = Array.from(new Set(packs.map((p) => p.empaque).filter(Boolean) as string[]));
+  const calibres = Array.from(new Set(packs.map((p) => p.calibre).filter(Boolean) as string[])).sort(
+    (a, b) => parseInt(a, 10) - parseInt(b, 10),
+  );
+  const cell = (emp: string, cal: string) => packs.find((p) => p.empaque === emp && p.calibre === cal);
+
+  return (
+    <div className="mt-4 overflow-x-auto">
+      <table className="w-full min-w-[520px] text-left text-xs">
+        <thead>
+          <tr className="text-muted">
+            <th className="py-2 pr-3 font-medium">Calibre</th>
+            {empaques.map((e) => (
+              <th key={e} className="px-2 py-2 font-medium">
+                {e}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {calibres.map((cal) => (
+            <tr key={cal} className="border-t border-border">
+              <td className="py-2 pr-3 font-medium whitespace-nowrap">{cal}</td>
+              {empaques.map((emp) => {
+                const hit = cell(emp, cal);
+                return (
+                  <td key={emp} className="px-2 py-2">
+                    {hit ? (
+                      <div>
+                        <span className="font-mono text-[11px]">{hit.sku_code}</span>
+                        {hit.net_weight ? (
+                          <span className="ml-1 text-subtle">
+                            {qty(hit.net_weight)} {hit.weight_unit}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => onFill(emp, cal)}
+                        className="rounded-md px-2 py-1 text-subtle hover:bg-surface-2 hover:text-fg"
+                      >
+                        +
+                      </button>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-2 text-[11px] text-subtle">{packs.filter((p) => p.sku_code).length} SKUs · el hueco vacío arma el que falta</p>
     </div>
   );
 }
