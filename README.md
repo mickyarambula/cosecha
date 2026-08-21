@@ -7,9 +7,10 @@ El producto se llama **Cosecha**. Los documentos que salen al cliente/proveedor 
 ## Qué cubre hoy
 
 - Catálogos: productos, proveedores, clientes
-- Compras: OC → recepción PACA (Aceptada / incidencia / Rechazada) → lote sano o retenido
+- Customer PO: captura el PO del cliente (N° Northgate, adjunto Drive) y lo convierte a OV
+- Ventas: tablero Pedido / Despachado / Comprado / Open · Generar compra al grower
+- Compras: OC ligada a la OV → recepción PACA (Aceptada / incidencia / Rechazada) → lote sano o retenido
 - Inventario por lote y cámara; no se despacha lo retenido
-- Ventas: OV → despacho solo de lotes sanos → factura
 - Documentos imprimibles (Invoice, Purchase Order, Sales Order) con aviso PACA
 - CxC / CxP / Tesorería
 
@@ -24,12 +25,14 @@ Sin `DATABASE_URL` corre Postgres embebido (PGLite) con semilla de demo. En prod
 
 ## Semilla para probar
 
-1. Compras → **OC-2608-022** Papayas & More: recibir con incidencia (100 cajas afectadas).
-2. Inventario: debe nacer un lote Sano y uno Retenido.
-3. Ventas → **OV-2608-060** Northgate: despachar solo el sano → Facturar.
-4. CxC: **Documento** abre la Invoice; cobrar.
-5. CxP: capturar factura del proveedor y pagar.
-6. Tesorería: cobro y pago en caja.
+1. Customer PO → **CPO-2608-001** Northgate **NGM247514**: Convertir a venta.
+2. Ventas: tablero RAPO 1,056 open → **Generar compra** a Papayas & More.
+3. Compras: la OC nueva (ligada a la OV) → recibir con incidencia.
+4. Inventario: lote Sano + lote Retenido. El retenido no se vende.
+5. Ventas: despachar solo el sano → Facturar.
+6. CxC: **Documento** abre la Invoice; cobrar.
+7. CxP: capturar factura del proveedor y pagar.
+8. Tesorería: cobro y pago en caja.
 
 ## Repo
 

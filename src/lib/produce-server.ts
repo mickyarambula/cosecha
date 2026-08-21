@@ -95,6 +95,7 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
     customers: number;
     pos: number;
     sos: number;
+    cpos: number;
     retenidos: number;
   }>(`
     select
@@ -104,6 +105,7 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
       (select count(*)::int from customers where is_active) as customers,
       (select count(*)::int from purchase_orders) as pos,
       (select count(*)::int from sales_orders) as sos,
+      (select count(*)::int from customer_pos where status = 'open') as cpos,
       (select count(*)::int from lots where status = 'active' and current_qty > 0 and quality_state <> 'sano') as retenidos
   `);
 
@@ -149,6 +151,13 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
   `);
 
   const alerts = await sql.query<{ kind: string; title: string; detail: string; href: string }>(`
+    select 'cpo' as kind,
+           cpo.cpo_number as title,
+           (c.name || ' · ' || coalesce(cpo.customer_po_number, 'sin N° cliente') || ' · por convertir') as detail,
+           '/cpo' as href
+    from customer_pos cpo join customers c on c.id = cpo.customer_id
+    where cpo.status = 'open'
+    union all
     select 'calidad' as kind,
            l.lot_number as title,
            (p.name || ' · ' || coalesce(l.quality_state, 'retenido')) as detail,
@@ -172,7 +181,7 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
   `);
 
   return {
-    counts: counts ?? { products: 0, lots: 0, suppliers: 0, customers: 0, pos: 0, sos: 0, retenidos: 0 },
+    counts: counts ?? { products: 0, lots: 0, suppliers: 0, customers: 0, pos: 0, sos: 0, cpos: 0, retenidos: 0 },
     inventoryValue: n(inventoryValue[0]?.value),
     cxc: n(moneyRow[0]?.cxc),
     cxp: n(moneyRow[0]?.cxp),
@@ -493,10 +502,13 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).handler(asyn
     order_date: string;
     expected_date: string | null;
     notes: string | null;
+    sales_order_id: number | null;
+    so_number: string | null;
   }>(`
     select po.id, po.po_number, po.supplier_id, s.name as supplier_name, po.status,
-           po.order_date::text, po.expected_date::text, po.notes
+           po.order_date::text, po.expected_date::text, po.notes, po.sales_order_id, so.so_number
     from purchase_orders po join suppliers s on s.id = po.supplier_id
+    left join sales_orders so on so.id = po.sales_order_id
     order by po.id desc
   `);
   const lines = await sql.query<{
@@ -561,6 +573,7 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
       supplier_id: z.number(),
       expected_date: z.string().optional(),
       notes: z.string().optional(),
+      sales_order_id: z.number().optional(),
       lines: z
         .array(
           z.object({
@@ -578,9 +591,9 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
     const sql = await getSql();
     const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
     const rows = await sql.query<{ id: number }>(
-      `insert into purchase_orders (po_number, supplier_id, status, expected_date, notes)
-       values ($1,$2,'confirmed',$3,$4) returning id`,
-      [po_number, data.supplier_id, data.expected_date || null, data.notes || null],
+      `insert into purchase_orders (po_number, supplier_id, status, expected_date, notes, sales_order_id)
+       values ($1,$2,'confirmed',$3,$4,$5) returning id`,
+      [po_number, data.supplier_id, data.expected_date || null, data.notes || null, data.sales_order_id ?? null],
     );
     const id = rows[0].id;
     for (const line of data.lines) {
@@ -812,10 +825,15 @@ export const listSalesOrders = createServerFn({ method: "GET" }).handler(async (
     order_date: string;
     ship_date: string | null;
     notes: string | null;
+    customer_po_id: number | null;
+    cpo_number: string | null;
+    customer_po_number: string | null;
   }>(`
     select so.id, so.so_number, so.customer_id, c.name as customer_name, c.payment_terms, so.status,
-           so.order_date::text, so.ship_date::text, so.notes
+           so.order_date::text, so.ship_date::text, so.notes, so.customer_po_id,
+           cpo.cpo_number, cpo.customer_po_number
     from sales_orders so join customers c on c.id = so.customer_id
+    left join customer_pos cpo on cpo.id = so.customer_po_id
     order by so.id desc
   `);
   const lines = await sql.query<{
@@ -841,18 +859,38 @@ export const listSalesOrders = createServerFn({ method: "GET" }).handler(async (
   const invoices = await sql.query<{ sales_order_id: number; invoice_number: string; status: string; id: number }>(
     `select id, sales_order_id, invoice_number, status from invoices where sales_order_id is not null`,
   );
+  const purchased = await sql.query<{ sales_order_id: number; product_id: number; qty: string }>(`
+    select po.sales_order_id, l.product_id, coalesce(sum(l.quantity_ordered), 0)::text as qty
+    from purchase_orders po
+    join purchase_order_lines l on l.purchase_order_id = po.id
+    where po.sales_order_id is not null
+    group by po.sales_order_id, l.product_id
+  `);
+  const linkedPos = await sql.query<{ id: number; po_number: string; sales_order_id: number }>(
+    `select id, po_number, sales_order_id from purchase_orders where sales_order_id is not null`,
+  );
   return orders.map((o) => ({
     ...o,
     invoice: invoices.find((i) => i.sales_order_id === o.id) ?? null,
+    purchases: linkedPos.filter((p) => p.sales_order_id === o.id),
     lines: lines
       .filter((l) => l.sales_order_id === o.id)
-      .map((l) => ({
-        ...l,
-        quantity_ordered: n(l.quantity_ordered),
-        quantity_shipped: n(l.quantity_shipped),
-        unit_price: n(l.unit_price),
-        unit_cost: n(l.unit_cost),
-      })),
+      .map((l) => {
+        const required = n(l.quantity_ordered);
+        const allocated = n(l.quantity_shipped);
+        const bought = n(purchased.find((p) => p.sales_order_id === o.id && p.product_id === l.product_id)?.qty);
+        return {
+          ...l,
+          quantity_ordered: required,
+          quantity_shipped: allocated,
+          unit_price: n(l.unit_price),
+          unit_cost: n(l.unit_cost),
+          required,
+          allocated,
+          purchased: bought,
+          open: Math.max(required - allocated, 0),
+        };
+      }),
   }));
 });
 
@@ -861,6 +899,7 @@ export const createSalesOrder = createServerFn({ method: "POST" })
     z.object({
       customer_id: z.number(),
       notes: z.string().optional(),
+      customer_po_id: z.number().optional(),
       lines: z
         .array(
           z.object({
@@ -878,9 +917,9 @@ export const createSalesOrder = createServerFn({ method: "POST" })
     const sql = await getSql();
     const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
     const rows = await sql.query<{ id: number }>(
-      `insert into sales_orders (so_number, customer_id, status, notes)
-       values ($1,$2,'confirmed',$3) returning id`,
-      [so_number, data.customer_id, data.notes || null],
+      `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id)
+       values ($1,$2,'confirmed',$3,$4) returning id`,
+      [so_number, data.customer_id, data.notes || null, data.customer_po_id ?? null],
     );
     const id = rows[0].id;
     for (const line of data.lines) {
@@ -891,6 +930,226 @@ export const createSalesOrder = createServerFn({ method: "POST" })
       );
     }
     return { id, so_number };
+  });
+
+export const listCustomerPOs = createServerFn({ method: "GET" }).handler(async () => {
+  const sql = await getSql();
+  const orders = await sql.query<{
+    id: number;
+    cpo_number: string;
+    customer_id: number;
+    customer_name: string;
+    customer_po_number: string | null;
+    po_date: string;
+    currency: string;
+    attachment_url: string | null;
+    notes: string | null;
+    status: string;
+    so_id: number | null;
+    so_number: string | null;
+  }>(`
+    select cpo.id, cpo.cpo_number, cpo.customer_id, c.name as customer_name, cpo.customer_po_number,
+           cpo.po_date::text, cpo.currency, cpo.attachment_url, cpo.notes, cpo.status,
+           (select so.id from sales_orders so where so.customer_po_id = cpo.id order by so.id desc limit 1) as so_id,
+           (select so.so_number from sales_orders so where so.customer_po_id = cpo.id order by so.id desc limit 1) as so_number
+    from customer_pos cpo
+    join customers c on c.id = cpo.customer_id
+    order by cpo.id desc
+  `);
+  const lines = await sql.query<{
+    id: number;
+    customer_po_id: number;
+    product_id: number;
+    product_name: string;
+    quantity: string;
+    unit: string;
+    unit_price: string | null;
+    notes: string | null;
+  }>(`
+    select l.id, l.customer_po_id, l.product_id, p.name as product_name,
+           l.quantity::text, l.unit, l.unit_price::text, l.notes
+    from customer_po_lines l join products p on p.id = l.product_id
+  `);
+  return orders.map((o) => ({
+    ...o,
+    lines: lines
+      .filter((l) => l.customer_po_id === o.id)
+      .map((l) => ({ ...l, quantity: n(l.quantity), unit_price: n(l.unit_price) })),
+  }));
+});
+
+export const createCustomerPO = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      customer_id: z.number(),
+      customer_po_number: z.string().optional(),
+      po_date: z.string().optional(),
+      currency: z.string().default("USD"),
+      attachment_url: z.string().optional(),
+      notes: z.string().optional(),
+      lines: z
+        .array(
+          z.object({
+            product_id: z.number(),
+            quantity: z.number().positive(),
+            unit: z.string(),
+            unit_price: z.number().optional(),
+            notes: z.string().optional(),
+          }),
+        )
+        .min(1),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const d = new Date();
+    const prefix = `CPO-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}-`;
+    const cpo_number = await nextCode(sql, "customer_pos", "cpo_number", prefix);
+    const rows = await sql.query<{ id: number }>(
+      `insert into customer_pos (cpo_number, customer_id, customer_po_number, po_date, currency, attachment_url, notes, status)
+       values ($1,$2,$3,$4,$5,$6,$7,'open') returning id`,
+      [
+        cpo_number,
+        data.customer_id,
+        data.customer_po_number?.trim() || null,
+        data.po_date || todayISO(),
+        data.currency || "USD",
+        data.attachment_url?.trim() || null,
+        data.notes || null,
+      ],
+    );
+    const id = rows[0].id;
+    for (const line of data.lines) {
+      await sql.query(
+        `insert into customer_po_lines (customer_po_id, product_id, quantity, unit, unit_price, notes)
+         values ($1,$2,$3,$4,$5,$6)`,
+        [id, line.product_id, line.quantity, line.unit, line.unit_price ?? null, line.notes || null],
+      );
+    }
+    return { id, cpo_number };
+  });
+
+export const convertCustomerPOToSO = createServerFn({ method: "POST" })
+  .validator(z.object({ customer_po_id: z.number() }))
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [cpo] = await sql.query<{
+      id: number;
+      cpo_number: string;
+      customer_id: number;
+      customer_po_number: string | null;
+      status: string;
+      notes: string | null;
+    }>(`select id, cpo_number, customer_id, customer_po_number, status, notes from customer_pos where id = $1`, [
+      data.customer_po_id,
+    ]);
+    if (!cpo) throw new Error("Customer PO no encontrado");
+    if (cpo.status === "converted") {
+      const [existing] = await sql.query<{ so_number: string }>(
+        `select so_number from sales_orders where customer_po_id = $1 order by id desc limit 1`,
+        [cpo.id],
+      );
+      throw new Error(`Este PO ya se convirtió${existing ? ` a ${existing.so_number}` : ""}`);
+    }
+    if (cpo.status !== "open") throw new Error("Solo se convierten POs abiertos");
+
+    const lines = await sql.query<{
+      product_id: number;
+      quantity: string;
+      unit: string;
+      unit_price: string | null;
+    }>(`select product_id, quantity::text, unit, unit_price::text from customer_po_lines where customer_po_id = $1`, [
+      cpo.id,
+    ]);
+    if (!lines.length) throw new Error("El Customer PO no tiene líneas");
+
+    const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
+    const note = [`Desde ${cpo.cpo_number}`, cpo.customer_po_number ? `PO cliente ${cpo.customer_po_number}` : null, cpo.notes]
+      .filter(Boolean)
+      .join(" · ");
+    const rows = await sql.query<{ id: number }>(
+      `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id)
+       values ($1,$2,'confirmed',$3,$4) returning id`,
+      [so_number, cpo.customer_id, note, cpo.id],
+    );
+    const id = rows[0].id;
+    for (const line of lines) {
+      await sql.query(
+        `insert into sales_order_lines (sales_order_id, product_id, quantity_ordered, unit, unit_price)
+         values ($1,$2,$3,$4,$5)`,
+        [id, line.product_id, n(line.quantity), line.unit, n(line.unit_price) || null],
+      );
+    }
+    await sql.query(`update customer_pos set status = 'converted' where id = $1`, [cpo.id]);
+    return { id, so_number, cpo_number: cpo.cpo_number };
+  });
+
+export const createPurchaseFromSO = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      sales_order_id: z.number(),
+      supplier_id: z.number(),
+      unit_cost: z.number().positive(),
+      notes: z.string().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [so] = await sql.query<{ id: number; so_number: string }>(
+      `select id, so_number from sales_orders where id = $1`,
+      [data.sales_order_id],
+    );
+    if (!so) throw new Error("Orden de venta no encontrada");
+
+    const lines = await sql.query<{
+      product_id: number;
+      product_name: string;
+      quantity_ordered: string;
+      unit: string;
+    }>(
+      `select l.product_id, p.name as product_name, l.quantity_ordered::text, l.unit
+       from sales_order_lines l join products p on p.id = l.product_id
+       where l.sales_order_id = $1`,
+      [data.sales_order_id],
+    );
+    if (!lines.length) throw new Error("La venta no tiene líneas");
+
+    const bought = await sql.query<{ product_id: number; qty: string }>(
+      `select l.product_id, coalesce(sum(l.quantity_ordered),0)::text as qty
+       from purchase_orders po
+       join purchase_order_lines l on l.purchase_order_id = po.id
+       where po.sales_order_id = $1
+       group by l.product_id`,
+      [data.sales_order_id],
+    );
+
+    const toBuy = lines
+      .map((l) => {
+        const already = n(bought.find((b) => b.product_id === l.product_id)?.qty);
+        return { ...l, remaining: n(l.quantity_ordered) - already };
+      })
+      .filter((l) => l.remaining > 0.0001);
+    if (!toBuy.length) throw new Error("Esta venta ya tiene compra por todo lo pedido");
+
+    const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
+    const rows = await sql.query<{ id: number }>(
+      `insert into purchase_orders (po_number, supplier_id, status, notes, sales_order_id)
+       values ($1,$2,'confirmed',$3,$4) returning id`,
+      [po_number, data.supplier_id, data.notes || `Generada desde ${so.so_number}`, so.id],
+    );
+    const id = rows[0].id;
+    for (const line of toBuy) {
+      const [pack] = await sql.query<{ id: number }>(
+        `select id from pack_styles where product_id = $1 order by is_default desc, id limit 1`,
+        [line.product_id],
+      );
+      await sql.query(
+        `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost)
+         values ($1,$2,$3,$4,$5,$6)`,
+        [id, line.product_id, pack?.id ?? null, line.remaining, line.unit, data.unit_cost],
+      );
+    }
+    return { id, po_number, so_number: so.so_number };
   });
 
 export const shipSalesLine = createServerFn({ method: "POST" })

@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   BookOpen,
   Boxes,
+  ClipboardList,
   Home,
   LayoutDashboard,
   Leaf,
@@ -36,9 +37,10 @@ const GROUPS: NavGroup[] = [
     rail: "Oper.",
     icon: Package,
     items: [
-      { to: "/compras", label: "Compras", icon: Truck },
+      { to: "/cpo", label: "Customer PO", short: "CPO", icon: ClipboardList },
       { to: "/ventas", label: "Ventas", icon: ShoppingCart },
       { to: "/inventario", label: "Inventario", icon: Warehouse },
+      { to: "/compras", label: "Compras", icon: Truck },
     ],
   },
   {

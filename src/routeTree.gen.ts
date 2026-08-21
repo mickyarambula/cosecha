@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ClientesRouteImport } from './routes/clientes'
 import { Route as ComprasRouteImport } from './routes/compras'
+import { Route as CpoRouteImport } from './routes/cpo'
 import { Route as CxcRouteImport } from './routes/cxc'
 import { Route as CxpRouteImport } from './routes/cxp'
 import { Route as InventarioRouteImport } from './routes/inventario'
@@ -34,6 +35,11 @@ const ClientesRoute = ClientesRouteImport.update({
 const ComprasRoute = ComprasRouteImport.update({
   id: '/compras',
   path: '/compras',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CpoRoute = CpoRouteImport.update({
+  id: '/cpo',
+  path: '/cpo',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CxcRoute = CxcRouteImport.update({
@@ -81,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/clientes': typeof ClientesRoute
   '/compras': typeof ComprasRoute
+  '/cpo': typeof CpoRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
   '/inventario': typeof InventarioRoute
@@ -94,6 +101,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/clientes': typeof ClientesRoute
   '/compras': typeof ComprasRoute
+  '/cpo': typeof CpoRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
   '/inventario': typeof InventarioRoute
@@ -108,6 +116,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/clientes': typeof ClientesRoute
   '/compras': typeof ComprasRoute
+  '/cpo': typeof CpoRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
   '/inventario': typeof InventarioRoute
@@ -123,6 +132,7 @@ export interface FileRouteTypes {
     | '/'
     | '/clientes'
     | '/compras'
+    | '/cpo'
     | '/cxc'
     | '/cxp'
     | '/inventario'
@@ -136,6 +146,7 @@ export interface FileRouteTypes {
     | '/'
     | '/clientes'
     | '/compras'
+    | '/cpo'
     | '/cxc'
     | '/cxp'
     | '/inventario'
@@ -149,6 +160,7 @@ export interface FileRouteTypes {
     | '/'
     | '/clientes'
     | '/compras'
+    | '/cpo'
     | '/cxc'
     | '/cxp'
     | '/inventario'
@@ -163,6 +175,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ClientesRoute: typeof ClientesRoute
   ComprasRoute: typeof ComprasRoute
+  CpoRoute: typeof CpoRoute
   CxcRoute: typeof CxcRoute
   CxpRoute: typeof CxpRoute
   InventarioRoute: typeof InventarioRoute
@@ -194,6 +207,13 @@ declare module '@tanstack/react-router' {
       path: '/compras'
       fullPath: '/compras'
       preLoaderRoute: typeof ComprasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cpo': {
+      id: '/cpo'
+      path: '/cpo'
+      fullPath: '/cpo'
+      preLoaderRoute: typeof CpoRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/cxc': {
@@ -259,6 +279,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ClientesRoute: ClientesRoute,
   ComprasRoute: ComprasRoute,
+  CpoRoute: CpoRoute,
   CxcRoute: CxcRoute,
   CxpRoute: CxpRoute,
   InventarioRoute: InventarioRoute,

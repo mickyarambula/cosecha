@@ -18,7 +18,7 @@ export function Badge({ children, tone = "mute" }: { children: ReactNode; tone?:
 
 export function orderTone(status: string) {
   const s = status.toLowerCase();
-  if (s === "completed" || s === "active" || s === "paid" || s === "recibido") return "ok" as const;
+  if (s === "completed" || s === "active" || s === "paid" || s === "recibido" || s === "converted") return "ok" as const;
   if (s === "partial" || s === "confirmed" || s === "open") return "warn" as const;
   if (s === "cancelled" || s === "expired" || s === "depleted" || s === "overdue") return "danger" as const;
   return "mute" as const;
@@ -35,6 +35,7 @@ export function orderLabel(status: string) {
     depleted: "Agotado",
     expired: "Vencido",
     open: "Abierta",
+    converted: "Convertido",
     paid: "Saldada",
     overdue: "Vencida",
   };

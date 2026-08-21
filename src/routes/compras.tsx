@@ -290,9 +290,15 @@ function Page() {
                   <p className="text-xs text-muted">
                     Pedido {poRow.order_date}
                     {poRow.expected_date ? ` · ETA ${poRow.expected_date}` : ""}
+                    {poRow.so_number ? ` · ${poRow.so_number}` : ""}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {poRow.so_number ? (
+                    <Link to="/ventas" className="text-xs font-medium text-primary underline-offset-2 hover:underline">
+                      {poRow.so_number}
+                    </Link>
+                  ) : null}
                   <Link
                     to="/doc/$tipo/$id"
                     params={{ tipo: "oc", id: String(poRow.id) }}
@@ -305,6 +311,7 @@ function Page() {
                       {poRow.bill.bill_number}
                     </Link>
                   ) : null}
+                  {poRow.so_number ? <Badge tone="ok">Desde OV</Badge> : null}
                   <Badge tone={orderTone(poRow.status)}>{orderLabel(poRow.status)}</Badge>
                 </div>
               </div>

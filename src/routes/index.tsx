@@ -30,7 +30,7 @@ function Home() {
           tone={data.counts.retenidos ? "warn" : "ok"}
           hint="No se pueden vender"
         />
-        <Kpi label="Órdenes abiertas" value={`${data.counts.pos} OC · ${data.counts.sos} OV`} />
+        <Kpi label="Órdenes abiertas" value={`${data.counts.cpos} CPO · ${data.counts.pos} OC · ${data.counts.sos} OV`} />
       </div>
 
       {data.alerts.length ? (
@@ -42,7 +42,7 @@ function Home() {
               return (
                 <Link
                   key={`${a.kind}-${a.title}-${i}`}
-                  to={a.href as "/compras" | "/inventario" | "/cxc"}
+                  to={a.href as "/compras" | "/inventario" | "/cxc" | "/cpo" | "/ventas"}
                   className="block"
                 >
                   <Panel className="p-4 transition-colors hover:border-primary/40">

@@ -6,11 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import {
   createInvoiceFromSO,
+  createPurchaseFromSO,
   createSalesOrder,
   listCustomers,
   listLots,
   listProducts,
   listSalesOrders,
+  listSuppliers,
   shipSalesLine,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
@@ -23,10 +25,13 @@ function Page() {
   const products = useAsync(() => listProducts(), []);
   const customers = useAsync(() => listCustomers(), []);
   const lots = useAsync(() => listLots(), []);
+  const suppliers = useAsync(() => listSuppliers(), []);
   const [open, setOpen] = useState(false);
   const [ship, setShip] = useState<{ line_id: number; product_id: number; pending: number; unit: string } | null>(null);
+  const [buy, setBuy] = useState<{ so_id: number; so_number: string; openQty: number } | null>(null);
   const [form, setForm] = useState({ customer_id: "", product_id: "", lot_id: "", qty: "", unit_price: "", unit: "caja" });
   const [shipForm, setShipForm] = useState({ quantity: "", lot_id: "", location_id: "" });
+  const [buyForm, setBuyForm] = useState({ supplier_id: "", unit_cost: "" });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -105,11 +110,34 @@ function Page() {
     }
   }
 
+  async function generarCompra(e: React.FormEvent) {
+    e.preventDefault();
+    if (!buy) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await createPurchaseFromSO({
+        data: {
+          sales_order_id: buy.so_id,
+          supplier_id: Number(buyForm.supplier_id),
+          unit_cost: Number(buyForm.unit_cost),
+        },
+      });
+      setBuy(null);
+      setMsg(`Compra ${r.po_number} generada desde ${r.so_number}`);
+      await orders.reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "No se pudo generar la compra");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="Ventas"
-        subtitle="Pedidos, despacho solo de lotes sanos y factura al cliente."
+        subtitle="Órdenes de venta y tablero Pedido / Despachado / Comprado / Open."
         action={<Button onClick={() => setOpen(true)}>Nueva venta</Button>}
       />
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
@@ -120,6 +148,7 @@ function Page() {
           const margin = so.lines.reduce((acc, l) => acc + (l.unit_price - l.unit_cost) * l.quantity_shipped, 0);
           const shipped = so.lines.some((l) => l.quantity_shipped > 0);
           const pendingAny = so.lines.some((l) => l.quantity_ordered - l.quantity_shipped > 0.0001);
+          const toBuy = so.lines.reduce((acc, l) => acc + Math.max(l.required - l.purchased, 0), 0);
           return (
             <Panel key={so.id} className="p-4">
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -128,12 +157,24 @@ function Page() {
                   <h2 className="font-display text-lg font-semibold">{so.customer_name}</h2>
                   <p className="text-xs text-muted">
                     {so.order_date}
+                    {so.cpo_number ? ` · ${so.cpo_number}` : ""}
+                    {so.customer_po_number ? ` · PO ${so.customer_po_number}` : ""}
                     {so.ship_date ? ` · enviado ${so.ship_date}` : ""}
                     {so.payment_terms ? ` · ${so.payment_terms}` : ""}
                     {margin ? ` · margen despachado ${money(margin)}` : ""}
                   </p>
+                  {so.purchases.length ? (
+                    <p className="mt-1 text-xs text-muted">
+                      Compras: {so.purchases.map((p) => p.po_number).join(", ")}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {so.cpo_number ? (
+                    <Link to="/cpo" className="text-xs font-medium text-primary underline-offset-2 hover:underline">
+                      {so.cpo_number}
+                    </Link>
+                  ) : null}
                   <Link
                     to="/doc/$tipo/$id"
                     params={{ tipo: "ov", id: String(so.id) }}
@@ -153,49 +194,84 @@ function Page() {
                   <Badge tone={orderTone(so.status)}>{orderLabel(so.status)}</Badge>
                 </div>
               </div>
-              <div className="mt-3 space-y-2">
-                {so.lines.map((line) => {
-                  const pending = line.quantity_ordered - line.quantity_shipped;
-                  return (
-                    <div key={line.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-2 px-3 py-2 text-sm">
-                      <span>
-                        {line.product_name}
-                        {line.lot_number ? ` · ${line.lot_number}` : ""}
-                        {" · "}
-                        {qty(line.quantity_shipped, line.unit)} / {qty(line.quantity_ordered, line.unit)}
-                        {line.unit_price ? ` · ${money(line.unit_price)}` : ""}
-                      </span>
-                      {pending > 0 ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const first = allLots.find((l) => l.product_id === line.product_id && l.asignable);
-                            setShip({ line_id: line.id, product_id: line.product_id, pending, unit: line.unit });
-                            setShipForm({
-                              quantity: String(pending),
-                              lot_id: String(line.lot_id && allLots.find((l) => l.id === line.lot_id)?.asignable ? line.lot_id : first?.id ?? ""),
-                              location_id: String(first?.locations[0]?.location_id ?? ""),
-                            });
-                          }}
-                        >
-                          Despachar
-                        </Button>
-                      ) : (
-                        <Badge tone="ok">Surtida</Badge>
-                      )}
-                    </div>
-                  );
-                })}
+              <div className="mt-3 overflow-x-auto">
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">Tablero de la orden</p>
+                <table className="w-full min-w-[640px] text-left text-sm">
+                  <thead className="border-b border-border text-[10px] uppercase tracking-wide text-muted">
+                    <tr>
+                      <th className="py-1.5 pr-3 font-medium">SKU</th>
+                      <th className="py-1.5 px-2 text-right font-medium">Pedido</th>
+                      <th className="py-1.5 px-2 text-right font-medium">Despachado</th>
+                      <th className="py-1.5 px-2 text-right font-medium">Comprado</th>
+                      <th className="py-1.5 px-2 text-right font-medium">Open</th>
+                      <th className="py-1.5 px-2 text-right font-medium">Venta</th>
+                      <th className="py-1.5 font-medium" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {so.lines.map((line) => {
+                      const pending = line.quantity_ordered - line.quantity_shipped;
+                      return (
+                        <tr key={line.id} className="border-b border-border last:border-0">
+                          <td className="py-2 pr-3">
+                            {line.product_name}
+                            {line.lot_number ? <span className="block font-mono text-[11px] text-muted">{line.lot_number}</span> : null}
+                          </td>
+                          <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">{qty(line.required, line.unit)}</td>
+                          <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">{qty(line.allocated)}</td>
+                          <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">{qty(line.purchased)}</td>
+                          <td className={`py-2 px-2 text-right tabular-nums whitespace-nowrap ${line.open > 0.0001 ? "font-semibold text-ok" : "text-muted"}`}>
+                            {qty(line.open)}
+                          </td>
+                          <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">{line.unit_price ? money(line.unit_price) : "—"}</td>
+                          <td className="py-2 text-right">
+                            {pending > 0 ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const first = allLots.find((l) => l.product_id === line.product_id && l.asignable);
+                                  setShip({ line_id: line.id, product_id: line.product_id, pending, unit: line.unit });
+                                  setShipForm({
+                                    quantity: String(pending),
+                                    lot_id: String(
+                                      line.lot_id && allLots.find((l) => l.id === line.lot_id)?.asignable ? line.lot_id : first?.id ?? "",
+                                    ),
+                                    location_id: String(first?.locations[0]?.location_id ?? ""),
+                                  });
+                                }}
+                              >
+                                Despachar
+                              </Button>
+                            ) : (
+                              <Badge tone="ok">Surtida</Badge>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
+                {toBuy > 0.0001 ? (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setBuy({ so_id: so.id, so_number: so.so_number, openQty: toBuy });
+                      setBuyForm({ supplier_id: "", unit_cost: "" });
+                    }}
+                  >
+                    Generar compra
+                  </Button>
+                ) : null}
                 {shipped && !so.invoice ? (
                   <Button size="sm" disabled={saving} onClick={() => void facturar(so.id)}>
                     Facturar
                   </Button>
                 ) : null}
                 {pendingAny ? (
-                  <p className="self-center text-xs text-muted">Open = lo que falta por surtir. Solo lotes sanos.</p>
+                  <p className="self-center text-xs text-muted">Open = lo que falta por surtir. Despacho solo de lotes sanos.</p>
                 ) : null}
               </div>
             </Panel>
@@ -314,6 +390,39 @@ function Page() {
                 </Button>
               </>
             )}
+          </form>
+        </Modal>
+      ) : null}
+
+      {buy ? (
+        <Modal title="Generar compra" subtitle={`${buy.so_number} · pendiente ${qty(buy.openQty)}`} onClose={() => setBuy(null)}>
+          <form className="grid gap-3" onSubmit={generarCompra}>
+            <p className="text-sm text-muted">
+              Se crea la orden al grower por lo que aún no está comprado. Al recibir (PACA) nace el lote.
+            </p>
+            <Field label="Proveedor">
+              <Select required value={buyForm.supplier_id} onChange={(e) => setBuyForm({ ...buyForm, supplier_id: e.target.value })}>
+                <option value="">Seleccionar</option>
+                {(suppliers.data ?? []).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Costo unitario">
+              <Input
+                required
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={buyForm.unit_cost}
+                onChange={(e) => setBuyForm({ ...buyForm, unit_cost: e.target.value })}
+              />
+            </Field>
+            <Button type="submit" disabled={saving}>
+              {saving ? "Generando…" : "Generar compra"}
+            </Button>
           </form>
         </Modal>
       ) : null}
