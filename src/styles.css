@@ -1,6 +1,8 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap");
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-bg: #f4f6f8;
   --color-surface: #ffffff;
@@ -29,6 +31,35 @@
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
+}
+
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+  --color-bg: #0e1318;
+  --color-surface: #171e26;
+  --color-surface-2: #222b35;
+  --color-fg: #e7edf3;
+  --color-muted: #9aa6b4;
+  --color-subtle: #6d7886;
+  --color-primary: #3d9a6f;
+  --color-primary-fg: #f4fff9;
+  --color-action: #4d8dff;
+  --color-action-fg: #f4f8ff;
+  --color-border: #2c3642;
+  --color-ring: #4d8dff;
+  --color-ok: #3dd68c;
+  --color-warn: #e8a23a;
+  --color-danger: #f07171;
+  --color-tab: #164a37;
+  --color-tab-fg: #f4fff9;
+  --color-seller: #2a63b3;
+  --color-seller-fg: #f4f8ff;
+  --color-link: #7aa2ff;
+  --color-paper: #171e26;
 }
 
 @layer base {
@@ -61,6 +92,12 @@
   textarea {
     font-family: inherit;
   }
+
+  select,
+  option {
+    background-color: var(--color-surface);
+    color: var(--color-fg);
+  }
 }
 
 @layer utilities {
@@ -83,7 +120,25 @@
 }
 
 @media print {
+  html,
+  html.dark {
+    color-scheme: light;
+    --color-bg: #ffffff;
+    --color-surface: #ffffff;
+    --color-surface-2: #f3f4f6;
+    --color-fg: #1c2430;
+    --color-muted: #5b6573;
+    --color-subtle: #8b95a3;
+    --color-border: #e5e8ee;
+    --color-paper: #ffffff;
+    --color-link: #1d4f91;
+  }
+
   .doc-toolbar {
+    display: none !important;
+  }
+
+  [data-cosecha-overlay] {
     display: none !important;
   }
 
@@ -97,4 +152,20 @@
     box-shadow: none !important;
     border: none !important;
   }
+}
+
+/* Compact the pre-wired UserButton without editing src/lib/auth/gates.tsx */
+.cosecha-account > div > span.grid {
+  background-color: color-mix(in oklab, var(--color-action) 18%, transparent);
+  color: var(--color-action);
+}
+.cosecha-account > div > span.text-sm.font-medium {
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cosecha-account button {
+  font-size: 11px;
+  text-underline-offset: 3px;
 }

@@ -3,13 +3,16 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { MetaCard, Modal, TabOverride } from "@/components/app-shell";
 import { EmptyOrders, FilterField, FilterRow, ProductPicker } from "@/components/product-picker";
+import { SendButton } from "@/components/send-doc";
 import { packsToSkus, type SkuOption } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
+import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
+  createCreditInvoice,
   createInvoiceFromSO,
   createPurchaseFromSO,
   createSalesOrder,
@@ -46,6 +49,7 @@ type DraftLine = {
 function Page() {
   const { tab } = Route.useSearch();
   const navigate = useNavigate();
+  const t = useT();
   const orders = useAsync(() => listSalesOrders(), []);
   const products = useAsync(() => listProducts(), []);
   const customers = useAsync(() => listCustomers(), []);
@@ -58,6 +62,17 @@ function Page() {
   const [ship, setShip] = useState<{ line_id: number; product_id: number; pending: number; unit: string } | null>(null);
   const [buy, setBuy] = useState<{ so_id: number; so_number: string; openQty: number } | null>(null);
   const [credit, setCredit] = useState<number | null>(null);
+  const [placed, setPlaced] = useState<{
+    id: number;
+    so_number: string;
+    customer_name: string;
+    customer_email?: string | null;
+    customer_phone?: string | null;
+    lines: { qty: number; unit: string; name: string; sku?: string | null }[];
+    total: number;
+  } | null>(null);
+  const [printOpen, setPrintOpen] = useState(false);
+  const [printDocs, setPrintDocs] = useState({ bol: false, invoice: false, pick: true, confirm: false });
   const [draft, setDraft] = useState({ customer_id: "", notes: "", requested: todayISO(), type: "Delivery to customer" });
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [shipForm, setShipForm] = useState({ quantity: "", lot_id: "", location_id: "" });
@@ -111,10 +126,19 @@ function Page() {
           })),
         },
       });
+      const cust = (customers.data ?? []).find((c) => c.id === Number(draft.customer_id));
       setLines([]);
+      setPlaced({
+        id: r.id,
+        so_number: r.so_number,
+        customer_name: cust?.name || "",
+        customer_email: cust?.email,
+        customer_phone: cust?.phone,
+        lines: lines.map((l) => ({ qty: Number(l.qty), unit: l.unit, name: l.name })),
+        total: lines.reduce((s, l) => s + Number(l.qty) * Number(l.price || 0), 0),
+      });
       setMsg(`SO ${r.so_number} placed`);
       await orders.reload();
-      navigate({ to: "/ventas", search: { tab: "all" } });
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Could not place");
     } finally {
@@ -199,6 +223,9 @@ function Page() {
           <MetaCard label="Requested date">
             <Input type="date" value={draft.requested} onChange={(e) => setDraft({ ...draft, requested: e.target.value })} />
           </MetaCard>
+          <MetaCard label="Pickup date">
+            <Input type="date" />
+          </MetaCard>
           <MetaCard label="Order type">
             <Select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })}>
               <option>Delivery to customer</option>
@@ -206,7 +233,14 @@ function Page() {
               <option>Will-call</option>
             </Select>
           </MetaCard>
-          <MetaCard label="Order total">{money(total)}</MetaCard>
+          <MetaCard label="Delivery route">
+            <Select defaultValue="">
+              <option value="">Type to search</option>
+            </Select>
+          </MetaCard>
+          <MetaCard label="Destination">Select a customer first</MetaCard>
+          <MetaCard label="Expenses">{money(0)}</MetaCard>
+          <MetaCard label="Sales rep">{COMPANY.userName}</MetaCard>
         </div>
         <div className="px-4">
           <Button size="sm" disabled={!draft.customer_id} onClick={() => setPicker(true)}>
@@ -255,7 +289,7 @@ function Page() {
             skus={skus}
             onAdd={addSku}
             onClose={() => setPicker(false)}
-            extra={<span>{allLots.filter((l) => l.asignable).length} lots available to sell</span>}
+            extra={<span>{t("{n} lots available to sell", { n: allLots.filter((l) => l.asignable).length })}</span>}
             stock={Object.fromEntries(
               skus.map((s) => {
                 const mine = allLots.filter((l) => l.product_id === s.product_id);
@@ -271,6 +305,84 @@ function Page() {
             )}
           />
         ) : null}
+        {placed ? (
+          <div className="fixed bottom-4 right-4 z-40 flex overflow-hidden rounded-md shadow-lg">
+            <div className="flex items-center gap-3 bg-seller px-5 py-4 text-seller-fg">
+              <div>
+                <p className="font-semibold">{t("Order placed!")}</p>
+                <p className="mt-1 inline-block rounded-full bg-white/15 px-3 py-0.5 text-xs">{placed.so_number}</p>
+              </div>
+              <button type="button" className="ml-2 text-lg leading-none" onClick={() => setPlaced(null)}>
+                ×
+              </button>
+            </div>
+            <button type="button" className="w-28 bg-surface px-3 py-2 text-center text-sm hover:bg-surface-2" onClick={() => setPrintOpen(true)}>
+              {t("Print documents")}
+            </button>
+            <SendButton
+              className="w-28 rounded-none"
+              title="Sales Order"
+              number={placed.so_number}
+              partyName={placed.customer_name}
+              email={placed.customer_email}
+              phone={placed.customer_phone}
+              docs={[{ tipo: "ov", id: placed.id, label: "Sales Order" }]}
+              lines={placed.lines}
+              total={placed.total}
+              variant="outline"
+              label={t("Send / WhatsApp")}
+            />
+            <button
+              type="button"
+              className="w-28 bg-surface px-3 py-2 text-center text-sm hover:bg-surface-2"
+              onClick={() => {
+                setPlaced(null);
+                navigate({ to: "/ventas", search: { tab: "all" } });
+                setOpenId(placed.id);
+              }}
+            >
+              {t("Go to order")}
+            </button>
+          </div>
+        ) : null}
+        {printOpen && placed ? (
+          <Modal title="Print documents?" onClose={() => setPrintOpen(false)}>
+            <p className="text-sm text-muted">{t("Select the documents you'd like to print.")}</p>
+            <div className="mt-4 grid gap-2 text-sm">
+              {(
+                [
+                  ["bol", "BOL"],
+                  ["invoice", "Invoice"],
+                  ["pick", "Pick ticket"],
+                  ["confirm", "Sales confirmation"],
+                ] as const
+              ).map(([k, label]) => (
+                <label key={k} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={printDocs[k]}
+                    onChange={(e) => setPrintDocs({ ...printDocs, [k]: e.target.checked })}
+                  />
+                  {t(label)}
+                </label>
+              ))}
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setPrintOpen(false)}>
+                No, go back
+              </Button>
+              <Button
+                onClick={() => {
+                  const tipo = printDocs.pick ? "pick" : printDocs.confirm ? "confirm" : printDocs.bol ? "bol" : "ov";
+                  window.open(`/doc/${tipo}/${placed.id}`, "_blank");
+                  setPrintOpen(false);
+                }}
+              >
+                Yes, print
+              </Button>
+            </div>
+          </Modal>
+        ) : null}
       </div>
     );
   }
@@ -281,7 +393,7 @@ function Page() {
         <TabOverride>
           <div className="flex h-11 items-center gap-3 bg-seller px-3 text-sm text-seller-fg">
             <button type="button" className="font-medium hover:underline" onClick={() => setOpenId(null)}>
-              ← Go back to All Orders
+              ← {t("Go back to All Orders")}
             </button>
             <Button
               size="sm"
@@ -289,7 +401,7 @@ function Page() {
               className="ml-auto border-white/30 bg-white text-seller"
               onClick={() => navigate({ to: "/ventas", search: { tab: "new" } })}
             >
-              + New order
+              + {t("New order")}
             </Button>
           </div>
         </TabOverride>
@@ -301,7 +413,7 @@ function Page() {
         </FilterField>
         <FilterField label="Customer">
           <Select defaultValue="">
-            <option value="">All customers</option>
+            <option value="">{t("All customers")}</option>
             {(customers.data ?? []).map((c) => (
               <option key={c.id}>{c.name}</option>
             ))}
@@ -317,12 +429,12 @@ function Page() {
             <thead className="border-y border-border bg-surface-2 text-[11px] font-medium uppercase tracking-wide text-muted">
               <tr>
                 <th className="w-10 px-3 py-2" />
-                <th className="px-3 py-2">SO #</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Customer</th>
-                <th className="px-3 py-2">Requested date</th>
-                <th className="px-3 py-2">Type</th>
-                <th className="px-3 py-2 text-right">Total</th>
+                <th className="px-3 py-2">{t("SO #")}</th>
+                <th className="px-3 py-2">{t("Status")}</th>
+                <th className="px-3 py-2">{t("Customer")}</th>
+                <th className="px-3 py-2">{t("Requested date")}</th>
+                <th className="px-3 py-2">{t("Type")}</th>
+                <th className="px-3 py-2 text-right">{t("Total")}</th>
               </tr>
             </thead>
             <tbody>
@@ -337,7 +449,32 @@ function Page() {
                           {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
                         </button>
                       </td>
-                      <td className="px-3 py-2 font-medium text-link">{poShort(row.so_number)}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <button type="button" className="font-medium text-link" onClick={() => setOpenId(open ? null : row.id)}>
+                            {poShort(row.so_number)}
+                          </button>
+                          <SendButton
+                            title="Sales Order"
+                            number={row.so_number}
+                            partyName={row.customer_name}
+                            email={row.customer_email}
+                            phone={row.customer_phone}
+                            docs={[
+                              { tipo: "ov", id: row.id, label: "Sales Order" },
+                              ...(row.invoice ? [{ tipo: "factura", id: row.invoice.id, label: "Invoice" }] : []),
+                            ]}
+                            lines={row.lines.map((l) => ({
+                              qty: l.quantity_ordered,
+                              unit: l.unit,
+                              name: l.product_name,
+                              sku: l.sku_code,
+                            }))}
+                            total={total}
+                            size="sm"
+                          />
+                        </div>
+                      </td>
                       <td className="px-3 py-2">
                         <Badge tone={orderTone(row.status)}>{orderLabel(row.status)}</Badge>
                       </td>
@@ -405,6 +542,7 @@ function Page() {
                     </option>
                   ))}
               </Select>
+              <p className="mt-1 text-xs text-muted">{t("Cold room in the warehouse this fruit leaves from.")}</p>
             </Field>
             <Button type="submit" disabled={saving}>
               Fulfill
@@ -491,7 +629,34 @@ function Page() {
             <Button variant="outline" onClick={() => setCredit(null)}>
               Cancel
             </Button>
-            <Button onClick={() => setCredit(null)}>Create credit</Button>
+            <Button
+              onClick={async () => {
+                if (!selected) return;
+                setSaving(true);
+                try {
+                  await createCreditInvoice({
+                    data: {
+                      sales_order_id: selected.id,
+                      lines: selected.lines.map((l) => ({
+                        product_id: l.product_id,
+                        description: l.product_name,
+                        qty: l.quantity_ordered,
+                        credit_per_unit: l.unit_price,
+                      })),
+                    },
+                  });
+                  setCredit(null);
+                  setMsg("Credit invoice created");
+                  await orders.reload();
+                } catch (err) {
+                  setMsg(err instanceof Error ? err.message : "Could not create credit");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            >
+              Create credit
+            </Button>
           </div>
         </Modal>
       ) : null}
@@ -529,11 +694,31 @@ function SoDetail({
           </div>
           <p className="text-xs text-muted">Placed on {fecha(row.order_date)}</p>
         </div>
-        <Button size="sm" variant="outline" asChild>
-          <Link to="/ventas" search={{ tab: "new" }}>
-            + New order
-          </Link>
-        </Button>
+        <div className="flex gap-2">
+          <SendButton
+            title="Sales Order"
+            number={row.so_number}
+            partyName={row.customer_name}
+            email={row.customer_email}
+            phone={row.customer_phone}
+            docs={[
+              { tipo: "ov", id: row.id, label: "Sales Order" },
+              ...(row.invoice ? [{ tipo: "factura", id: row.invoice.id, label: "Invoice" }] : []),
+            ]}
+            lines={row.lines.map((l) => ({
+              qty: l.quantity_ordered,
+              unit: l.unit,
+              name: l.product_name,
+              sku: l.sku_code,
+            }))}
+            total={total}
+          />
+          <Button size="sm" variant="outline" asChild>
+            <Link to="/ventas" search={{ tab: "new" }}>
+              + New order
+            </Link>
+          </Button>
+        </div>
       </div>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <MetaCard label="Customer">
@@ -600,6 +785,27 @@ function SoDetail({
           <Link className="text-link" to="/doc/$tipo/$id" params={{ tipo: "ov", id: String(row.id) }}>
             Print documents
           </Link>
+          <div className="mt-2">
+            <SendButton
+              title="Sales Order"
+              number={row.so_number}
+              partyName={row.customer_name}
+              email={row.customer_email}
+              phone={row.customer_phone}
+              docs={[
+                { tipo: "ov", id: row.id, label: "Sales Order" },
+                ...(row.invoice ? [{ tipo: "factura", id: row.invoice.id, label: "Invoice" }] : []),
+              ]}
+              lines={row.lines.map((l) => ({
+                qty: l.quantity_ordered,
+                unit: l.unit,
+                name: l.product_name,
+                sku: l.sku_code,
+              }))}
+              total={total}
+              variant="outline"
+            />
+          </div>
           <p className="mt-2 text-link">Print SO label</p>
           <p className="mt-2 text-link">Print pallet labels</p>
         </div>
@@ -608,7 +814,6 @@ function SoDetail({
           <button type="button" className="mt-2 block text-link" onClick={onCredit}>
             Create credit invoice
           </button>
-          <p className="mt-2 text-link">Email documents</p>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between text-muted">

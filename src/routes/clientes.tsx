@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal, TabActions } from "@/components/app-shell";
+import { PartySkuPanel } from "@/components/party-skus";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { createCustomer, listCustomers, updateCustomer } from "@/lib/produce-server";
@@ -25,6 +26,7 @@ function Page() {
     state: "",
     zip: "",
     phone: "",
+    email: "",
     payment_terms: "0",
     code: "",
     credit: "",
@@ -53,6 +55,7 @@ function Page() {
   const [edit, setEdit] = useState({
     name: "",
     phone: "",
+    email: "",
     payment_terms: "",
     notes: "",
     contact_name: "",
@@ -66,6 +69,7 @@ function Page() {
     setEdit({
       name: c.name,
       phone: c.phone ?? "",
+      email: c.email ?? "",
       payment_terms: c.payment_terms ?? "0",
       notes: c.notes ?? "",
       contact_name: c.contact_name ?? "",
@@ -81,6 +85,7 @@ function Page() {
         data: {
           name: form.name,
           phone: form.phone || undefined,
+          email: form.email || undefined,
           city: form.city || undefined,
           payment_terms: form.payment_terms || undefined,
           notes: form.notes || undefined,
@@ -95,6 +100,7 @@ function Page() {
         state: "",
         zip: "",
         phone: "",
+        email: "",
         payment_terms: "0",
         code: "",
         credit: "",
@@ -115,6 +121,7 @@ function Page() {
           id: current.id,
           name: edit.name,
           phone: edit.phone || undefined,
+          email: edit.email || undefined,
           payment_terms: edit.payment_terms || undefined,
           notes: edit.notes || undefined,
           contact_name: edit.contact_name || undefined,
@@ -190,6 +197,9 @@ function Page() {
               <Field label="Phone number">
                 <Input value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} />
               </Field>
+              <Field label="Email">
+                <Input type="email" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} />
+              </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Delivery route">
                   <Select defaultValue="">
@@ -257,7 +267,7 @@ function Page() {
                 <Input placeholder="Name" defaultValue={edit.contact_name} />
                 <Input placeholder="Phone" defaultValue={edit.phone} />
                 <Input placeholder="Fax" />
-                <Input placeholder="Email address" />
+                <Input placeholder="Email address" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} />
               </div>
               <details className="mt-2 rounded-md border border-border p-3 text-sm">
                 <summary className="cursor-pointer text-muted">Documents sent to this contact (0)</summary>
@@ -273,6 +283,7 @@ function Page() {
                 + Add contact
               </button>
             </div>
+            <PartySkuPanel partyKind="customer" partyId={current.id} />
             <div className="mt-6 rounded-md border border-dashed border-border p-8 text-center text-sm text-muted">
               Drag and drop files here
               <div>
@@ -318,6 +329,9 @@ function Page() {
                 <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
               </Field>
             </div>
+            <Field label="Email">
+              <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            </Field>
             <div className="grid grid-cols-3 gap-3">
               <Field label="Net D">
                 <Input value={form.payment_terms} onChange={(e) => setForm({ ...form, payment_terms: e.target.value })} />

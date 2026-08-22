@@ -1,0 +1,63 @@
+-- Money concepts (V8 Master) and Chase folio on cash movements.
+
+create table if not exists money_concepts (
+  id serial primary key,
+  kind text not null,
+  partida text not null,
+  name text not null,
+  is_active boolean not null default true,
+  sort_order integer not null default 0,
+  unique (kind, partida, name)
+);
+
+alter table cash_movements add column if not exists concept text;
+
+insert into money_concepts (kind, partida, name, sort_order) values
+  ('ingreso', 'Venta', 'Papaya', 10),
+  ('ingreso', 'Venta', 'Jack Fruit', 20),
+  ('ingreso', 'Venta', 'Banana Thai', 30),
+  ('ingreso', 'Venta', 'Coco verde', 40),
+  ('ingreso', 'Venta', 'Coco peludo', 50),
+  ('ingreso', 'Venta', 'Maiz dulce', 60),
+  ('ingreso', 'Venta', 'Mango', 70),
+  ('ingreso', 'Venta', 'Tomate roma', 80),
+  ('ingreso', 'Venta', 'Lychee', 90),
+  ('ingreso', 'Venta', 'Bell Pepper Verde', 100),
+  ('ingreso', 'Venta', 'Jalapeño', 110),
+  ('ingreso', 'Venta', 'Esparrago Organico', 120),
+  ('ingreso', 'Venta', 'Col de bruselas', 130),
+  ('ingreso', 'Venta', 'Habanero Rojo', 140),
+  ('ingreso', 'Venta', 'Habanero Naranja', 150),
+  ('ingreso', 'Venta', 'Kabocha', 160),
+  ('ingreso', 'Venta', 'Limon Persa', 170),
+  ('ingreso', 'Abono', 'Anticipo cliente', 10),
+  ('ingreso', 'Abono', 'Liquidacion', 20),
+  ('gasto', 'Costo', 'Materia prima', 10),
+  ('gasto', 'Costo', 'Carton', 20),
+  ('gasto', 'Costo', 'In & out', 30),
+  ('gasto', 'Costo', 'Aduanas', 40),
+  ('gasto', 'Costo', 'Reempaque', 50),
+  ('gasto', 'Costo', 'Comision', 60),
+  ('gasto', 'Costo', 'Fletes', 70),
+  ('gasto', 'Gasto de Venta', 'Viaticos', 10),
+  ('gasto', 'Gasto de Venta', 'Publicidad', 20),
+  ('gasto', 'Gasto Nómina', 'Nomina Ventas', 10),
+  ('gasto', 'Gasto Nómina', 'Nomina Compras', 20),
+  ('gasto', 'Gasto Nómina', 'Nomina Admin', 30),
+  ('gasto', 'Gasto Administrativo', 'Renta', 10),
+  ('gasto', 'Gasto Administrativo', 'Asesoria', 20),
+  ('gasto', 'Gasto Administrativo', 'Certificados', 30),
+  ('gasto', 'Gasto Administrativo', 'Seguros', 40),
+  ('gasto', 'Gasto Administrativo', 'Otros gastos', 50),
+  ('gasto', 'Gasto Administrativo', 'Inspection Services', 60),
+  ('gasto', 'Gasto Administrativo', 'Quality Control', 70),
+  ('gasto', 'Gasto Administrativo', 'Dues & Subscriptions', 80),
+  ('gasto', 'Gasto Administrativo', 'Equipment', 90),
+  ('gasto', 'Gasto Administrativo', 'Boxes', 100),
+  ('gasto', 'Gasto Administrativo', 'Supplies', 110),
+  ('gasto', 'Gasto Administrativo', 'Legal & Professional fees', 120),
+  ('gasto', 'Gasto Administrativo', 'Maintenance & Repairs', 130),
+  ('gasto', 'Gasto Administrativo', 'Utilities', 140),
+  ('gasto', 'Gasto Financiero', 'Cobros bancarios', 10),
+  ('gasto', 'Gasto Financiero', 'Financiamiento', 20)
+on conflict (kind, partida, name) do nothing;

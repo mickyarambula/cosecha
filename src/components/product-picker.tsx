@@ -1,8 +1,11 @@
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "@tanstack/react-router";
+import { BodyPortal } from "@/components/portal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { SkuOption } from "@/components/sku-select";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export function ProductPicker({
@@ -18,6 +21,7 @@ export function ProductPicker({
   extra?: React.ReactNode;
   stock?: Record<number, { ats: number; oh: number; price?: number }>;
 }) {
+  const t = useT();
   const [q, setQ] = useState("");
   const [hi, setHi] = useState(0);
   const rows = useMemo(() => {
@@ -27,7 +31,8 @@ export function ProductPicker({
   }, [skus, q]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-fg/40 p-0 sm:p-8" onClick={onClose}>
+    <BodyPortal>
+    <div data-cosecha-overlay className="fixed inset-0 z-[80] flex items-start justify-center bg-fg/40 p-0 sm:p-8" onClick={onClose}>
       <div
         className="flex max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-none bg-surface shadow-xl sm:rounded-lg"
         onClick={(e) => e.stopPropagation()}
@@ -56,7 +61,7 @@ export function ProductPicker({
               }
               if (e.key === "Escape") onClose();
             }}
-            placeholder="Search product, pack, variety…"
+            placeholder={t("Search product, pack, variety…")}
             className="h-11 flex-1 bg-transparent text-sm outline-none"
           />
         </div>
@@ -64,14 +69,14 @@ export function ProductPicker({
           <table className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface-2 text-xs text-muted">
               <tr>
-                <th className="px-4 py-2 font-medium">Product</th>
-                <th className="px-4 py-2 font-medium">Unit</th>
-                <th className="px-4 py-2 font-medium">Label</th>
+                <th className="px-4 py-2 font-medium">{t("Product")}</th>
+                <th className="px-4 py-2 font-medium">{t("Unit")}</th>
+                <th className="px-4 py-2 font-medium">{t("Label")}</th>
                 {stock ? (
                   <>
-                    <th className="px-4 py-2 font-medium">Default price</th>
-                    <th className="px-4 py-2 text-right font-medium">ATS</th>
-                    <th className="px-4 py-2 text-right font-medium">O/H</th>
+                    <th className="px-4 py-2 font-medium">{t("Default price")}</th>
+                    <th className="px-4 py-2 text-right font-medium">{t("ATS")}</th>
+                    <th className="px-4 py-2 text-right font-medium">{t("O/H")}</th>
                   </>
                 ) : null}
                 <th className="w-28 px-4 py-2" />
@@ -108,16 +113,21 @@ export function ProductPicker({
               ))}
             </tbody>
           </table>
-          {rows.length === 0 ? <p className="px-4 py-8 text-center text-sm text-muted">No matching inventory items.</p> : null}
+          {rows.length === 0 ? <p className="px-4 py-8 text-center text-sm text-muted">{t("No matching inventory items.")}</p> : null}
         </div>
         <div className="flex items-center justify-between border-t border-border px-4 py-2 text-xs text-muted">
           <span>
-            <kbd className="rounded border border-border bg-surface-2 px-1.5 py-0.5">Enter</kbd> to add the highlighted row
+            <kbd className="rounded border border-border bg-surface-2 px-1.5 py-0.5">Enter</kbd> {t("to add the highlighted row")}
           </span>
-          {extra ?? <span>Add new inventory item</span>}
+          {extra ?? (
+            <Link to="/productos" search={{ tab: "catalog" }} className="text-link">
+              {t("Add new inventory item")}
+            </Link>
+          )}
         </div>
       </div>
     </div>
+    </BodyPortal>
   );
 }
 
@@ -128,15 +138,17 @@ export function FilterRow({ children }: { children: React.ReactNode }) {
 }
 
 export function FilterField({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+  const t = useT();
   return (
     <label className={cn("flex min-w-36 flex-col gap-1", className)}>
-      <span className="label-caps">{label}</span>
+      <span className="label-caps">{t(label)}</span>
       {children}
     </label>
   );
 }
 
 export function EmptyOrders({ onNew, kind = "purchase" }: { onNew?: () => void; kind?: "purchase" | "sales" }) {
+  const t = useT();
   return (
     <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
       <svg viewBox="0 0 80 80" className="mb-4 size-20 text-subtle" aria-hidden>
@@ -144,13 +156,13 @@ export function EmptyOrders({ onNew, kind = "purchase" }: { onNew?: () => void; 
         <path d="M24 62c4-12 10-18 16-18s12 6 16 18" fill="currentColor" opacity="0.18" />
         <rect x="30" y="44" width="20" height="14" rx="2" fill="currentColor" opacity="0.28" />
       </svg>
-      <p className="text-lg font-medium text-muted">No orders found</p>
+      <p className="text-lg font-medium text-muted">{t("No orders found")}</p>
       <p className="mt-1 max-w-md text-sm text-subtle">
         {kind === "sales"
-          ? "Here you'll see sales orders for your account. Create a new order to sell from inventory by clicking "
-          : "Here you'll see purchase orders made for your account. You can create new orders and notify vendors by clicking "}
+          ? t("Here you'll see sales orders for your account. Create a new order to sell from inventory by clicking ")
+          : t("Here you'll see purchase orders made for your account. You can create new orders and notify vendors by clicking ")}
         <button type="button" className="text-link" onClick={onNew}>
-          New Order
+          {t("New Order")}
         </button>
         .
       </p>

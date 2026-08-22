@@ -3,7 +3,9 @@ import { useMemo } from "react";
 import { Kpi, Panel } from "@/components/app-shell";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { poShort } from "@/lib/nav";
-import { getDashboard, listPurchasedLots, listSalesOrders } from "@/lib/produce-server";
+import { COMPANY } from "@/lib/company";
+import { useT } from "@/lib/i18n";
+import { getDashboard, getFinancials, listPurchasedLots, listSalesOrders, listSettlements } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { fecha, money, todayISO } from "@/lib/utils";
 
@@ -16,10 +18,13 @@ export const Route = createFileRoute("/reportes")({
 });
 
 function Page() {
+  const t = useT();
   const { tab } = Route.useSearch();
   const dash = useAsync(() => getDashboard(), []);
   const sales = useAsync(() => listSalesOrders(), []);
   const purchased = useAsync(() => listPurchasedLots(), []);
+  const fin = useAsync(() => getFinancials(), []);
+  const settlements = useAsync(() => listSettlements(), []);
   const rows = sales.data ?? [];
 
   const byCustomer = useMemo(() => {
@@ -44,6 +49,192 @@ function Page() {
     const profit = salesT - cost;
     return { orders: rows.length, units, salesT, cost, profit, margin: salesT ? (profit / salesT) * 100 : 0, markup: cost ? (profit / cost) * 100 : 0 };
   }, [rows]);
+
+  if (tab === "pl" || tab === "balance" || tab === "trial" || tab === "settlements") {
+    const f = fin.data;
+    const accts = f?.accounts ?? [];
+    if (tab === "settlements") {
+      const rows = settlements.data ?? [];
+      return (
+        <div className="p-5">
+          <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
+          <p className="text-sm text-muted">Vendor settlements</p>
+          <p className="mt-1 max-w-2xl text-sm text-muted">
+            PAS lots post here after a purchase is signed off. Close lots from Warehouse → Lots, then settle from the PO.
+          </p>
+          {settlements.loading ? <p className="mt-4 text-sm text-muted">Loading…</p> : null}
+          {settlements.error ? <p className="mt-4 text-sm text-danger">{settlements.error}</p> : null}
+          <table className="mt-4 w-full text-left text-sm">
+            <thead className="border-y border-border text-[11px] uppercase text-muted">
+              <tr>
+                <th className="px-3 py-2">PO</th>
+                <th className="px-3 py-2">Vendor</th>
+                <th className="px-3 py-2">Mode</th>
+                <th className="px-3 py-2 text-right">Revenue</th>
+                <th className="px-3 py-2 text-right">Expenses</th>
+                <th className="px-3 py-2 text-right">Profit</th>
+                <th className="px-3 py-2 text-right">Balance due</th>
+                <th className="px-3 py-2">Sign-off</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.po_id} className="border-b border-border">
+                  <td className="px-3 py-2">
+                    <Link to="/compras" className="font-mono text-xs text-primary">
+                      {r.po_number}
+                    </Link>
+                  </td>
+                  <td className="px-3 py-2">{r.supplier_name}</td>
+                  <td className="px-3 py-2 uppercase text-xs text-muted">{r.costing_mode}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{money(r.revenue)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{money(r.expenses)}</td>
+                  <td className={`px-3 py-2 text-right tabular-nums ${r.profit < 0 ? "text-danger" : ""}`}>{money(r.profit)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{money(r.balance_due)}</td>
+                  <td className="px-3 py-2 text-xs">{r.signed_off ? "Signed" : r.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!settlements.loading && !rows.length ? <p className="mt-4 text-sm text-muted">No purchase orders yet.</p> : null}
+        </div>
+      );
+    }
+    if (tab === "trial") {
+      return (
+        <div className="p-5">
+          <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
+          <p className="text-sm text-muted">Trial Balance</p>
+          <table className="mt-4 w-full text-left text-sm">
+            <thead className="border-y border-border text-[11px] uppercase text-muted">
+              <tr>
+                <th className="px-3 py-2">Account</th>
+                <th className="px-3 py-2 text-right">Debit</th>
+                <th className="px-3 py-2 text-right">Credit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accts.map((a) => {
+                const debit = a.kind === "asset" || a.kind === "expense" || a.kind === "cogs" ? a.current_balance : 0;
+                const credit = a.kind === "liability" || a.kind === "equity" || a.kind === "revenue" ? a.current_balance : 0;
+                return (
+                  <tr key={a.number} className="border-b border-border">
+                    <td className="px-3 py-2">
+                      {a.number} {a.name}
+                    </td>
+                    <td className="px-3 py-2 text-right">{debit ? money(debit) : ""}</td>
+                    <td className="px-3 py-2 text-right">{credit ? money(credit) : ""}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    if (tab === "balance") {
+      const assets = accts.filter((a) => a.kind === "asset");
+      const liab = accts.filter((a) => a.kind === "liability");
+      const eq = accts.filter((a) => a.kind === "equity");
+      return (
+        <div className="mx-auto max-w-3xl p-8">
+          <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
+          <p className="text-sm text-muted">Balance Sheet</p>
+          <SheetBlock title="Assets" rows={assets} />
+          <SheetBlock title="Liabilities" rows={liab} />
+          <SheetBlock title="Equity" rows={eq} />
+        </div>
+      );
+    }
+    const rev = accts.filter((a) => a.kind === "revenue");
+    const cogs = accts.filter((a) => a.kind === "cogs");
+    const exp = accts.filter((a) => a.kind === "expense");
+    return (
+      <div className="p-5">
+        <FilterRow>
+          <FilterField label="Period">
+            <InputDate />
+          </FilterField>
+        </FilterRow>
+        <div className="mx-auto max-w-3xl p-6">
+          <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
+          <p className="text-sm text-muted">{t("Profit & Loss")}</p>
+          <p className="mt-1 max-w-2xl text-sm text-muted">
+            {t(
+              "Opening invoices from Ingresos and Egresos sit on the Balance Sheet (AR, AP, Chase). This P&L starts after the 19 Aug 2026 corte — it fills when you invoice a live sale.",
+            )}
+          </p>
+          {(f?.income ?? 0) === 0 ? (
+            <p className="mt-3 rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-muted">
+              {t("No live sales yet. Place a purchase, receive it, sell it and invoice — then numbers appear here.")}
+            </p>
+          ) : null}
+          <table className="mt-6 w-full text-sm">
+            <thead>
+              <tr className="border-b border-fg">
+                <th className="py-2 text-left">Account</th>
+                <th className="py-2 text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="py-2 font-semibold">Income</td>
+                <td />
+              </tr>
+              {rev.map((a) => (
+                <tr key={a.number}>
+                  <td className="py-1 pl-4 text-link">
+                    {a.number} {a.name}
+                  </td>
+                  <td className="py-1 text-right tabular-nums">{money(a.current_balance)}</td>
+                </tr>
+              ))}
+              <tr className="border-t border-border font-semibold">
+                <td className="py-2">Total Income</td>
+                <td className="py-2 text-right">{money(f?.income ?? 0)}</td>
+              </tr>
+              <tr>
+                <td className="py-3 font-semibold">Cost of Goods Sold</td>
+                <td />
+              </tr>
+              {cogs.map((a) => (
+                <tr key={a.number}>
+                  <td className="py-1 pl-4 text-link">
+                    {a.number} {a.name}
+                  </td>
+                  <td className="py-1 text-right">{money(a.current_balance)}</td>
+                </tr>
+              ))}
+              <tr className="border-t border-border font-semibold">
+                <td className="py-2">Total Cost of Goods Sold</td>
+                <td className="py-2 text-right">{money(f?.cogs ?? 0)}</td>
+              </tr>
+              <tr className="bg-surface-2 font-semibold">
+                <td className="py-2">Gross Profit</td>
+                <td className="py-2 text-right">{money(f?.gp ?? 0)}</td>
+              </tr>
+              <tr>
+                <td className="py-3 font-semibold">Expenses</td>
+                <td />
+              </tr>
+              {exp.filter((a) => a.current_balance).map((a) => (
+                <tr key={a.number}>
+                  <td className="py-1 pl-4 text-link">
+                    {a.number} {a.name}
+                  </td>
+                  <td className="py-1 text-right">{money(a.current_balance)}</td>
+                </tr>
+              ))}
+              <tr className="border-t border-border font-semibold">
+                <td className="py-2">Net Income</td>
+                <td className="py-2 text-right">{money(f?.net ?? 0)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
 
   if (tab === "overview") {
     const d = dash.data;
@@ -105,7 +296,7 @@ function Page() {
           cols={["Sales rep", "# Orders", "Inv. units sold", "T/ Inv. sales", "T/ Cost", "T/ Profit", "% Profit"]}
           rows={[
             [
-              "Juan Mercado",
+              "Miguel",
               String(dept.orders),
               String(dept.units),
               money(dept.salesT),
@@ -269,6 +460,37 @@ function Page() {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function SheetBlock({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: { number: string; name: string; current_balance: number }[];
+}) {
+  const total = rows.reduce((s, r) => s + r.current_balance, 0);
+  return (
+    <div className="mt-6">
+      <h2 className="font-semibold">{title}</h2>
+      <table className="mt-2 w-full text-sm">
+        <tbody>
+          {rows.map((a) => (
+            <tr key={a.number} className="border-b border-border">
+              <td className="py-1.5">
+                {a.number} {a.name}
+              </td>
+              <td className="py-1.5 text-right tabular-nums">{money(a.current_balance)}</td>
+            </tr>
+          ))}
+          <tr className="font-semibold">
+            <td className="py-2">Total {title}</td>
+            <td className="py-2 text-right">{money(total)}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }

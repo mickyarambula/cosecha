@@ -11,3 +11,7 @@ attachments
 AGENTS.md
 AGENTS.project.md
 public/og.jpg
+.project_id
+.env
+.env.*
+!.env.example

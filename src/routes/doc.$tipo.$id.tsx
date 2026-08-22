@@ -5,7 +5,7 @@ import { getPrintDoc } from "@/lib/produce-server";
 export const Route = createFileRoute("/doc/$tipo/$id")({
   loader: ({ params }) => {
     const tipo = params.tipo;
-    if (tipo !== "factura" && tipo !== "oc" && tipo !== "ov") {
+    if (tipo !== "factura" && tipo !== "oc" && tipo !== "ov" && tipo !== "pick" && tipo !== "bol" && tipo !== "confirm") {
       throw new Error("Documento no reconocido");
     }
     return getPrintDoc({ data: { tipo, id: Number(params.id) } });

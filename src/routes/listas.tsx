@@ -9,7 +9,7 @@ import { useAsync } from "@/lib/use-async";
 export const Route = createFileRoute("/listas")({ component: Page });
 
 const KINDS = [
-  { id: "empaque" as const, title: "Pack", hint: "Carton, Clamshell, Crate…" },
+  { id: "empaque" as const, title: "Pack", hint: "Caja, Bolsa, Saco…" },
   { id: "calibre" as const, title: "Count", hint: "7 ct, 10 ct, 12 ct…" },
   { id: "grado" as const, title: "Grade", hint: "Fancy, Choice, Extra…" },
 ];

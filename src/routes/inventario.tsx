@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
-import { Kpi, Modal } from "@/components/app-shell";
+import { Kpi, Modal, TabActions } from "@/components/app-shell";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { Badge, qualityLabel } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
+import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
   closeLot,
@@ -36,6 +37,7 @@ function keyOf(l: LotRow) {
 
 function Page() {
   const { tab } = Route.useSearch();
+  const t = useT();
   const lots = useAsync(() => listLots(), []);
   const warehouse = useAsync(() => getWarehouse(), []);
   const products = useAsync(() => listProducts(), []);
@@ -111,6 +113,13 @@ function Page() {
   if (tab === "lots") {
     return (
       <>
+        <TabActions>
+          <Button size="sm" variant="outline" asChild>
+            <Link to="/productos" search={{ tab: "catalog" }}>
+              New product / SKU
+            </Link>
+          </Button>
+        </TabActions>
         <LotsBoard
           lots={data}
           q={q}
@@ -320,6 +329,27 @@ function Page() {
 
   return (
     <div>
+      <TabActions>
+        <Button size="sm" variant="outline" asChild>
+          <Link to="/productos" search={{ tab: "catalog" }}>
+            New product / SKU
+          </Link>
+        </Button>
+      </TabActions>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-surface px-5 py-3">
+        <p className="text-sm text-muted">
+          {t("Available Units is stock on lots. Create the product × pack × count in")}{" "}
+          <Link to="/productos" search={{ tab: "catalog" }} className="text-link">
+            {t("Products & SKUs")}
+          </Link>
+          .
+        </p>
+        <Button size="sm" asChild>
+          <Link to="/productos" search={{ tab: "catalog" }}>
+            {t("New product / SKU")}
+          </Link>
+        </Button>
+      </div>
       {msg ? <p className="px-5 py-2 text-sm text-ok">{msg}</p> : null}
       <FilterRow>
         <FilterField label="Items" className="min-w-40 flex-1">

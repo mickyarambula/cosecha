@@ -1,4 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#1B6B4C"/>
-  <path d="M8 22V10h4.2c3.4 0 5.5 1.7 5.5 4.4 0 2.7-2.1 4.4-5.5 4.4H11.2V22H8zm3.2-5.4h.9c1.6 0 2.5-.8 2.5-2.2s-.9-2.2-2.5-2.2h-.9v4.4zM19.2 22l3.3-12h3.1L29 22h-3.3l-.5-2h-2.3l-.5 2h-3.2zm4.2-4.6h1.5l-.7-2.8-.8 2.8z" fill="#fff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#ffffff"/>
+  <g fill="#1B5E3B">
+    <path d="M32 6l2.2 24h-4.4z"/>
+    <path d="M32 6l2.2 24h-4.4z" transform="rotate(-26 32 32)"/>
+    <path d="M32 6l2.2 24h-4.4z" transform="rotate(26 32 32)"/>
+    <path d="M32 6l2.2 24h-4.4z" transform="rotate(-52 32 32)"/>
+    <path d="M32 6l2.2 24h-4.4z" transform="rotate(52 32 32)"/>
+    <path d="M32 6l2.1 24h-4.2z" transform="rotate(-78 32 32)"/>
+    <path d="M32 6l2.1 24h-4.2z" transform="rotate(78 32 32)"/>
+    <path d="M13 32a19 19 0 0 0 38 0H13z"/>
+  </g>
+  <g fill="#ffffff">
+    <path d="M32 58l1.8-16h-3.6z"/>
+    <path d="M32 58l1.8-16h-3.6z" transform="rotate(-32 32 32)"/>
+    <path d="M32 58l1.8-16h-3.6z" transform="rotate(32 32 32)"/>
+    <path d="M32 58l1.7-16h-3.4z" transform="rotate(-64 32 32)"/>
+    <path d="M32 58l1.7-16h-3.4z" transform="rotate(64 32 32)"/>
+  </g>
 </svg>

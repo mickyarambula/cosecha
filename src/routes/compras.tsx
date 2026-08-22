@@ -2,12 +2,14 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Printer } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { MetaCard, Modal } from "@/components/app-shell";
+import { ConceptSelect } from "@/components/concepts";
 import { EmptyOrders, FilterField, FilterRow, ProductPicker } from "@/components/product-picker";
 import { packsToSkus, type SkuOption } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
+import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
   applySettlement,
@@ -25,7 +27,6 @@ import {
 import { useAsync } from "@/lib/use-async";
 import {
   DEFECTOS,
-  GASTO_CATEGORIAS,
   INSPECCION_TIPOS,
   RESULTADOS_REC,
   fecha,
@@ -79,6 +80,7 @@ const GRUPOS: [keyof typeof DEFECTOS, string][] = [
 ];
 
 function Page() {
+  const t = useT();
   const { tab } = Route.useSearch();
   const navigate = useNavigate();
   const orders = useAsync(() => listPurchaseOrders(), []);
@@ -750,7 +752,7 @@ function Page() {
               ))}
             </div>
             <Button type="submit" disabled={saving}>
-              {saving ? "Saving…" : "Receive"}
+              {saving ? "Saving…" : t("Receive")}
             </Button>
           </form>
         </Modal>
@@ -864,6 +866,7 @@ function PoDetail({
   const received = row.lines.some((l) => l.quantity_received > 0);
   const units = row.lines.reduce((s, l) => s + l.quantity_ordered, 0);
   const pallets = row.lines.reduce((s, l) => s + (l.pallets || 0), 0);
+  const t = useT();
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1039,12 +1042,12 @@ function PoDetail({
       <div className="mt-4 flex flex-wrap items-center gap-2">
         {pending ? (
           <Button size="sm" onClick={onReceive}>
-            Receive merchandise
+            {t("Receive merchandise")}
           </Button>
         ) : null}
         {received && !row.bill ? (
           <Button size="sm" variant="outline" disabled={saving} onClick={onBill}>
-            Capture vendor invoice
+            {t("Capture vendor invoice")}
           </Button>
         ) : null}
         {received ? (
@@ -1091,11 +1094,7 @@ function ExpenseModal({
     <Modal title="Create Expense and Connect to Order" onClose={onClose} wide>
       <div className="grid gap-3 sm:grid-cols-4">
         <Field label="Type *">
-          <Select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-            {GASTO_CATEGORIAS.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </Select>
+          <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} />
         </Field>
         <Field label="Requested date">
           <Input type="date" defaultValue={todayISO()} />

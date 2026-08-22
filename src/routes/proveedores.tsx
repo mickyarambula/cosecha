@@ -1,24 +1,28 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal } from "@/components/app-shell";
+import { PartySkuPanel } from "@/components/party-skus";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/input";
-import { createSupplier, listSuppliers, updateSupplier } from "@/lib/produce-server";
+import { createSupplier, listLots, listSuppliers, updateSupplier } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { cn } from "@/lib/utils";
+import { cn, fecha, money, pct } from "@/lib/utils";
 
 export const Route = createFileRoute("/proveedores")({ component: Page });
 
 function Page() {
   const { data, loading, reload } = useAsync(() => listSuppliers(), []);
+  const lots = useAsync(() => listLots(), []);
   const [sel, setSel] = useState<number | null>(null);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", contact_name: "", phone: "", city: "", country: "USA", notes: "", tambien_cliente: false });
+  const [vtab, setVtab] = useState<"skus" | "lots" | "expenses" | "returns">("skus");
+  const [form, setForm] = useState({ name: "", contact_name: "", phone: "", email: "", city: "", country: "USA", notes: "", tambien_cliente: false });
   const [edit, setEdit] = useState({
     name: "",
     contact_name: "",
     phone: "",
+    email: "",
     city: "",
     country: "",
     notes: "",
@@ -50,6 +54,7 @@ function Page() {
       name: c.name,
       contact_name: c.contact_name ?? "",
       phone: c.phone ?? "",
+      email: c.email ?? "",
       city: c.city ?? "",
       country: c.country ?? "",
       notes: c.notes ?? "",
@@ -81,6 +86,7 @@ function Page() {
           name: edit.name,
           contact_name: edit.contact_name || undefined,
           phone: edit.phone || undefined,
+          email: edit.email || undefined,
           city: edit.city || undefined,
           country: edit.country || undefined,
           notes: edit.notes || undefined,
@@ -215,12 +221,76 @@ function Page() {
                 <Input placeholder="Name" value={edit.contact_name} onChange={(e) => setEdit({ ...edit, contact_name: e.target.value })} />
                 <Input placeholder="Phone" value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} />
                 <Input placeholder="Fax" />
-                <Input placeholder="Email address" />
+                <Input placeholder="Email address" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} />
               </div>
             </div>
             <Field label="Notes" className="mt-4">
               <Textarea value={edit.notes} onChange={(e) => setEdit({ ...edit, notes: e.target.value })} />
             </Field>
+            <div className="mt-6 border-t border-border pt-4">
+              <div className="flex gap-4 text-sm">
+                {(["skus", "lots", "expenses", "returns"] as const).map((tabId) => (
+                  <button
+                    key={tabId}
+                    type="button"
+                    className={vtab === tabId ? "border-b-2 border-action pb-1 font-medium" : "pb-1 text-muted"}
+                    onClick={() => setVtab(tabId)}
+                  >
+                    {tabId === "skus" ? "Preferred SKUs" : tabId === "lots" ? "Lots" : tabId === "expenses" ? "Expenses" : "Returns"}
+                  </button>
+                ))}
+              </div>
+              {vtab === "skus" ? (
+                <div className="mt-3">
+                  <PartySkuPanel partyKind="vendor" partyId={current.id} />
+                </div>
+              ) : vtab === "lots" ? (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[720px] text-left text-sm">
+                    <thead className="text-[11px] uppercase text-muted">
+                      <tr>
+                        <th className="px-2 py-2">Source</th>
+                        <th className="px-2 py-2">Received</th>
+                        <th className="px-2 py-2">Lot #</th>
+                        <th className="px-2 py-2 text-right">Original</th>
+                        <th className="px-2 py-2 text-right">Remaining</th>
+                        <th className="px-2 py-2 text-right">Sold</th>
+                        <th className="px-2 py-2 text-right">Avg $/unit</th>
+                        <th className="px-2 py-2 text-right">Total sales</th>
+                        <th className="px-2 py-2 text-right">Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(lots.data ?? [])
+                        .filter((l) => l.supplier_name === current.name)
+                        .map((l) => {
+                          const cost = l.original_qty * l.unit_cost;
+                          const profit = l.revenue - cost;
+                          return (
+                            <tr key={l.id} className="border-t border-border">
+                              <td className="px-2 py-2 text-ok">{l.po_number || "—"}</td>
+                              <td className="px-2 py-2">{fecha(l.received_date)}</td>
+                              <td className="px-2 py-2">{l.lot_number}</td>
+                              <td className="px-2 py-2 text-right">{l.original_qty}</td>
+                              <td className="px-2 py-2 text-right">{l.current_qty}</td>
+                              <td className="px-2 py-2 text-right">{l.sold_qty}</td>
+                              <td className="px-2 py-2 text-right">{l.sold_qty ? money(l.revenue / l.sold_qty) : "—"}</td>
+                              <td className="px-2 py-2 text-right">{money(l.revenue)}</td>
+                              <td className="px-2 py-2 text-right">
+                                {money(profit)} {l.revenue ? pct((profit / l.revenue) * 100) : ""}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-muted">
+                  {vtab === "expenses" ? "Expenses for this vendor live in Finance → Expenses." : "No returns recorded for this vendor."}
+                </p>
+              )}
+            </div>
             <div className="mt-4 flex items-center justify-between">
               <button type="button" className="text-sm text-danger">
                 Delete vendor
@@ -245,6 +315,9 @@ function Page() {
             </Field>
             <Field label="Phone">
               <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            </Field>
+            <Field label="Email">
+              <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
             </Field>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useT } from "@/lib/i18n";
 import { CALIDAD_LABEL, cn } from "@/lib/utils";
 
 const tones: Record<string, string> = {
@@ -6,13 +7,15 @@ const tones: Record<string, string> = {
   warn: "bg-surface-2 text-muted",
   danger: "bg-danger/12 text-danger",
   mute: "bg-surface-2 text-muted",
-  unpaid: "bg-rose-100 text-rose-700",
+  unpaid: "bg-danger/12 text-danger",
 };
 
 export function Badge({ children, tone = "mute" }: { children: ReactNode; tone?: keyof typeof tones }) {
+  const t = useT();
+  const content = typeof children === "string" ? t(children) : children;
   return (
     <span className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium", tones[tone])}>
-      {children}
+      {content}
     </span>
   );
 }

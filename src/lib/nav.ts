@@ -1,4 +1,4 @@
-export type TabDef = { label: string; tab?: string; hash?: string };
+export type TabDef = { label: string; tab?: string; hash?: string; to?: string; search?: Record<string, string> };
 export type SectionDef = {
   to: string;
   label: string;
@@ -59,6 +59,7 @@ export const MODULES: ModuleDef[] = [
         starred: true,
         search: { tab: "pricing" },
         tabs: [
+          { label: "Products & SKUs", to: "/productos", tab: "catalog" },
           { label: "Available Units", tab: "units" },
           { label: "Pricing", tab: "pricing" },
           { label: "Details", tab: "details" },
@@ -70,7 +71,15 @@ export const MODULES: ModuleDef[] = [
       { to: "/inventario", label: "Lots", search: { tab: "lots" } },
       { to: "/inventario", label: "Oversold", search: { tab: "oversold" } },
       { to: "/inventario", label: "Fulfillment", search: { tab: "fulfillment" } },
-      { to: "/productos", label: "Pack-Outs & Repacks" },
+      {
+        to: "/productos",
+        label: "Products & SKUs",
+        starred: true,
+        tabs: [
+          { label: "Catalog", tab: "catalog" },
+          { label: "Pack-Outs & Repacks", tab: "repack" },
+        ],
+      },
     ],
   },
   {
@@ -93,6 +102,15 @@ export const MODULES: ModuleDef[] = [
     to: "/gastos",
     sections: [
       {
+        to: "/cuentas",
+        label: "Chart of Accounts",
+        starred: true,
+        tabs: [
+          { label: "Chart of Accounts", tab: "accounts" },
+          { label: "Automations", tab: "automations" },
+        ],
+      },
+      {
         to: "/gastos",
         label: "Expenses",
         starred: true,
@@ -104,9 +122,34 @@ export const MODULES: ModuleDef[] = [
           { label: "Debt Aging", tab: "aging" },
         ],
       },
-      { to: "/cxp", label: "Payments" },
-      { to: "/cxc", label: "Credits" },
-      { to: "/tesoreria", label: "Debt Aging" },
+      {
+        to: "/cxc",
+        label: "Sales",
+        starred: true,
+        tabs: [
+          { label: "Overview", tab: "overview" },
+          { label: "Invoices", tab: "invoices" },
+          { label: "Statements", tab: "statements" },
+          { label: "Payments", tab: "payments" },
+          { label: "Credits", tab: "credits" },
+          { label: "Debt Aging", tab: "aging" },
+          { label: "Unpaid Sales Aging", tab: "unpaid" },
+        ],
+      },
+      {
+        to: "/cxp",
+        label: "Payables",
+        starred: true,
+      },
+      {
+        to: "/tesoreria",
+        label: "Cash",
+        starred: true,
+        tabs: [
+          { label: "Movements", tab: "movements" },
+          { label: "Reconcile", tab: "reconcile" },
+        ],
+      },
     ],
   },
   {
@@ -129,6 +172,18 @@ export const MODULES: ModuleDef[] = [
           { label: "Item Detail", tab: "items" },
         ],
       },
+      {
+        to: "/reportes",
+        label: "Financial",
+        starred: true,
+        search: { tab: "pl" },
+        tabs: [
+          { label: "P&L", tab: "pl" },
+          { label: "Balance Sheet", tab: "balance" },
+          { label: "Trial Balance", tab: "trial" },
+          { label: "Settlements", tab: "settlements" },
+        ],
+      },
     ],
   },
   {
@@ -140,13 +195,17 @@ export const MODULES: ModuleDef[] = [
         to: "/settings",
         label: "Settings",
         tabs: [
+          { label: "Appearance", tab: "appearance" },
           { label: "Teams", tab: "teams" },
           { label: "Inventory", tab: "inventory" },
           { label: "Orders", tab: "orders" },
           { label: "Accounting", tab: "accounting" },
           { label: "Features", tab: "features" },
           { label: "Departments", tab: "departments" },
+          { label: "Concepts", tab: "concepts" },
           { label: "Business Info", tab: "business" },
+          { label: "Sent", tab: "sent" },
+          { label: "Tests", tab: "tests" },
           { label: "Online Ordering", tab: "online" },
         ],
       },
@@ -163,13 +222,16 @@ export function moduleForPath(pathname: string): ModuleDef {
 export function sectionForPath(pathname: string, searchStr = ""): SectionDef {
   const mod = moduleForPath(pathname);
   const tab = new URLSearchParams(searchStr.startsWith("?") ? searchStr.slice(1) : searchStr).get("tab");
+  const pathOk = (s: SectionDef) => (s.to === "/" ? pathname === "/" : pathname.startsWith(s.to));
   if (tab) {
-    const bySearch = mod.sections.find((s) => s.search?.tab === tab && pathname.startsWith(s.to));
+    const bySearch = mod.sections.find((s) => s.search?.tab === tab && pathOk(s));
     if (bySearch) return bySearch;
+    const byTab = mod.sections.find((s) => pathOk(s) && s.tabs?.some((t) => t.tab === tab));
+    if (byTab) return byTab;
   }
-  const exact = mod.sections.find((s) => (s.to === "/" ? pathname === "/" : pathname.startsWith(s.to)) && !s.search);
+  const exact = mod.sections.find((s) => pathOk(s) && !s.search);
   if (exact) return exact;
-  return mod.sections.find((s) => (s.to === "/" ? pathname === "/" : pathname.startsWith(s.to))) ?? mod.sections[0];
+  return mod.sections.find((s) => pathOk(s)) ?? mod.sections[0];
 }
 
 export function poShort(poNumber: string) {

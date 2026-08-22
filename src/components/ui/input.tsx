@@ -1,7 +1,9 @@
 import * as React from "react";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-export function Input({ className, ...props }: React.ComponentProps<"input">) {
+export function Input({ className, placeholder, ...props }: React.ComponentProps<"input">) {
+  const t = useT();
   return (
     <input
       className={cn(
@@ -10,6 +12,7 @@ export function Input({ className, ...props }: React.ComponentProps<"input">) {
         "disabled:bg-surface-2 disabled:text-muted",
         className,
       )}
+      placeholder={placeholder ? t(placeholder) : undefined}
       {...props}
     />
   );
@@ -19,7 +22,8 @@ export function Label({ className, ...props }: React.ComponentProps<"label">) {
   return <label className={cn("label-caps", className)} {...props} />;
 }
 
-export function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
+export function Textarea({ className, placeholder, ...props }: React.ComponentProps<"textarea">) {
+  const t = useT();
   return (
     <textarea
       className={cn(
@@ -27,6 +31,7 @@ export function Textarea({ className, ...props }: React.ComponentProps<"textarea
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30",
         className,
       )}
+      placeholder={placeholder ? t(placeholder) : undefined}
       {...props}
     />
   );
@@ -46,9 +51,10 @@ export function Select({ className, ...props }: React.ComponentProps<"select">) 
 }
 
 export function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+  const t = useT();
   return (
     <label className={cn("flex flex-col gap-1", className)}>
-      <span className="label-caps">{label}</span>
+      <span className="label-caps">{t(label)}</span>
       {children}
     </label>
   );

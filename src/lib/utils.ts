@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { dateLocaleTag } from "@/lib/prefs";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -13,7 +14,7 @@ export function num(value: unknown): number {
 
 export function money(value: unknown, digits = 2): string {
   const v = num(value);
-  const s = Math.abs(v).toLocaleString("en-US", {
+  const s = Math.abs(v).toLocaleString(dateLocaleTag(), {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
@@ -22,7 +23,7 @@ export function money(value: unknown, digits = 2): string {
 
 export function qty(value: unknown, unit?: string): string {
   const n = num(value);
-  const formatted = n.toLocaleString("en-US", {
+  const formatted = n.toLocaleString(dateLocaleTag(), {
     maximumFractionDigits: n % 1 === 0 ? 0 : 2,
   });
   return unit ? `${formatted} ${unit}` : formatted;
@@ -46,21 +47,21 @@ export function fechaDoc(f: string | null | undefined): string {
   if (!f) return "—";
   const d = new Date(String(f).length <= 10 ? `${f}T12:00:00` : f);
   if (Number.isNaN(d.getTime())) return String(f);
-  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  return d.toLocaleDateString(dateLocaleTag(), { month: "long", day: "numeric", year: "numeric" });
 }
 
 export function fecha(f: string | null | undefined): string {
   if (!f) return "—";
   const d = new Date(String(f).length <= 10 ? `${f}T12:00:00` : f);
   if (Number.isNaN(d.getTime())) return String(f);
-  return d.toLocaleDateString("en-US", { month: "numeric", day: "2-digit", year: "numeric" });
+  return d.toLocaleDateString(dateLocaleTag(), { month: "numeric", day: "2-digit", year: "numeric" });
 }
 
 export function fechaLong(f: string | null | undefined): string {
   if (!f) return "—";
   const d = new Date(String(f).length <= 10 ? `${f}T12:00:00` : f);
   if (Number.isNaN(d.getTime())) return String(f);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return d.toLocaleDateString(dateLocaleTag(), { month: "short", day: "numeric", year: "numeric" });
 }
 
 export function todayISO(): string {
@@ -116,18 +117,42 @@ export const GASTO_CATEGORIAS = [
   "Freight",
   "Inspection Services",
   "Quality Control",
-  "Boxes",
   "Advertising",
   "Commissions and fees",
   "Cost of Labor",
   "Disposal fees",
   "Dues & Subscriptions",
   "Equipment",
+  "Boxes",
   "Supplies",
-  "Inspección",
-  "Cajas/empaque",
-  "Flete",
+  "Insurance",
+  "Legal & Professional fees",
+  "Maintenance & Repairs",
+  "Materials",
+  "Utilities",
 ] as const;
+
+export const PAY_METHODS = ["ACH", "Check", "Cash", "Credit card", "Wire"] as const;
+
+export function agingBucket(issueDate: string | null | undefined, asOf = todayISO()): "current" | "d1" | "d8" | "d15" | "d22" {
+  if (!issueDate) return "current";
+  const days = Math.round((new Date(`${asOf}T12:00:00`).getTime() - new Date(`${issueDate}T12:00:00`).getTime()) / 86400000);
+  if (days <= 0) return "current";
+  if (days <= 7) return "d1";
+  if (days <= 14) return "d8";
+  if (days <= 21) return "d15";
+  return "d22";
+}
+
+export function aging30(issueDate: string | null | undefined, asOf = todayISO()): "current" | "b30" | "b60" | "b90" | "b91" {
+  if (!issueDate) return "current";
+  const days = Math.round((new Date(`${asOf}T12:00:00`).getTime() - new Date(`${issueDate}T12:00:00`).getTime()) / 86400000);
+  if (days <= 0) return "current";
+  if (days <= 30) return "b30";
+  if (days <= 60) return "b60";
+  if (days <= 90) return "b90";
+  return "b91";
+}
 
 export const WASTE_REASONS = [
   "Quality dump",
@@ -154,7 +179,7 @@ export function skuLabel(s: {
 }
 
 export function skuCodeOf(productSku: string, empaque: string, calibre: string): string {
-  const prefix = (productSku.split("-")[0] || "SKU").toUpperCase();
+  const prefix = (productSku || "SKU").trim().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toUpperCase() || "SKU";
   const empKey = empaque.trim().toLowerCase();
   const empMap: Record<string, string> = {
     carton: "CARTON",
@@ -162,6 +187,10 @@ export function skuCodeOf(productSku: string, empaque: string, calibre: string):
     "plastic crate": "CRATE",
     crate: "CRATE",
     caja: "CAJA",
+    bolsa: "BOLSA",
+    saco: "SACO",
+    bin: "BIN",
+    manojo: "MANOJO",
   };
   const emp = empMap[empKey] || empaque.replace(/[^a-zA-Z0-9]+/g, "").toUpperCase().slice(0, 10);
   const cal = calibre.replace(/[^a-zA-Z0-9]+/g, "").toUpperCase();

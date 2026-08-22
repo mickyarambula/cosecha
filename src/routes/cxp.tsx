@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal, Kpi } from "@/components/app-shell";
+import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
@@ -52,7 +53,7 @@ function Page() {
     <div>
       <PageHeader
         title="Payments"
-        subtitle="Vendor invoices matched against what was ordered and received."
+        subtitle="Vendor invoices matched against what was ordered and received. Opening bills from Egresos have no PO yet."
       />
       <div className="mb-5 grid grid-cols-3 gap-3">
         <Kpi label="Balance" value={money(kpis.saldo)} />
@@ -84,9 +85,23 @@ function Page() {
                   {b.match === "cuadrado" ? "Match" : b.match === "faltante" ? "Short vs ordered" : "Over received"}
                 </Badge>
                 <Badge tone={orderTone(b.status)}>{orderLabel(b.status)}</Badge>
+                <SendButton
+                  title="Vendor invoice"
+                  number={b.bill_number}
+                  partyName={b.supplier_name}
+                  email={b.supplier_email}
+                  phone={b.supplier_phone}
+                  docs={
+                    b.purchase_order_id
+                      ? [{ tipo: "oc", id: b.purchase_order_id, label: "Purchase Order" }]
+                      : []
+                  }
+                  total={b.total}
+                  size="sm"
+                />
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+            <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
               <div>
                 <p className="text-xs text-muted">Ordered</p>
                 <p className="tabular-nums">{qty(b.ordered_qty)}</p>
@@ -98,6 +113,10 @@ function Page() {
               <div>
                 <p className="text-xs text-muted">Invoiced</p>
                 <p className="tabular-nums font-medium">{money(b.total)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted">Paid</p>
+                <p className="tabular-nums">{money(b.paid)}</p>
               </div>
               <div>
                 <p className="text-xs text-muted">Balance</p>
