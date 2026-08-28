@@ -75,6 +75,12 @@ type DraftLine = {
   markup: string;
 };
 
+const DEAL_TYPE_LABEL: Record<string, string> = {
+  firme: "Firm",
+  consignacion: "Consignment",
+  comision: "Pure commission",
+};
+
 const GRUPOS: [keyof typeof DEFECTOS, string][] = [
   ["calidad", "Quality defect"],
   ["condicion", "Condition defect"],
@@ -103,6 +109,7 @@ function Page() {
   const [cancelPo, setCancelPo] = useState<{ id: number; po_number: string } | null>(null);
   const [draft, setDraft] = useState({
     supplier_id: "",
+    deal_type: "",
     order_type: "Delivery by vendor",
     expected_date: todayISO(),
     notes: "",
@@ -177,13 +184,19 @@ function Page() {
   }
 
   async function placeOrder() {
-    if (!draft.supplier_id || !lines.length) return;
+    if (!draft.supplier_id || !draft.deal_type || !lines.length) return;
+    const isFirme = draft.deal_type === "firme";
+    if (isFirme && lines.some((l) => !(Number(l.cost) > 0))) {
+      setMsg("Trato en firme: captura el costo de cada línea.");
+      return;
+    }
     setSaving(true);
     setMsg(null);
     try {
       const r = await createPurchaseOrder({
         data: {
           supplier_id: Number(draft.supplier_id),
+          deal_type: draft.deal_type as "firme" | "consignacion" | "comision",
           expected_date: draft.expected_date || undefined,
           notes: draft.notes || undefined,
           order_type: draft.order_type,
@@ -195,7 +208,7 @@ function Page() {
             pack_style_id: l.pack_style_id,
             quantity_ordered: Number(l.qty),
             unit: l.unit,
-            unit_cost: l.cost ? Number(l.cost) : undefined,
+            unit_cost: isFirme && l.cost ? Number(l.cost) : undefined,
             pallets: l.pallets ? Number(l.pallets) : undefined,
             units_per_pallet: l.unitsPerPallet ? Number(l.unitsPerPallet) : undefined,
             origin_country: l.origin,
@@ -343,7 +356,7 @@ function Page() {
     return (
       <div className="flex min-h-[calc(100dvh-7rem)] flex-col">
         {msg ? <p className="px-5 py-2 text-sm text-ok">{msg}</p> : null}
-        <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-6">
           <MetaCard
             label="Vendor"
             action={
@@ -359,6 +372,21 @@ function Page() {
                   {s.name}
                 </option>
               ))}
+            </Select>
+          </MetaCard>
+          <MetaCard label="Deal type">
+            <Select
+              value={draft.deal_type}
+              onChange={(e) => {
+                const deal_type = e.target.value;
+                setDraft({ ...draft, deal_type });
+                if (deal_type !== "firme") setLines((p) => p.map((l) => ({ ...l, cost: "" })));
+              }}
+            >
+              <option value="">Select</option>
+              <option value="firme">Firme (precio cerrado)</option>
+              <option value="consignacion">Consignación (PAS)</option>
+              <option value="comision">Comisión pura</option>
             </Select>
           </MetaCard>
           <MetaCard label="Order type">
@@ -470,11 +498,14 @@ function Page() {
                         className="w-24"
                         placeholder="$"
                         value={l.cost}
+                        disabled={draft.deal_type !== "firme"}
                         onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, cost: e.target.value } : x)))}
                       />
-                      <div className="mt-1 text-[11px] text-danger">PAS</div>
+                      {draft.deal_type !== "firme" ? (
+                        <div className="mt-1 text-[11px] text-danger">{draft.deal_type === "comision" ? "Comisión — sin costo" : "PAS"}</div>
+                      ) : null}
                     </td>
-                    <td className="px-3 py-3 text-xs text-muted">Min: PAS</td>
+                    <td className="px-3 py-3 text-xs text-muted">{draft.deal_type === "firme" ? "" : "Min: PAS"}</td>
                     <td className="px-3 py-3">
                       <Input
                         className="w-20"
@@ -530,7 +561,7 @@ function Page() {
                 <span>
                   Expenses: $0.00 · Order total: <strong>{money(merch)}</strong>
                 </span>
-                <Button disabled={saving || !draft.supplier_id || !lines.length} onClick={() => void placeOrder()}>
+                <Button disabled={saving || !draft.supplier_id || !draft.deal_type || !lines.length} onClick={() => void placeOrder()}>
                   Place order
                 </Button>
               </div>
@@ -905,6 +936,11 @@ function PoDetail({
 
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
         <MetaCard label="Vendor">{row.supplier_name}</MetaCard>
+        <MetaCard label="Deal type">
+          <Badge tone={row.deal_type === "firme" ? "ok" : row.deal_type === "comision" ? "warn" : "mute"}>
+            {t(DEAL_TYPE_LABEL[row.deal_type] ?? row.deal_type)}
+          </Badge>
+        </MetaCard>
         <MetaCard label="Order type">{row.order_type === "entrega" ? "Delivery by vendor" : row.order_type}</MetaCard>
         <MetaCard label="Requested date">{fecha(row.expected_date || row.order_date)}</MetaCard>
         <MetaCard label="BOL #">{row.bol || ""}</MetaCard>
@@ -1064,7 +1100,7 @@ function PoDetail({
             {t("Receive merchandise")}
           </Button>
         ) : null}
-        {received && !row.bill && row.status !== "cancelled" ? (
+        {received && !row.bill && row.status !== "cancelled" && row.deal_type !== "comision" ? (
           <Button size="sm" variant="outline" disabled={saving} onClick={onBill}>
             {t("Capture vendor invoice")}
           </Button>
@@ -1219,7 +1255,7 @@ function SettlementModal({
     <Modal
       wide
       title={`Settlement Calculator for PO #${s ? poShort(s.po_number) : poId}`}
-      subtitle={s ? `${s.supplier_name} · ${s.costing_mode === "pas" ? "PAS" : "Fixed"}` : undefined}
+      subtitle={s ? `${s.supplier_name} · ${DEAL_TYPE_LABEL[s.deal_type] ?? s.deal_type}` : undefined}
       onClose={onClose}
     >
       {data.loading ? <p className="text-sm text-muted">Loading…</p> : null}
@@ -1235,29 +1271,36 @@ function SettlementModal({
             <MiniKpi label="Total paid" value={money(s.paid)} tone={s.paid ? undefined : "danger"} />
             <MiniKpi label="Balance due" value={money(s.balance_due)} />
           </div>
-          <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
-            <Field label="Target profit %">
-              <Input
-                className="w-24"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                placeholder={s.target_profit_pct != null ? String(s.target_profit_pct) : ""}
-              />
-            </Field>
-            <Button
-              size="sm"
-              disabled={saving || !target}
-              onClick={() => void apply(Number(target))}
-            >
-              Apply
-            </Button>
-            <Button size="sm" variant="outline" disabled={saving} onClick={() => void apply(undefined)}>
-              Clear target
-            </Button>
-            <p className="ml-auto max-w-sm text-xs text-muted">
-              PAS: grower cost is $0 until you settle. A target % backs into cost/unit from sold revenue minus expenses.
-            </p>
-          </div>
+          {s.deal_type === "comision" ? (
+            <div className="mt-3 rounded-md border border-warn/40 bg-warn/5 p-3 text-xs text-warn">
+              Comisión pura: Plein no compra la fruta. El costo del lote se queda en $0 permanentemente — no hay compra que
+              liquidar aquí.
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
+              <Field label="Target profit %">
+                <Input
+                  className="w-24"
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  placeholder={s.target_profit_pct != null ? String(s.target_profit_pct) : ""}
+                />
+              </Field>
+              <Button
+                size="sm"
+                disabled={saving || !target}
+                onClick={() => void apply(Number(target))}
+              >
+                Apply
+              </Button>
+              <Button size="sm" variant="outline" disabled={saving} onClick={() => void apply(undefined)}>
+                Clear target
+              </Button>
+              <p className="ml-auto max-w-sm text-xs text-muted">
+                PAS: grower cost is $0 until you settle. A target % backs into cost/unit from sold revenue minus expenses.
+              </p>
+            </div>
+          )}
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[980px] text-left text-sm">
               <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
@@ -1306,14 +1349,16 @@ function SettlementModal({
             <Button variant="outline" onClick={onClose}>
               Go back
             </Button>
-            <Button
-              disabled={saving}
-              onClick={() =>
-                void apply(target ? Number(target) : s.target_profit_pct ?? undefined).then(onSaved)
-              }
-            >
-              Update lot costs
-            </Button>
+            {s.deal_type !== "comision" ? (
+              <Button
+                disabled={saving}
+                onClick={() =>
+                  void apply(target ? Number(target) : s.target_profit_pct ?? undefined).then(onSaved)
+                }
+              >
+                Update lot costs
+              </Button>
+            ) : null}
           </div>
         </>
       ) : null}

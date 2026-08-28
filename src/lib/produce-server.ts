@@ -1056,7 +1056,8 @@ async function loadSettlement(sql, purchase_order_id: number) {
 	const [po] = await sql.query(`select po.id, po.po_number, s.name as supplier_name, po.status,
               coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
               coalesce(po.vendor_share_level,'po') as vendor_share_level,
-              coalesce(po.signed_off,false) as signed_off
+              coalesce(po.signed_off,false) as signed_off,
+              coalesce(po.deal_type,'firme') as deal_type
        from purchase_orders po join suppliers s on s.id = po.supplier_id
        where po.id = $1`, [purchase_order_id]);
 	if (!po) throw new Error("Purchase order not found");
@@ -1079,6 +1080,7 @@ async function loadSettlement(sql, purchase_order_id: number) {
 		target_profit_pct: target,
 		vendor_share_level: po.vendor_share_level,
 		signed_off: po.signed_off,
+		deal_type: po.deal_type,
 		revenue,
 		inventory_total: t_cost,
 		non_inventory_total: 0,
@@ -1103,6 +1105,9 @@ export const applySettlement = createServerFn({ method: "POST" }).validator(z.ob
 	})).optional()
 })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
+	const [po] = await sql.query(`select coalesce(deal_type,'firme') as deal_type from purchase_orders where id = $1`, [data.purchase_order_id]);
+	if (!po) throw new Error("Orden de compra no encontrada");
+	if (po.deal_type === "comision") throw new Error("Comisión pura: el costo de estos lotes se queda en cero — no hay compra que liquidar.");
 	if (data.target_profit_pct != null) await sql.query(`update purchase_orders set target_profit_pct = $1 where id = $2`, [data.target_profit_pct, data.purchase_order_id]);
 	const expenses = await sql.query(`select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`, [data.purchase_order_id]);
 	const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
@@ -1301,6 +1306,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
            coalesce(po.order_type, 'entrega') as order_type, po.bol, po.vendor_invoice, po.shipping_ref,
            coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
            coalesce(po.vendor_share_level,'po') as vendor_share_level, coalesce(po.signed_off,false) as signed_off,
+           coalesce(po.deal_type, 'firme') as deal_type,
            po.cancelled_at::text, po.cancelled_by, po.cancel_reason
     from purchase_orders po join suppliers s on s.id = po.supplier_id
     left join sales_orders so on so.id = po.sales_order_id
@@ -1366,6 +1372,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
 });
 export const createPurchaseOrder = createServerFn({ method: "POST" }).validator(z.object({
 	supplier_id: z.number(),
+	deal_type: z.enum(["firme", "consignacion", "comision"]),
 	expected_date: z.string().optional(),
 	notes: z.string().optional(),
 	sales_order_id: z.number().optional(),
@@ -1384,12 +1391,18 @@ export const createPurchaseOrder = createServerFn({ method: "POST" }).validator(
 		origin_country: z.string().optional()
 	})).min(1)
 })).middleware([authMiddleware]).handler(async ({ data }) => {
+	if (data.deal_type === "firme") {
+		if (data.lines.some((l) => !(n(l.unit_cost) > 0))) throw new Error("Trato en firme: captura el costo de cada línea — es un precio cerrado.");
+	} else if (data.lines.some((l) => l.unit_cost != null)) {
+		throw new Error("En consignación o comisión no se captura costo — se define al liquidar, después de vender.");
+	}
 	const sql = await getSql();
 	const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
-	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, status, expected_date, notes, sales_order_id, order_type, bol, vendor_invoice, shipping_ref)
-       values ($1,$2,'confirmed',$3,$4,$5,$6,$7,$8,$9) returning id`, [
+	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, deal_type, status, expected_date, notes, sales_order_id, order_type, bol, vendor_invoice, shipping_ref)
+       values ($1,$2,$3,'confirmed',$4,$5,$6,$7,$8,$9,$10) returning id`, [
 		po_number,
 		data.supplier_id,
+		data.deal_type,
 		data.expected_date || null,
 		data.notes || null,
 		data.sales_order_id ?? null,
@@ -1995,8 +2008,10 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator
 	}).filter((l) => l.remaining > 1e-4);
 	if (!toBuy.length) throw new Error("Esta venta ya tiene compra por todo lo pedido");
 	const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
-	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, status, notes, sales_order_id)
-       values ($1,$2,'confirmed',$3,$4) returning id`, [
+	// Cruce: siempre en firme — se compra a un costo conocido específicamente
+	// para surtir esta venta, nunca en consignación ni a comisión.
+	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, deal_type, status, notes, sales_order_id)
+       values ($1,$2,'firme','confirmed',$3,$4) returning id`, [
 		po_number,
 		data.supplier_id,
 		data.notes || `Generada desde ${so.so_number}`,
@@ -2121,14 +2136,18 @@ export const createBillFromPO = createServerFn({ method: "POST" }).validator(z.o
 	const sql = await getSql();
 	const [existing] = await sql.query(`select bill_number from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`, [data.purchase_order_id]);
 	if (existing) throw new Error(`Esta compra ya tiene factura ${existing.bill_number}`);
-	const [po] = await sql.query(`select id, po_number, supplier_id, status from purchase_orders where id = $1`, [data.purchase_order_id]);
+	const [po] = await sql.query(`select id, po_number, supplier_id, status, coalesce(deal_type,'firme') as deal_type from purchase_orders where id = $1`, [data.purchase_order_id]);
 	if (!po) throw new Error("Orden de compra no encontrada");
 	if (po.status === "cancelled") throw new Error("Esta orden de compra está cancelada");
+	if (po.deal_type === "comision") throw new Error("Este trato es a comisión pura: Plein no compra la fruta — no se genera factura de proveedor por su valor.");
 	const lines = await sql.query(`select quantity_ordered::text, quantity_received::text, unit_cost::text
        from purchase_order_lines where purchase_order_id = $1`, [data.purchase_order_id]);
 	const ordered = lines.reduce((s, l) => s + n(l.quantity_ordered), 0);
 	const received = lines.reduce((s, l) => s + n(l.quantity_received), 0);
 	if (received <= 0) throw new Error("Todavía no hay mercancía recibida para facturar al proveedor");
+	if (po.deal_type === "consignacion" && !lines.some((l) => n(l.unit_cost) > 0)) {
+		throw new Error("Este trato es en consignación: el costo se define al liquidar, después de vender. Corre \"Calculate settlement\" primero.");
+	}
 	const total = lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0);
 	const issue = todayISO();
 	const bill_number = await nextCode(sql, "supplier_bills", "bill_number", "FAC-");
@@ -3615,6 +3634,7 @@ export const listSettlements = createServerFn({ method: "GET" }).middleware([mod
 			supplier_name: po.supplier_name,
 			signed_off: po.signed_off,
 			costing_mode: po.costing_mode,
+			deal_type: settlement.deal_type,
 			status: po.status,
 			revenue: settlement.revenue,
 			expenses: settlement.expenses,
