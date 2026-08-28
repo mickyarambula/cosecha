@@ -2,41 +2,81 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 
+// LÍMITE DE LA API (structured outputs): máximo 16 campos con tipos unión
+// (nullable/anyOf) en todo el esquema — pasarse da un 400 invalid_request_error
+// ("Schemas contains too many parameters with union types"). Eso tumbó la
+// lectura en producción cuando el esquema creció a 17 nullables al agregar
+// domicilio y condiciones de pago. Por eso los TEXTOS aquí son string a secas
+// ("" = no aparece en el documento; normalizeExtraction los vuelve null) y
+// solo los NÚMEROS siguen siendo nullable ("" no es un número). Hoy: 2 de 16.
 const ExtractionSchema = z.object({
   readable: z.boolean(),
-  reason: z.string().nullable(),
-  customer_name: z.string().nullable(),
-  customer_po_number: z.string().nullable(),
-  po_date: z.string().nullable(),
-  requested_date: z.string().nullable(),
-  currency: z.string().nullable(),
-  payment_terms: z.string().nullable(),
-  ship_to_address_line: z.string().nullable(),
-  ship_to_city: z.string().nullable(),
-  ship_to_state: z.string().nullable(),
-  ship_to_zip: z.string().nullable(),
-  notes: z.string().nullable(),
+  reason: z.string(),
+  customer_name: z.string(),
+  customer_po_number: z.string(),
+  po_date: z.string(),
+  requested_date: z.string(),
+  currency: z.string(),
+  payment_terms: z.string(),
+  ship_to_address_line: z.string(),
+  ship_to_city: z.string(),
+  ship_to_state: z.string(),
+  ship_to_zip: z.string(),
+  notes: z.string(),
   lines: z.array(
     z.object({
-      sku: z.string().nullable(),
-      product_name: z.string().nullable(),
+      sku: z.string(),
+      product_name: z.string(),
       quantity: z.number().nullable(),
-      unit: z.string().nullable(),
+      unit: z.string(),
       unit_price: z.number().nullable(),
     }),
   ),
 });
 
-type Extraction = z.infer<typeof ExtractionSchema>;
+type RawExtraction = z.infer<typeof ExtractionSchema>;
+
+/** "" desde el modelo significa "no aparece en el documento" → null. */
+const emptyToNull = (v: string): string | null => {
+  const t = v.trim();
+  return t ? t : null;
+};
+
+function normalizeExtraction(raw: RawExtraction) {
+  return {
+    readable: raw.readable,
+    reason: emptyToNull(raw.reason),
+    customer_name: emptyToNull(raw.customer_name),
+    customer_po_number: emptyToNull(raw.customer_po_number),
+    po_date: emptyToNull(raw.po_date),
+    requested_date: emptyToNull(raw.requested_date),
+    currency: emptyToNull(raw.currency),
+    payment_terms: emptyToNull(raw.payment_terms),
+    ship_to_address_line: emptyToNull(raw.ship_to_address_line),
+    ship_to_city: emptyToNull(raw.ship_to_city),
+    ship_to_state: emptyToNull(raw.ship_to_state),
+    ship_to_zip: emptyToNull(raw.ship_to_zip),
+    notes: emptyToNull(raw.notes),
+    lines: raw.lines.map((line) => ({
+      sku: emptyToNull(line.sku),
+      product_name: emptyToNull(line.product_name),
+      quantity: line.quantity,
+      unit: emptyToNull(line.unit),
+      unit_price: line.unit_price,
+    })),
+  };
+}
+
+type Extraction = ReturnType<typeof normalizeExtraction>;
 
 const SYSTEM_PROMPT = `Lees órdenes de compra (PO) que clientes de una empresa de produce fresco (frutas y verduras) envían por fax, PDF o foto.
 Extrae únicamente lo que el documento diga literalmente. Nunca inventes ni asumas un valor que no esté escrito.
-Si un dato no aparece, ponlo en null — no lo adivines.
+Si un dato de texto no aparece en el documento, déjalo como cadena vacía "" — no lo adivines. Si una cantidad o precio no aparece, usa null.
 Fechas en formato ISO yyyy-mm-dd. Si el documento no trae año, asume el año actual.
 Si el documento no es legible o no parece un PO, marca readable=false y explica por qué en "reason".
-"unit" es la unidad de empaque (ej. caja, box, carton, bin, lb, kg) tal como aparece o se infiere del contexto — en null si no es claro.
-"payment_terms" son las condiciones de pago tal como aparecen (ej. "Net 21", "COD", "Net 30") — null si no se mencionan.
-"ship_to_*" son los datos del domicilio de entrega (SHIP TO), separados de cualquier domicilio de facturación (BILL TO) — null si el documento no trae uno.`;
+"unit" es la unidad de empaque (ej. caja, box, carton, bin, lb, kg) tal como aparece o se infiere del contexto — "" si no es claro.
+"payment_terms" son las condiciones de pago tal como aparecen (ej. "Net 21", "COD", "Net 30") — "" si no se mencionan.
+"ship_to_*" son los datos del domicilio de entrega (SHIP TO), separados de cualquier domicilio de facturación (BILL TO) — "" si el documento no trae uno.`;
 
 export type ExtractResult =
   | { ok: true; data: Extraction }
@@ -80,10 +120,11 @@ export async function extractCustomerPOFile(
       ],
     });
 
-    const data = response.parsed_output;
-    if (!data) {
+    const raw = response.parsed_output;
+    if (!raw) {
       return { ok: false, reason: "El modelo no devolvió datos estructurados — captura a mano." };
     }
+    const data = normalizeExtraction(raw);
     if (!data.readable) {
       return { ok: false, reason: data.reason || "No se pudo leer el documento — captura a mano." };
     }
