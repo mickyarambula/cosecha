@@ -1,12 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { PageHeader, Panel, Kpi, Modal } from "@/components/app-shell";
+import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { ConceptSelect } from "@/components/concepts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import {
   addBankLine,
+  cancelCustomerPayment,
+  cancelVendorPayment,
   ignoreBankLine,
   listBankAccounts,
   listBankLines,
@@ -45,9 +48,11 @@ function Page() {
   const cash = useAsync(() => listCash(), []);
   const data = cash.data;
   const movs = data?.movements ?? [];
-  const cobros = movs.filter((m) => m.kind === "cobro").reduce((s, m) => s + m.amount, 0);
-  const pagos = movs.filter((m) => m.kind === "pago").reduce((s, m) => s + m.amount, 0);
+  const live = movs.filter((m) => !m.cancelled_at);
+  const cobros = live.filter((m) => m.kind === "cobro").reduce((s, m) => s + m.amount, 0);
+  const pagos = live.filter((m) => m.kind === "pago").reduce((s, m) => s + m.amount, 0);
   const [regOpen, setRegOpen] = useState(false);
+  const [cancelMov, setCancelMov] = useState<{ id: number; folio: string; kind: string } | null>(null);
 
   if (tab === "reconcile") {
     return <Reconcile cash={movs} />;
@@ -81,6 +86,7 @@ function Page() {
                 <th className="px-4 py-3 font-medium">Type</th>
                 <th className="px-4 py-3 font-medium">Counterparty</th>
                 <th className="px-4 py-3 text-right font-medium">Amount</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
@@ -89,7 +95,7 @@ function Page() {
                   <td className="px-4 py-3 font-mono text-xs">{m.folio}</td>
                   <td className="px-4 py-3">{fecha(m.mov_date)}</td>
                   <td className="px-4 py-3">
-                    <Badge tone={kindTone(m.kind)}>{kindLabel(m.kind)}</Badge>
+                    {m.cancelled_at ? <Badge tone="danger">Cancelled</Badge> : <Badge tone={kindTone(m.kind)}>{kindLabel(m.kind)}</Badge>}
                   </td>
                   <td className="px-4 py-3">
                     <p>{m.counterparty ?? "—"}</p>
@@ -103,9 +109,17 @@ function Page() {
                         {m.bill_number}
                       </Link>
                     ) : null}
+                    <CancelledNote by={m.cancelled_by} at={m.cancelled_at} reason={m.cancel_reason} />
                   </td>
                   <td className={`px-4 py-3 text-right tabular-nums ${m.amount < 0 ? "text-danger" : "text-ok"}`}>
                     {money(m.amount)}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {!m.cancelled_at && m.folio !== "CORTE-CHASE" && (m.kind === "cobro" || m.kind === "pago") ? (
+                      <Button size="sm" variant="outline" onClick={() => setCancelMov({ id: m.id, folio: m.folio, kind: m.kind })}>
+                        Cancel
+                      </Button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -113,6 +127,19 @@ function Page() {
           </table>
         </div>
       </Panel>
+      {cancelMov ? (
+        <CancelDialog
+          title={`Cancel ${cancelMov.folio}`}
+          subtitle="This reverses what it paid — the invoice/bill balance, and any matched bank line."
+          onClose={() => setCancelMov(null)}
+          onConfirm={async (reason) => {
+            const fn = cancelMov.kind === "cobro" ? cancelCustomerPayment : cancelVendorPayment;
+            await fn({ data: { cash_movement_id: cancelMov.id, reason: reason || undefined } });
+            setCancelMov(null);
+            await cash.reload();
+          }}
+        />
+      ) : null}
       {regOpen ? (
         <RegisterChase
           onClose={() => setRegOpen(false)}

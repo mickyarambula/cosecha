@@ -1,13 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal, TabActions } from "@/components/app-shell";
+import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { SendButton } from "@/components/send-doc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
-import { listCustomers, listInvoices, registerCustomerPayment } from "@/lib/produce-server";
+import { cancelInvoice, listCustomers, listInvoices, registerCustomerPayment } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { aging30, fecha, money, PAY_METHODS, todayISO } from "@/lib/utils";
 
@@ -26,6 +27,7 @@ function Page() {
   const [payOpen, setPayOpen] = useState(false);
   const [customerFilter, setCustomerFilter] = useState("");
   const [status, setStatus] = useState("");
+  const [cancelInv, setCancelInv] = useState<{ id: number; invoice_number: string } | null>(null);
 
   const rows = (inv.data ?? []).filter((r) => {
     if (customerFilter && String(r.customer_id) !== customerFilter) return false;
@@ -391,26 +393,38 @@ function Page() {
                 <td className="px-3 py-2 text-right">{money(i.paid)}</td>
                 <td className="px-3 py-2 text-right">{money(i.saldo)}</td>
                 <td className="px-3 py-2">
-                  <Badge tone={i.invoice_type === "credit" ? "unpaid" : i.saldo > 0 ? "unpaid" : "ok"}>
-                    {i.invoice_type === "credit" ? "Unused" : i.saldo > 0 ? "Unpaid" : "Paid"}
-                  </Badge>
+                  {i.status === "cancelled" ? (
+                    <Badge tone="danger">Cancelled</Badge>
+                  ) : (
+                    <Badge tone={i.invoice_type === "credit" ? "unpaid" : i.saldo > 0 ? "unpaid" : "ok"}>
+                      {i.invoice_type === "credit" ? "Unused" : i.saldo > 0 ? "Unpaid" : "Paid"}
+                    </Badge>
+                  )}
+                  <CancelledNote by={i.cancelled_by} at={i.cancelled_at} reason={i.cancel_reason} />
                 </td>
                 <td className="px-3 py-2">
-                  <SendButton
-                    title={i.invoice_type === "credit" ? "Credit" : "Invoice"}
-                    number={i.invoice_number}
-                    partyName={i.customer_name}
-                    email={i.customer_email}
-                    phone={i.customer_phone}
-                    docs={[{ tipo: "factura", id: i.id, label: i.invoice_type === "credit" ? "Credit" : "Invoice" }]}
-                    lines={i.lines.map((l) => ({
-                      qty: l.quantity,
-                      unit: l.unit || "",
-                      name: l.description || "",
-                    }))}
-                    total={i.total}
-                    size="sm"
-                  />
+                  <div className="flex items-center gap-2">
+                    <SendButton
+                      title={i.invoice_type === "credit" ? "Credit" : "Invoice"}
+                      number={i.invoice_number}
+                      partyName={i.customer_name}
+                      email={i.customer_email}
+                      phone={i.customer_phone}
+                      docs={[{ tipo: "factura", id: i.id, label: i.invoice_type === "credit" ? "Credit" : "Invoice" }]}
+                      lines={i.lines.map((l) => ({
+                        qty: l.quantity,
+                        unit: l.unit || "",
+                        name: l.description || "",
+                      }))}
+                      total={i.total}
+                      size="sm"
+                    />
+                    {i.status !== "cancelled" && i.invoice_type !== "opening" ? (
+                      <Button size="sm" variant="outline" onClick={() => setCancelInv({ id: i.id, invoice_number: i.invoice_number })}>
+                        Cancel
+                      </Button>
+                    ) : null}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -425,6 +439,18 @@ function Page() {
           onSaved={() => {
             setPayOpen(false);
             void inv.reload();
+          }}
+        />
+      ) : null}
+      {cancelInv ? (
+        <CancelDialog
+          title={`Cancel invoice ${cancelInv.invoice_number}`}
+          subtitle="Inventory is not touched — invoicing doesn't move stock. This only voids the billing document."
+          onClose={() => setCancelInv(null)}
+          onConfirm={async (reason) => {
+            await cancelInvoice({ data: { invoice_id: cancelInv.id, reason: reason || undefined } });
+            setCancelInv(null);
+            await inv.reload();
           }}
         />
       ) : null}

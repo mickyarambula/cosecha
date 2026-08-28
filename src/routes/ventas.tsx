@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { MetaCard, Modal, TabOverride } from "@/components/app-shell";
+import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { EmptyOrders, FilterField, FilterRow, ProductPicker } from "@/components/product-picker";
 import { SendButton } from "@/components/send-doc";
 import { packsToSkus, type SkuOption } from "@/components/sku-select";
@@ -12,6 +13,7 @@ import { COMPANY } from "@/lib/company";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
+  cancelSalesOrder,
   createCreditInvoice,
   createInvoiceFromSO,
   createPurchaseFromSO,
@@ -62,6 +64,7 @@ function Page() {
   const [ship, setShip] = useState<{ line_id: number; product_id: number; pending: number; unit: string } | null>(null);
   const [buy, setBuy] = useState<{ so_id: number; so_number: string; openQty: number } | null>(null);
   const [credit, setCredit] = useState<number | null>(null);
+  const [cancelSo, setCancelSo] = useState<{ id: number; so_number: string } | null>(null);
   const [placed, setPlaced] = useState<{
     id: number;
     so_number: string;
@@ -502,6 +505,7 @@ function Page() {
                             onInvoice={() => void facturar(row.id)}
                             onBuy={() => setBuy({ so_id: row.id, so_number: row.so_number, openQty: row.lines.reduce((s, l) => s + l.open, 0) })}
                             onCredit={() => setCredit(row.id)}
+                            onCancel={() => setCancelSo({ id: row.id, so_number: row.so_number })}
                             saving={saving}
                           />
                         </td>
@@ -662,6 +666,18 @@ function Page() {
           </div>
         </Modal>
       ) : null}
+      {cancelSo ? (
+        <CancelDialog
+          title={`Cancel order ${poShort(cancelSo.so_number)}`}
+          subtitle="If anything was shipped from a lot, it returns to inventory. Blocked if this order already has an invoice."
+          onClose={() => setCancelSo(null)}
+          onConfirm={async (reason) => {
+            await cancelSalesOrder({ data: { sales_order_id: cancelSo.id, reason: reason || undefined } });
+            setCancelSo(null);
+            await Promise.all([orders.reload(), lots.reload()]);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -672,6 +688,7 @@ function SoDetail({
   onInvoice,
   onBuy,
   onCredit,
+  onCancel,
   saving,
 }: {
   row: Awaited<ReturnType<typeof listSalesOrders>>[number];
@@ -679,6 +696,7 @@ function SoDetail({
   onInvoice: () => void;
   onBuy: () => void;
   onCredit: () => void;
+  onCancel: () => void;
   saving: boolean;
 }) {
   const total = row.lines.reduce((s, l) => s + l.quantity_ordered * l.unit_price, 0);
@@ -695,6 +713,7 @@ function SoDetail({
             <Badge tone={orderTone(row.status)}>{orderLabel(row.status)}</Badge>
           </div>
           <p className="text-xs text-muted">Placed on {fecha(row.order_date)}</p>
+          <CancelledNote by={row.cancelled_by} at={row.cancelled_at} reason={row.cancel_reason} />
         </div>
         <div className="flex gap-2">
           <SendButton
@@ -771,7 +790,7 @@ function SoDetail({
                 <td className="px-3 py-3">{money(l.unit_price)}</td>
                 <td className="px-3 py-3">{money(l.quantity_ordered * l.unit_price)}</td>
                 <td className="px-3 py-3">
-                  {l.open > 0 ? (
+                  {l.open > 0 && row.status !== "cancelled" ? (
                     <Button size="sm" onClick={() => onShip(l)}>
                       Fulfill
                     </Button>
@@ -845,14 +864,21 @@ function SoDetail({
         </div>
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
-        {!row.invoice ? (
+        {!row.invoice && row.status !== "cancelled" ? (
           <Button size="sm" disabled={saving} onClick={onInvoice}>
             Invoice
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" onClick={onBuy}>
-          Generate purchase
-        </Button>
+        {row.status !== "cancelled" ? (
+          <>
+            <Button size="sm" variant="outline" onClick={onBuy}>
+              Generate purchase
+            </Button>
+            <Button size="sm" variant="outline" onClick={onCancel}>
+              Cancel order
+            </Button>
+          </>
+        ) : null}
       </div>
     </div>
   );

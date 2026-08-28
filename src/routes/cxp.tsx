@@ -1,11 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal, Kpi } from "@/components/app-shell";
+import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
-import { listBills, registerPago } from "@/lib/produce-server";
+import { cancelSupplierBill, listBills, registerPago } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { fecha, money, qty } from "@/lib/utils";
 
@@ -23,6 +24,7 @@ function Page() {
   const [amount, setAmount] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [cancelBill, setCancelBill] = useState<{ id: number; number: string } | null>(null);
 
   const rows = bills.data ?? [];
   const kpis = useMemo(() => {
@@ -85,6 +87,11 @@ function Page() {
                   {b.match === "cuadrado" ? "Match" : b.match === "faltante" ? "Short vs ordered" : "Over received"}
                 </Badge>
                 <Badge tone={orderTone(b.status)}>{orderLabel(b.status)}</Badge>
+                {b.status !== "cancelled" && b.purchase_order_id ? (
+                  <Button size="sm" variant="outline" onClick={() => setCancelBill({ id: b.id, number: b.bill_number })}>
+                    Cancel
+                  </Button>
+                ) : null}
                 <SendButton
                   title="Vendor invoice"
                   number={b.bill_number}
@@ -123,7 +130,8 @@ function Page() {
                 <p className="tabular-nums font-semibold">{money(b.saldo)}</p>
               </div>
             </div>
-            {b.saldo > 0.009 ? (
+            <CancelledNote by={b.cancelled_by} at={b.cancelled_at} reason={b.cancel_reason} />
+            {b.saldo > 0.009 && b.status !== "cancelled" ? (
               <div className="mt-3">
                 <Button
                   size="sm"
@@ -139,6 +147,19 @@ function Page() {
           </Panel>
         ))}
       </div>
+
+      {cancelBill ? (
+        <CancelDialog
+          title={`Cancel bill ${cancelBill.number}`}
+          subtitle="This does not touch inventory — it only voids the payable document."
+          onClose={() => setCancelBill(null)}
+          onConfirm={async (reason) => {
+            await cancelSupplierBill({ data: { bill_id: cancelBill.id, reason: reason || undefined } });
+            setCancelBill(null);
+            await bills.reload();
+          }}
+        />
+      ) : null}
 
       {pago ? (
         <Modal title={`Pay ${pago.number}`} onClose={() => setPago(null)}>

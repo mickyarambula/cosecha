@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Printer } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { MetaCard, Modal } from "@/components/app-shell";
+import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { ConceptSelect } from "@/components/concepts";
 import { EmptyOrders, FilterField, FilterRow, ProductPicker } from "@/components/product-picker";
 import { packsToSkus, type SkuOption } from "@/components/sku-select";
@@ -13,6 +14,7 @@ import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
   applySettlement,
+  cancelPurchaseOrder,
   createBillFromPO,
   createExpense,
   createPurchaseOrder,
@@ -98,6 +100,7 @@ function Page() {
   const [shareId, setShareId] = useState<number | null>(null);
   const [shareLevel, setShareLevel] = useState<"po" | "basic" | "detailed">("po");
   const [settleId, setSettleId] = useState<number | null>(null);
+  const [cancelPo, setCancelPo] = useState<{ id: number; po_number: string } | null>(null);
   const [draft, setDraft] = useState({
     supplier_id: "",
     order_type: "Delivery by vendor",
@@ -670,6 +673,7 @@ function Page() {
                               setShareId(row.id);
                             }}
                             onSettle={() => setSettleId(row.id)}
+                            onCancel={() => setCancelPo({ id: row.id, po_number: row.po_number })}
                             saving={saving}
                           />
                         </td>
@@ -841,6 +845,18 @@ function Page() {
           }}
         />
       ) : null}
+      {cancelPo ? (
+        <CancelDialog
+          title={`Cancel order ${poShort(cancelPo.po_number)}`}
+          subtitle="Blocked if it already has a vendor invoice, or if a received lot was already sold, wasted or repacked."
+          onClose={() => setCancelPo(null)}
+          onConfirm={async (reason) => {
+            await cancelPurchaseOrder({ data: { purchase_order_id: cancelPo.id, reason: reason || undefined } });
+            setCancelPo(null);
+            await orders.reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -852,6 +868,7 @@ function PoDetail({
   onExpense,
   onShare,
   onSettle,
+  onCancel,
   saving,
 }: {
   row: Awaited<ReturnType<typeof listPurchaseOrders>>[number];
@@ -860,6 +877,7 @@ function PoDetail({
   onShare: () => void;
   onExpense: () => void;
   onSettle: () => void;
+  onCancel: () => void;
   saving: boolean;
 }) {
   const pending = row.lines.some((l) => l.quantity_ordered - l.quantity_received > 0.0001);
@@ -878,6 +896,7 @@ function PoDetail({
             </Badge>
           </div>
           <p className="text-xs text-muted">Placed on {fecha(row.order_date)}</p>
+          <CancelledNote by={row.cancelled_by} at={row.cancelled_at} reason={row.cancel_reason} />
         </div>
         <Button size="sm" onClick={onReceive}>
           Edit order
@@ -1040,17 +1059,17 @@ function PoDetail({
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        {pending ? (
+        {pending && row.status !== "cancelled" ? (
           <Button size="sm" onClick={onReceive}>
             {t("Receive merchandise")}
           </Button>
         ) : null}
-        {received && !row.bill ? (
+        {received && !row.bill && row.status !== "cancelled" ? (
           <Button size="sm" variant="outline" disabled={saving} onClick={onBill}>
             {t("Capture vendor invoice")}
           </Button>
         ) : null}
-        {received ? (
+        {received && row.status !== "cancelled" ? (
           <Button size="sm" onClick={onSettle}>
             Calculate settlement
           </Button>
@@ -1058,6 +1077,11 @@ function PoDetail({
         <Button size="sm" variant="outline" onClick={onShare}>
           Share vendor portal
         </Button>
+        {row.status !== "cancelled" ? (
+          <Button size="sm" variant="outline" onClick={onCancel}>
+            Cancel order
+          </Button>
+        ) : null}
         <span className="ml-auto text-xs text-muted">
           Payment status: {row.bill?.status === "paid" ? "Paid" : "Unpaid"}
         </span>

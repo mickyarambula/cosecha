@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware, moduleMiddleware } from "@/lib/auth/middleware";
 import { z } from "zod";
@@ -6,6 +5,11 @@ import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
 import { addDaysISO, num, skuCodeOf, termsDays, todayISO } from "@/lib/utils";
 
+// Intentionally `Promise<any>`, not `Promise<Sql>` — every one of this file's
+// ~150 `sql.query(...)` calls would need an explicit row-shape generic before
+// that's honest (tried it: 823 new errors, mostly in the route files that
+// infer their prop types from this file's returns). That's real work for a
+// dedicated session, not a side effect of removing `@ts-nocheck` from here.
 async function getSql(): Promise<any> {
   return getSqlDb();
 }
@@ -260,6 +264,92 @@ async function authIdentity(sql, userId) {
 		name: row?.name?.trim() || null
 	};
 }
+
+// ---- Cancel / audit helpers (Sesión 2 — Poder equivocarse) ----------------
+
+/** Display name for the "cancelled_by" trail — falls back to email, then the raw id. */
+async function staffNameFor(sql, userId) {
+	const [row] = await sql.query(`select coalesce(s.name, u.email, $1) as name
+       from "user" u left join staff s on s.user_id = u.id where u.id = $1`, [userId]);
+	return row?.name || "Unknown";
+}
+
+/** Folios of the live (non-cancelled) cash movements paying an invoice or bill — for error messages. */
+async function findPaymentFolios(sql, kind, id) {
+	if (kind === "invoice") {
+		const direct = await sql.query(`select folio from cash_movements where invoice_id = $1 and cancelled_at is null`, [id]);
+		const applied = await sql.query(`select cm.folio from payment_applications pa join cash_movements cm on cm.id = pa.cash_movement_id
+         where pa.target_kind = 'invoice' and pa.target_id = $1 and cm.cancelled_at is null`, [id]);
+		return [...new Set([...direct, ...applied].map((r) => r.folio))];
+	}
+	if (kind === "bill") {
+		const rows = await sql.query(`select folio from cash_movements where supplier_bill_id = $1 and cancelled_at is null`, [id]);
+		return [...new Set(rows.map((r) => r.folio))];
+	}
+	return [];
+}
+
+/** Reverses whatever a cash movement paid — direct invoice/bill/expense link, or payment_applications rows — and unmatches any reconciled bank line. */
+async function reverseCashMovementEffects(sql, mov) {
+	const apps = await sql.query(`select target_kind, target_id, amount::text from payment_applications where cash_movement_id = $1`, [mov.id]);
+	if (apps.length) {
+		for (const a of apps) {
+			const amt = n(a.amount);
+			if (a.target_kind === "invoice") {
+				const [inv] = await sql.query(`select total::text, paid::text from invoices where id = $1`, [a.target_id]);
+				if (inv) {
+					const paid = Math.max(n(inv.paid) - amt, 0);
+					await sql.query(`update invoices set paid=$1, status=$2 where id=$3`, [paid, moneyStatus(Math.abs(n(inv.total)), paid), a.target_id]);
+				}
+			} else if (a.target_kind === "po") {
+				await sql.query(`update purchase_orders set paid = greatest(coalesce(paid,0) - $1, 0) where id = $2`, [amt, a.target_id]);
+			} else if (a.target_kind === "expense") {
+				const [exp] = await sql.query(`select amount::text, paid::text from expenses where id = $1`, [a.target_id]);
+				if (exp) {
+					const paid = Math.max(n(exp.paid) - amt, 0);
+					await sql.query(`update expenses set paid=$1, status=$2 where id=$3`, [paid, moneyStatus(n(exp.amount), paid), a.target_id]);
+				}
+			}
+		}
+	} else {
+		const amt = Math.abs(n(mov.amount));
+		if (mov.invoice_id) {
+			const [inv] = await sql.query(`select total::text, paid::text from invoices where id = $1`, [mov.invoice_id]);
+			if (inv) {
+				const paid = Math.max(n(inv.paid) - amt, 0);
+				await sql.query(`update invoices set paid=$1, status=$2 where id=$3`, [paid, moneyStatus(Math.abs(n(inv.total)), paid), mov.invoice_id]);
+			}
+		}
+		if (mov.supplier_bill_id) {
+			const [bill] = await sql.query(`select total::text, paid::text from supplier_bills where id = $1`, [mov.supplier_bill_id]);
+			if (bill) {
+				const paid = Math.max(n(bill.paid) - amt, 0);
+				await sql.query(`update supplier_bills set paid=$1, status=$2 where id=$3`, [paid, moneyStatus(n(bill.total), paid), mov.supplier_bill_id]);
+			}
+		}
+		if (mov.expense_id) {
+			const [exp] = await sql.query(`select amount::text, paid::text from expenses where id = $1`, [mov.expense_id]);
+			if (exp) {
+				const paid = Math.max(n(exp.paid) - amt, 0);
+				await sql.query(`update expenses set paid=$1, status=$2 where id=$3`, [paid, moneyStatus(n(exp.amount), paid), mov.expense_id]);
+			}
+		}
+	}
+	await sql.query(`update bank_lines set cash_movement_id = null, status = 'open' where cash_movement_id = $1`, [mov.id]);
+}
+
+async function cancelCashMovementById(sql, context, id, expectedKind, reason) {
+	const [mov] = await sql.query(`select id, folio, kind, invoice_id, supplier_bill_id, expense_id, amount::text, cancelled_at
+       from cash_movements where id = $1`, [id]);
+	if (!mov) throw new Error("Movimiento no encontrado");
+	if (mov.folio === "CORTE-CHASE") throw new Error("Es el saldo de apertura de Chase (CORTE-CHASE) — no se puede cancelar");
+	if (mov.cancelled_at) throw new Error(`El movimiento ${mov.folio} ya está cancelado`);
+	if (mov.kind !== expectedKind) throw new Error(`El movimiento ${mov.folio} no es un ${expectedKind === "cobro" ? "cobro de cliente" : "pago a proveedor"}`);
+	await reverseCashMovementEffects(sql, mov);
+	const staffName = await staffNameFor(sql, context.userId);
+	await sql.query(`update cash_movements set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`, [staffName, reason || null, id]);
+	return { folio: mov.folio };
+}
 export const getDashboard = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	const empty = {
 		counts: {
@@ -295,7 +385,7 @@ export const getDashboard = createServerFn({ method: "GET" }).middleware([authMi
 		const inventoryValue = await one(`select coalesce(sum(current_qty * coalesce(unit_cost, 0)), 0)::text as c from lots where status = 'active'`);
 		const cxc = await one(`select coalesce(sum(total - paid), 0)::text as c from invoices where status <> 'cancelled'`);
 		const cxp = await one(`select coalesce(sum(total - paid), 0)::text as c from supplier_bills where status <> 'cancelled'`);
-		const cash = await one(`select coalesce(sum(amount), 0)::text as c from cash_movements`);
+		const cash = await one(`select coalesce(sum(amount), 0)::text as c from cash_movements where cancelled_at is null`);
 		const corteRows = await sql.query(`select key, value from app_settings where key in ('corte_as_of','chase_opening','jeams_opening')`);
 		const corteMap = Object.fromEntries(corteRows.map((r) => [r.key, r.value]));
 		const corte = corteMap.corte_as_of ? {
@@ -496,7 +586,7 @@ export const createSupplier = createServerFn({ method: "POST" }).validator(z.obj
 		data.notes || null,
 		Boolean(data.tambien_cliente)
 	]))[0].id;
-	let customer_code = null;
+	let customer_code: string | null = null;
 	if (data.tambien_cliente) {
 		const customer_code_n = await nextCode(sql, "customers", "code", "CLI-");
 		const cust = await sql.query(`insert into customers (code, name, contact_name, phone, email, city, payment_terms, notes, es_cliente, es_proveedor, linked_supplier_id)
@@ -574,7 +664,7 @@ export const createCustomer = createServerFn({ method: "POST" }).validator(z.obj
 		data.notes || null,
 		Boolean(data.tambien_proveedor)
 	]))[0].id;
-	let supplier_code = null;
+	let supplier_code: string | null = null;
 	if (data.tambien_proveedor) {
 		const supplier_code_n = await nextCode(sql, "suppliers", "code", "PRO-");
 		const sup = await sql.query(`insert into suppliers (code, name, contact_name, phone, email, city, country, notes, es_proveedor, es_cliente, linked_customer_id)
@@ -717,7 +807,7 @@ export const listLots = createServerFn({ method: "GET" }).middleware([authMiddle
     where sol.lot_id is not null
     group by sol.lot_id
   `);
-	const soldMap = new Map(sold.map((s) => [s.lot_id, {
+	const soldMap = new Map<number, { qty: number; revenue: number }>(sold.map((s) => [s.lot_id, {
 		qty: n(s.qty),
 		revenue: n(s.revenue)
 	}]));
@@ -861,7 +951,7 @@ async function loadPoLots(sql, poId) {
      join lots l on l.id = sol.lot_id
      where l.purchase_order_id = $1
      group by sol.lot_id`, [poId]);
-	const soldMap = new Map(sold.map((s) => [s.lot_id, {
+	const soldMap = new Map<number, { qty: number; revenue: number }>(sold.map((s) => [s.lot_id, {
 		qty: n(s.qty),
 		revenue: n(s.revenue)
 	}]));
@@ -1089,16 +1179,18 @@ export const getVendorPortal = createServerFn({ method: "GET" }).validator(z.obj
 export const getWarehouse = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	const sql = await getSql();
 	const incoming = await sql.query(`
-    select product_id, pack_style_id, coalesce(sum(quantity_ordered - quantity_received),0)::text as qty
-    from purchase_order_lines
-    where quantity_ordered > quantity_received
-    group by product_id, pack_style_id
+    select l.product_id, l.pack_style_id, coalesce(sum(l.quantity_ordered - l.quantity_received),0)::text as qty
+    from purchase_order_lines l
+    join purchase_orders po on po.id = l.purchase_order_id
+    where l.quantity_ordered > l.quantity_received and po.status <> 'cancelled'
+    group by l.product_id, l.pack_style_id
   `);
 	const openSales = await sql.query(`
-    select product_id, pack_style_id, coalesce(sum(quantity_ordered - quantity_shipped),0)::text as qty
-    from sales_order_lines
-    where quantity_ordered > quantity_shipped
-    group by product_id, pack_style_id
+    select l.product_id, l.pack_style_id, coalesce(sum(l.quantity_ordered - l.quantity_shipped),0)::text as qty
+    from sales_order_lines l
+    join sales_orders so on so.id = l.sales_order_id
+    where l.quantity_ordered > l.quantity_shipped and so.status <> 'cancelled'
+    group by l.product_id, l.pack_style_id
   `);
 	return {
 		incoming: incoming.map((r) => ({
@@ -1140,7 +1232,8 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
            po.order_date::text, po.expected_date::text, po.notes, po.sales_order_id, so.so_number,
            coalesce(po.order_type, 'entrega') as order_type, po.bol, po.vendor_invoice, po.shipping_ref,
            coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
-           coalesce(po.vendor_share_level,'po') as vendor_share_level, coalesce(po.signed_off,false) as signed_off
+           coalesce(po.vendor_share_level,'po') as vendor_share_level, coalesce(po.signed_off,false) as signed_off,
+           po.cancelled_at::text, po.cancelled_by, po.cancel_reason
     from purchase_orders po join suppliers s on s.id = po.supplier_id
     left join sales_orders so on so.id = po.sales_order_id
     order by po.id desc
@@ -1190,7 +1283,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
 		const expense_total = poExpenses.reduce((s, e) => s + e.amount, 0);
 		return {
 			...o,
-			bill: bills.find((b) => b.purchase_order_id === o.id) ?? null,
+			bill: bills.find((b) => b.purchase_order_id === o.id && b.status !== "cancelled") ?? null,
 			receptions: recs.filter((r) => r.purchase_order_id === o.id).map((r) => ({
 				...r,
 				quantity: n(r.quantity)
@@ -1374,8 +1467,9 @@ export const receiveMerchandise = createServerFn({ method: "POST" }).validator(z
 	})).min(1)
 })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [po] = await sql.query(`select id, po_number, supplier_id from purchase_orders where id = $1`, [data.purchase_order_id]);
+	const [po] = await sql.query(`select id, po_number, supplier_id, status from purchase_orders where id = $1`, [data.purchase_order_id]);
 	if (!po) throw new Error("Orden de compra no encontrada");
+	if (po.status === "cancelled") throw new Error("Esta orden de compra está cancelada");
 	for (const line of data.lines) {
 		if (line.result === "Rechazada" && !line.defect_reason) throw new Error("El rechazo exige un motivo");
 		if (line.result === "Aceptada con incidencia") {
@@ -1395,7 +1489,13 @@ export const receiveMerchandise = createServerFn({ method: "POST" }).validator(z
 		data.notes || null,
 		warning
 	]))[0].id;
-	const created = [];
+	const created: {
+		result: string;
+		lot_sano_folio?: string;
+		cantidad_sana?: number;
+		lot_retenido_folio?: string;
+		cantidad_retenida?: number;
+	}[] = [];
 	for (const recLine of data.lines) {
 		const [line] = await sql.query(`select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text, unit, unit_cost::text
          from purchase_order_lines where id = $1 and purchase_order_id = $2`, [recLine.line_id, data.purchase_order_id]);
@@ -1515,7 +1615,8 @@ export const listSalesOrders = createServerFn({ method: "GET" }).middleware([aut
 	const orders = await sql.query(`
     select so.id, so.so_number, so.share_token, so.customer_id, c.name as customer_name, c.phone as customer_phone, c.email as customer_email, c.payment_terms, so.status,
            so.order_date::text, so.ship_date::text, so.notes, so.customer_po_id,
-           cpo.cpo_number, cpo.customer_po_number
+           cpo.cpo_number, cpo.customer_po_number,
+           so.cancelled_at::text, so.cancelled_by, so.cancel_reason
     from sales_orders so join customers c on c.id = so.customer_id
     left join customer_pos cpo on cpo.id = so.customer_po_id
     order by so.id desc
@@ -1541,7 +1642,7 @@ export const listSalesOrders = createServerFn({ method: "GET" }).middleware([aut
 	const linkedPos = await sql.query(`select id, po_number, sales_order_id from purchase_orders where sales_order_id is not null`);
 	return orders.map((o) => ({
 		...o,
-		invoice: invoices.find((i) => i.sales_order_id === o.id) ?? null,
+		invoice: invoices.find((i) => i.sales_order_id === o.id && i.status !== "cancelled") ?? null,
 		purchases: linkedPos.filter((p) => p.sales_order_id === o.id),
 		lines: lines.filter((l) => l.sales_order_id === o.id).map((l) => {
 			const required = n(l.quantity_ordered);
@@ -1719,8 +1820,9 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator
 	notes: z.string().optional()
 })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [so] = await sql.query(`select id, so_number from sales_orders where id = $1`, [data.sales_order_id]);
+	const [so] = await sql.query(`select id, so_number, status from sales_orders where id = $1`, [data.sales_order_id]);
 	if (!so) throw new Error("Orden de venta no encontrada");
+	if (so.status === "cancelled") throw new Error("Esta orden de venta está cancelada");
 	const lines = await sql.query(`select l.product_id, p.name as product_name, l.quantity_ordered::text, l.unit, l.pack_style_id
        from sales_order_lines l join products p on p.id = l.product_id
        where l.sales_order_id = $1`, [data.sales_order_id]);
@@ -1775,8 +1877,10 @@ export const shipSalesLine = createServerFn({ method: "POST" }).validator(z.obje
 	location_id: z.number()
 })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [line] = await sql.query(`select id, sales_order_id, product_id, quantity_ordered::text, quantity_shipped::text, unit from sales_order_lines where id = $1`, [data.line_id]);
+	const [line] = await sql.query(`select l.id, l.sales_order_id, l.product_id, l.quantity_ordered::text, l.quantity_shipped::text, l.unit, so.status as so_status
+       from sales_order_lines l join sales_orders so on so.id = l.sales_order_id where l.id = $1`, [data.line_id]);
 	if (!line) throw new Error("Línea no encontrada");
+	if (line.so_status === "cancelled") throw new Error("Esta orden de venta está cancelada");
 	const remaining = n(line.quantity_ordered) - n(line.quantity_shipped);
 	if (data.quantity > remaining + 1e-4) throw new Error("Cantidad mayor a lo pendiente");
 	const [lot] = await sql.query(`select product_id, current_qty::text, coalesce(quality_state, 'sano') as quality_state, lot_number, coalesce(held,false) as held from lots where id = $1`, [data.lot_id]);
@@ -1815,11 +1919,12 @@ export const shipSalesLine = createServerFn({ method: "POST" }).validator(z.obje
 });
 export const createInvoiceFromSO = createServerFn({ method: "POST" }).validator(z.object({ sales_order_id: z.number() })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [existing] = await sql.query(`select invoice_number from invoices where sales_order_id = $1`, [data.sales_order_id]);
+	const [existing] = await sql.query(`select invoice_number from invoices where sales_order_id = $1 and status <> 'cancelled'`, [data.sales_order_id]);
 	if (existing) throw new Error(`Esta venta ya tiene factura ${existing.invoice_number}`);
 	const [so] = await sql.query(`select so.id, so.so_number, so.customer_id, c.payment_terms, so.status
        from sales_orders so join customers c on c.id = so.customer_id where so.id = $1`, [data.sales_order_id]);
 	if (!so) throw new Error("Orden de venta no encontrada");
+	if (so.status === "cancelled") throw new Error("Esta orden de venta está cancelada");
 	const billable = (await sql.query(`select l.product_id, p.name as product_name, l.quantity_ordered::text, l.quantity_shipped::text, l.unit, l.unit_price::text
        from sales_order_lines l join products p on p.id = l.product_id where l.sales_order_id = $1`, [data.sales_order_id])).map((l) => ({
 		...l,
@@ -1860,10 +1965,11 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" }).validator(
 });
 export const createBillFromPO = createServerFn({ method: "POST" }).validator(z.object({ purchase_order_id: z.number() })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [existing] = await sql.query(`select bill_number from supplier_bills where purchase_order_id = $1`, [data.purchase_order_id]);
+	const [existing] = await sql.query(`select bill_number from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`, [data.purchase_order_id]);
 	if (existing) throw new Error(`Esta compra ya tiene factura ${existing.bill_number}`);
-	const [po] = await sql.query(`select id, po_number, supplier_id from purchase_orders where id = $1`, [data.purchase_order_id]);
+	const [po] = await sql.query(`select id, po_number, supplier_id, status from purchase_orders where id = $1`, [data.purchase_order_id]);
 	if (!po) throw new Error("Orden de compra no encontrada");
+	if (po.status === "cancelled") throw new Error("Esta orden de compra está cancelada");
 	const lines = await sql.query(`select quantity_ordered::text, quantity_received::text, unit_cost::text
        from purchase_order_lines where purchase_order_id = $1`, [data.purchase_order_id]);
 	const ordered = lines.reduce((s, l) => s + n(l.quantity_ordered), 0);
@@ -1891,13 +1997,131 @@ export const createBillFromPO = createServerFn({ method: "POST" }).validator(z.o
 		received
 	};
 });
+
+// ---- Cancelar (Sesión 2 — Poder equivocarse) ------------------------------
+// Cada cancelación revierte solo lo que ESE documento causó directamente, y
+// bloquea con un mensaje claro si hay algo encadenado después que haya que
+// deshacer primero (una factura ya cobrada, una OC ya recibida y vendida).
+// Nada del corte (opening, bills sin OC, CORTE-CHASE) se puede cancelar.
+
+export const cancelInvoice = createServerFn({ method: "POST" }).validator(z.object({
+	invoice_id: z.number(),
+	reason: z.string().optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	const [inv] = await sql.query(`select id, invoice_number, status, invoice_type, paid::text from invoices where id = $1`, [data.invoice_id]);
+	if (!inv) throw new Error("Factura no encontrada");
+	if (inv.status === "cancelled") throw new Error(`La factura ${inv.invoice_number} ya está cancelada`);
+	if (inv.invoice_type === "opening") throw new Error("Es una factura del corte de apertura — no se puede cancelar");
+	if (n(inv.paid) > 0.009) {
+		const folios = await findPaymentFolios(sql, "invoice", inv.id);
+		throw new Error(`Esta factura tiene $${n(inv.paid).toFixed(2)} cobrado${folios.length ? ` (folio${folios.length > 1 ? "s" : ""} ${folios.join(", ")})` : ""}. Cancela ese cobro primero.`);
+	}
+	const staffName = await staffNameFor(sql, context.userId);
+	await sql.query(`update invoices set status='cancelled', cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`, [staffName, data.reason || null, inv.id]);
+	return { invoice_number: inv.invoice_number };
+});
+
+export const cancelSalesOrder = createServerFn({ method: "POST" }).validator(z.object({
+	sales_order_id: z.number(),
+	reason: z.string().optional()
+})).middleware([moduleMiddleware("orders")]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	const [so] = await sql.query(`select id, so_number, status from sales_orders where id = $1`, [data.sales_order_id]);
+	if (!so) throw new Error("Orden de venta no encontrada");
+	if (so.status === "cancelled") throw new Error(`La orden ${so.so_number} ya está cancelada`);
+	const [inv] = await sql.query(`select invoice_number from invoices where sales_order_id = $1 and status <> 'cancelled'`, [so.id]);
+	if (inv) throw new Error(`Esta orden ya tiene la factura ${inv.invoice_number}. Cancela esa factura primero.`);
+	const shipMovs = await sql.query(`select lot_id, location_id, quantity::text, unit from inventory_movements
+       where reference_type='sales_order' and reference_id=$1 and movement_type='ship'`, [so.id]);
+	for (const mv of shipMovs) {
+		const qty = Math.abs(n(mv.quantity));
+		if (qty <= 1e-9) continue;
+		await sql.query(`insert into inventory (lot_id, location_id, quantity) values ($1,$2,$3)
+         on conflict (lot_id, location_id) do update set quantity = inventory.quantity + excluded.quantity`, [mv.lot_id, mv.location_id, qty]);
+		await sql.query(`update lots set current_qty = current_qty + $1, status = case when status = 'depleted' then 'active' else status end where id = $2`, [qty, mv.lot_id]);
+		await sql.query(`insert into inventory_movements (lot_id, location_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+         values ($1,$2,'cancel_ship',$3,$4,'sales_order',$5,$6)`, [mv.lot_id, mv.location_id, qty, mv.unit, so.id, `Cancelación ${so.so_number}`]);
+	}
+	await sql.query(`update sales_order_lines set quantity_shipped = 0, lot_id = null where sales_order_id = $1`, [so.id]);
+	const staffName = await staffNameFor(sql, context.userId);
+	await sql.query(`update sales_orders set status='cancelled', cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`, [staffName, data.reason || null, so.id]);
+	return { so_number: so.so_number };
+});
+
+export const cancelPurchaseOrder = createServerFn({ method: "POST" }).validator(z.object({
+	purchase_order_id: z.number(),
+	reason: z.string().optional()
+})).middleware([moduleMiddleware("orders")]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	const [po] = await sql.query(`select id, po_number, status from purchase_orders where id = $1`, [data.purchase_order_id]);
+	if (!po) throw new Error("Orden de compra no encontrada");
+	if (po.status === "cancelled") throw new Error(`La orden ${po.po_number} ya está cancelada`);
+	const [bill] = await sql.query(`select bill_number from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`, [po.id]);
+	if (bill) throw new Error(`Esta orden ya tiene la factura de proveedor ${bill.bill_number}. Cancela esa factura primero.`);
+	const lots = await sql.query(`select id, lot_number, original_qty::text, current_qty::text, unit, status from lots where purchase_order_id = $1`, [po.id]);
+	const touched = lots.filter((l) => l.status !== "cancelled" && Math.abs(n(l.current_qty) - n(l.original_qty)) > 1e-6);
+	if (touched.length) {
+		throw new Error(`Los lotes ${touched.map((l) => l.lot_number).join(", ")} de esta orden ya se vendieron, mermaron o reempacaron. Corrige o deshaz eso primero antes de cancelar la recepción.`);
+	}
+	for (const lot of lots) {
+		if (lot.status === "cancelled") continue;
+		const qty = n(lot.original_qty);
+		if (qty > 1e-9) {
+			await sql.query(`update inventory set quantity = 0 where lot_id = $1`, [lot.id]);
+			await sql.query(`insert into inventory_movements (lot_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+           values ($1,'cancel_receive',$2,$3,'purchase_order',$4,$5)`, [lot.id, -qty, lot.unit, po.id, `Cancelación ${po.po_number}`]);
+		}
+		await sql.query(`update lots set current_qty = 0, status='cancelled' where id = $1`, [lot.id]);
+	}
+	await sql.query(`update purchase_order_lines set quantity_received = 0 where purchase_order_id = $1`, [po.id]);
+	const staffName = await staffNameFor(sql, context.userId);
+	await sql.query(`update purchase_orders set status='cancelled', cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`, [staffName, data.reason || null, po.id]);
+	return { po_number: po.po_number };
+});
+
+export const cancelSupplierBill = createServerFn({ method: "POST" }).validator(z.object({
+	bill_id: z.number(),
+	reason: z.string().optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	const [bill] = await sql.query(`select id, bill_number, status, purchase_order_id, paid::text from supplier_bills where id = $1`, [data.bill_id]);
+	if (!bill) throw new Error("Factura de proveedor no encontrada");
+	if (bill.status === "cancelled") throw new Error(`La factura ${bill.bill_number} ya está cancelada`);
+	if (bill.purchase_order_id == null) throw new Error("Es una factura del corte de apertura — no se puede cancelar");
+	if (n(bill.paid) > 0.009) {
+		const folios = await findPaymentFolios(sql, "bill", bill.id);
+		throw new Error(`Esta factura tiene $${n(bill.paid).toFixed(2)} pagado${folios.length ? ` (folio${folios.length > 1 ? "s" : ""} ${folios.join(", ")})` : ""}. Cancela ese pago primero.`);
+	}
+	const staffName = await staffNameFor(sql, context.userId);
+	await sql.query(`update supplier_bills set status='cancelled', cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`, [staffName, data.reason || null, bill.id]);
+	return { bill_number: bill.bill_number };
+});
+
+export const cancelCustomerPayment = createServerFn({ method: "POST" }).validator(z.object({
+	cash_movement_id: z.number(),
+	reason: z.string().optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	return cancelCashMovementById(sql, context, data.cash_movement_id, "cobro", data.reason);
+});
+
+export const cancelVendorPayment = createServerFn({ method: "POST" }).validator(z.object({
+	cash_movement_id: z.number(),
+	reason: z.string().optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	return cancelCashMovementById(sql, context, data.cash_movement_id, "pago", data.reason);
+});
+
 export const listInvoices = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const sql = await getSql();
 	const invoices = await sql.query(`
     select i.id, i.invoice_number, i.share_token, i.sales_order_id, so.so_number, i.customer_id, c.name as customer_name,
            c.phone as customer_phone, c.email as customer_email,
            i.status, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.paid::text, i.notes,
-           coalesce(i.invoice_type,'sale') as invoice_type, c.payment_terms, i.sales_rep
+           coalesce(i.invoice_type,'sale') as invoice_type, c.payment_terms, i.sales_rep,
+           i.cancelled_at::text, i.cancelled_by, i.cancel_reason
     from invoices i
     join customers c on c.id = i.customer_id
     left join sales_orders so on so.id = i.sales_order_id
@@ -1931,7 +2155,7 @@ export const listBills = createServerFn({ method: "GET" }).middleware([moduleMid
     select b.id, b.bill_number, b.purchase_order_id, po.po_number, b.supplier_id, s.name as supplier_name,
            s.phone as supplier_phone, s.email as supplier_email,
            b.status, b.issue_date::text, b.due_date::text, b.ordered_qty::text, b.received_qty::text,
-           b.total::text, b.paid::text, b.notes
+           b.total::text, b.paid::text, b.notes, b.cancelled_at::text, b.cancelled_by, b.cancel_reason
     from supplier_bills b
     join suppliers s on s.id = b.supplier_id
     left join purchase_orders po on po.id = b.purchase_order_id
@@ -1955,7 +2179,8 @@ export const listBills = createServerFn({ method: "GET" }).middleware([moduleMid
 export const listCash = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const movements = (await (await getSql()).query(`
     select m.id, m.folio, m.mov_date::text, m.kind, m.counterparty,
-           i.invoice_number, b.bill_number, m.amount::text, m.notes
+           i.invoice_number, b.bill_number, m.amount::text, m.notes,
+           m.cancelled_at::text, m.cancelled_by, m.cancel_reason
     from cash_movements m
     left join invoices i on i.id = m.invoice_id
     left join supplier_bills b on b.id = m.supplier_bill_id
@@ -1965,7 +2190,7 @@ export const listCash = createServerFn({ method: "GET" }).middleware([moduleMidd
 		amount: n(r.amount)
 	}));
 	return {
-		balance: movements.reduce((s, m) => s + m.amount, 0),
+		balance: movements.filter((m) => !m.cancelled_at).reduce((s, m) => s + m.amount, 0),
 		movements
 	};
 });
@@ -2229,13 +2454,14 @@ export const listPayables = createServerFn({ method: "GET" }).middleware([module
            po.order_date::text, coalesce(po.paid,0)::text as paid, po.notes
     from purchase_orders po
     join suppliers s on s.id = po.supplier_id
+    where po.status <> 'cancelled'
     order by po.order_date desc, po.id desc
   `);
 	const merchRows = await sql.query(`
     select purchase_order_id, coalesce(sum(quantity_ordered * coalesce(unit_cost,0)),0)::text as merch
     from purchase_order_lines group by purchase_order_id
   `);
-	const merchMap = new Map(merchRows.map((r) => [r.purchase_order_id, n(r.merch)]));
+	const merchMap = new Map<number, number>(merchRows.map((r) => [r.purchase_order_id, n(r.merch)]));
 	const expRows = expenses.map((e) => {
 		const amount = n(e.amount);
 		const paid = n(e.paid);
@@ -2543,7 +2769,7 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([modul
     left join lots on lots.id = sol.lot_id
   `);
 	const expenses = await sql.query(`select category, amount::text from expenses`);
-	const cash = await sql.query(`select amount::text from cash_movements`);
+	const cash = await sql.query(`select amount::text from cash_movements where cancelled_at is null`);
 	const invVal = await sql.query(`select coalesce(sum(current_qty * coalesce(unit_cost,0)),0)::text as v from lots where current_qty > 0`);
 	const billPayable = await sql.query(`select coalesce(sum(total - paid),0)::text as v from supplier_bills where status <> 'cancelled'`);
 	const expPayable = await sql.query(`select coalesce(sum(amount - paid),0)::text as v from expenses where payable = true`);
@@ -2557,7 +2783,7 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([modul
 	const ar = liveInv.reduce((s, i) => s + Math.max(n(i.total) - n(i.paid), 0), 0);
 	const cogs = n(cogsRows[0]?.cogs);
 	const salesShipped = n(cogsRows[0]?.sales);
-	const expByCat = {};
+	const expByCat: Record<string, number> = {};
 	for (const e of expenses) expByCat[e.category] = (expByCat[e.category] || 0) + n(e.amount);
 	const expTotal = expenses.reduce((s, e) => s + n(e.amount), 0);
 	const cashBal = cash.reduce((s, m) => s + n(m.amount), 0);
@@ -2619,7 +2845,7 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([modul
 export const listVendorPayments = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const sql = await getSql();
 	const movs = await sql.query(`
-    select id, folio, mov_date::text, counterparty, amount::text, notes
+    select id, folio, mov_date::text, counterparty, amount::text, notes, cancelled_at::text, cancelled_by, cancel_reason
     from cash_movements where kind = 'pago' order by mov_date desc, id desc
   `);
 	const apps = await sql.query(`select cash_movement_id, target_kind, target_id, amount::text from payment_applications where kind = 'vendor'`);
@@ -2901,7 +3127,18 @@ export const createPackOut = createServerFn({ method: "POST" }).middleware([auth
 	const [dest] = await sql.query(`select id, product_id, sku_code, unit_of_measure from pack_styles where id = $1`, [data.dest_pack_style_id]);
 	if (!dest) throw new Error("Destination SKU not found");
 	let value = 0;
-	const srcLots = [];
+	const srcLots: {
+		id: number;
+		current_qty: string;
+		unit_cost: string;
+		unit: string;
+		supplier_id: number;
+		origin_country: string | null;
+		lot_number: string;
+		product_id: number;
+		held: boolean;
+		status: string;
+	}[] = [];
 	for (const src of data.sources) {
 		const [lot] = await sql.query(`select id, current_qty::text, unit_cost::text, unit, supplier_id, origin_country, lot_number, product_id,
                 coalesce(held,false) as held, status from lots where id = $1`, [src.lot_id]);
@@ -3214,7 +3451,7 @@ export const listSettlements = createServerFn({ method: "GET" }).middleware([mod
 	const sql = await getSql();
 	const pos = await sql.query(`select po.id, po.po_number, s.name as supplier_name, coalesce(po.signed_off,false) as signed_off,
               coalesce(po.costing_mode,'pas') as costing_mode, po.status
-       from purchase_orders po join suppliers s on s.id = po.supplier_id order by po.id desc`);
+       from purchase_orders po join suppliers s on s.id = po.supplier_id where po.status <> 'cancelled' order by po.id desc`);
 	const out: any[] = [];
 	for (const po of pos) {
 		const settlement = await loadSettlement(sql, po.id);
