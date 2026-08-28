@@ -464,7 +464,7 @@ function Page() {
                 <p className="whitespace-pre-wrap">{selectedLocation.receiving_instructions}</p>
               </div>
             ) : null}
-            {detectedShipTo ? (
+            {detectedShipTo && form.customer_id ? (
               <div className="rounded-md border border-danger/40 bg-danger/5 p-3 text-xs">
                 <p className="mb-1 font-semibold uppercase tracking-wide text-danger">Destino detectado en el PO — no está en la lista</p>
                 <p>

@@ -93,8 +93,15 @@ export async function extractCustomerPOFile(
       return { ok: false, reason: "La lectura automática no está configurada correctamente (API key inválida)." };
     }
     if (err instanceof Anthropic.APIError) {
+      console.error("[po-extract] Anthropic APIError", {
+        status: err.status,
+        name: err.name,
+        message: err.message,
+        error: err.error,
+      });
       return { ok: false, reason: `No se pudo leer el documento (error del lector: ${err.status ?? "?"}) — captura a mano.` };
     }
+    console.error("[po-extract] unexpected error", err);
     return { ok: false, reason: "No se pudo leer el documento — captura a mano." };
   }
 }
