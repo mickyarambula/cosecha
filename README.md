@@ -13,7 +13,7 @@ El producto se llama **Cosecha**. Los documentos que salen al cliente/proveedor 
 | Repo | Visibilidad |
 |---|---|
 | [mickyarambula/cosecha](https://github.com/mickyarambula/cosecha) | **Privado — usar este** |
-| [mickyarambula/erppleinproduce](https://github.com/mickyarambula/erppleinproduce) | Público (mismo snapshot; no preferido) |
+| [mickyarambula/erppleinproduce](https://github.com/mickyarambula/erppleinproduce) | Privado (duplicado; no usar) |
 
 No copiar a `erp-plein` (ese es el sistema anterior).
 

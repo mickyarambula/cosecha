@@ -11,7 +11,7 @@ Este archivo es el estado de la conversación. El código está en GitHub. Junto
 | Repo | Visibilidad | Usar para Claude |
 |---|---|---|
 | https://github.com/mickyarambula/cosecha | **Privado** | **Sí — este** |
-| https://github.com/mickyarambula/erppleinproduce | Público (mismo commit) | Evitar; tiene saldos y clientes |
+| https://github.com/mickyarambula/erppleinproduce | Privado (mismo código, nombre viejo) | No hace falta |
 
 Commit de corte + PDF + auth: `9ad090c` (22 Ago 2026). Rama `main`.
 
@@ -65,7 +65,6 @@ GL: `16000` JP Morgan Chase, `12000` AR, `20100` AP.
 - Email de algunos clientes (Cri) vacío en `0014_plein_catalog.sql`.
 - Chase histórico no se importa a propósito.
 - Preview embebido (iframe) bloquea WhatsApp/`window.print`; por eso PDF = descarga. En la app publicada funciona mejor.
-- `erppleinproduce` quedó **público** con saldos reales — pasarlo a privado.
 
 ## Cómo seguir (primer mensaje para Claude)
 
