@@ -29,6 +29,7 @@ import { Route as TesoreriaRouteImport } from './routes/tesoreria'
 import { Route as VentasRouteImport } from './routes/ventas'
 import { Route as PortalIdRouteImport } from './routes/portal.$id'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiCpoAttachmentIdRouteImport } from './routes/api/cpo-attachment.$id'
 import { Route as DocTipoIdRouteImport } from './routes/doc.$tipo.$id'
 
 const IndexRoute = IndexRouteImport.update({
@@ -131,6 +132,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCpoAttachmentIdRoute = ApiCpoAttachmentIdRouteImport.update({
+  id: '/api/cpo-attachment/$id',
+  path: '/api/cpo-attachment/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DocTipoIdRoute = DocTipoIdRouteImport.update({
   id: '/doc/$tipo/$id',
   path: '/doc/$tipo/$id',
@@ -158,6 +164,7 @@ export interface FileRoutesByFullPath {
   '/ventas': typeof VentasRoute
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
 }
 export interface FileRoutesByTo {
@@ -181,6 +188,7 @@ export interface FileRoutesByTo {
   '/ventas': typeof VentasRoute
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
 }
 export interface FileRoutesById {
@@ -205,6 +213,7 @@ export interface FileRoutesById {
   '/ventas': typeof VentasRoute
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
 }
 export interface FileRouteTypes {
@@ -230,6 +239,7 @@ export interface FileRouteTypes {
     | '/ventas'
     | '/portal/$id'
     | '/api/auth/$'
+    | '/api/cpo-attachment/$id'
     | '/doc/$tipo/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -253,6 +263,7 @@ export interface FileRouteTypes {
     | '/ventas'
     | '/portal/$id'
     | '/api/auth/$'
+    | '/api/cpo-attachment/$id'
     | '/doc/$tipo/$id'
   id:
     | '__root__'
@@ -276,6 +287,7 @@ export interface FileRouteTypes {
     | '/ventas'
     | '/portal/$id'
     | '/api/auth/$'
+    | '/api/cpo-attachment/$id'
     | '/doc/$tipo/$id'
   fileRoutesById: FileRoutesById
 }
@@ -300,6 +312,7 @@ export interface RootRouteChildren {
   VentasRoute: typeof VentasRoute
   PortalIdRoute: typeof PortalIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiCpoAttachmentIdRoute: typeof ApiCpoAttachmentIdRoute
   DocTipoIdRoute: typeof DocTipoIdRoute
 }
 
@@ -445,6 +458,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cpo-attachment/$id': {
+      id: '/api/cpo-attachment/$id'
+      path: '/api/cpo-attachment/$id'
+      fullPath: '/api/cpo-attachment/$id'
+      preLoaderRoute: typeof ApiCpoAttachmentIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/doc/$tipo/$id': {
       id: '/doc/$tipo/$id'
       path: '/doc/$tipo/$id'
@@ -476,6 +496,7 @@ const rootRouteChildren: RootRouteChildren = {
   VentasRoute: VentasRoute,
   PortalIdRoute: PortalIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiCpoAttachmentIdRoute: ApiCpoAttachmentIdRoute,
   DocTipoIdRoute: DocTipoIdRoute,
 }
 export const routeTree = rootRouteImport

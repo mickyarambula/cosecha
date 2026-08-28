@@ -25,7 +25,7 @@ export function orderTone(status: string) {
   if (s === "completed" || s === "active" || s === "paid" || s === "recibido" || s === "converted" || s === "fulfilled" || s === "received")
     return "ok" as const;
   if (s === "partial" || s === "confirmed" || s === "open") return "warn" as const;
-  if (s === "cancelled" || s === "expired" || s === "depleted" || s === "overdue" || s === "unpaid") return "danger" as const;
+  if (s === "cancelled" || s === "expired" || s === "depleted" || s === "overdue" || s === "unpaid" || s === "rejected") return "danger" as const;
   return "mute" as const;
 }
 
@@ -42,6 +42,7 @@ export function orderLabel(status: string) {
     expired: "Expired",
     open: "Unpaid",
     converted: "Converted",
+    rejected: "Rejected",
     paid: "Paid",
     overdue: "Overdue",
     unpaid: "Unpaid",

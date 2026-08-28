@@ -5,12 +5,15 @@ import { packsToSkus, SkuSelect } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { SendButton } from "@/components/send-doc";
 import {
   convertCustomerPOToSO,
   createCustomerPO,
+  extractCustomerPO,
   listCustomerPOs,
   listCustomers,
   listProducts,
+  rejectCustomerPO,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { fecha, money, qty, skuLabel, todayISO } from "@/lib/utils";
@@ -23,6 +26,71 @@ function emptyLine(): LineDraft {
   return { product_id: "", pack_style_id: "", qty: "", unit: "caja", unit_price: "" };
 }
 
+function emptyForm() {
+  return {
+    customer_id: "",
+    customer_po_number: "",
+    po_date: todayISO(),
+    requested_date: "",
+    currency: "USD",
+    notes: "",
+  };
+}
+
+function RejectDialog({
+  cpoNumber,
+  onClose,
+  onConfirm,
+}: {
+  cpoNumber: string;
+  onClose: () => void;
+  onConfirm: (reason: string) => Promise<void>;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function confirm() {
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      setErr("Escribe el motivo del rechazo.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await onConfirm(trimmed);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "No se pudo rechazar");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`Rechazar ${cpoNumber}`} subtitle="Plein no tiene abasto para este PO" onClose={onClose}>
+      <div className="grid gap-3">
+        <Field label="Motivo *">
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            className="min-h-24"
+            placeholder="Ej. Sin producto disponible en esta calidad/fecha"
+          />
+        </Field>
+        {err ? <p className="text-sm text-danger">{err}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose} disabled={busy}>
+            No, regresar
+          </Button>
+          <Button onClick={() => void confirm()} disabled={busy}>
+            {busy ? "Rechazando…" : "Sí, rechazar"}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function Page() {
   const cpos = useAsync(() => listCustomerPOs(), []);
   const customers = useAsync(() => listCustomers(), []);
@@ -30,17 +98,16 @@ function Page() {
   const skus = packsToSkus(products.data ?? []);
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<number | null>(null);
+  const [rejecting, setRejecting] = useState(false);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
-  const [form, setForm] = useState({
-    customer_id: "",
-    customer_po_number: "",
-    po_date: todayISO(),
-    currency: "USD",
-    attachment_url: "",
-    notes: "",
-  });
+  const [form, setForm] = useState(emptyForm());
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
+  const [file, setFile] = useState<File | null>(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [extracting, setExtracting] = useState(false);
+  const [extractMsg, setExtractMsg] = useState<string | null>(null);
+  const [extractErr, setExtractErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -57,8 +124,7 @@ function Page() {
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return list.filter((c) => {
-      if (status === "open" && c.status !== "open") return false;
-      if (status === "converted" && c.status !== "converted") return false;
+      if (status !== "all" && c.status !== status) return false;
       if (!needle) return true;
       const blob = `${c.cpo_number} ${c.customer_name} ${c.customer_po_number ?? ""}`.toLowerCase();
       return blob.includes(needle);
@@ -66,6 +132,64 @@ function Page() {
   }, [list, q, status]);
 
   const selected = list.find((c) => c.id === detail) ?? null;
+  const selectedCustomer = selected ? (customers.data ?? []).find((c) => c.id === selected.customer_id) : null;
+
+  function closeCreate() {
+    setOpen(false);
+    setForm(emptyForm());
+    setLines([emptyLine()]);
+    setFile(null);
+    setFileInputKey((k) => k + 1);
+    setExtractMsg(null);
+    setExtractErr(null);
+  }
+
+  async function onFile(f: File | null) {
+    setFile(f);
+    setExtractMsg(null);
+    setExtractErr(null);
+    if (!f) return;
+    setExtracting(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const r = await extractCustomerPO({ data: fd });
+      if (!r.ok) {
+        setExtractErr(r.reason);
+        return;
+      }
+      const d = r.data;
+      setForm((prev) => ({
+        ...prev,
+        customer_id: d.customer_id ? String(d.customer_id) : prev.customer_id,
+        customer_po_number: d.customer_po_number || prev.customer_po_number,
+        po_date: d.po_date || prev.po_date,
+        requested_date: d.requested_date || prev.requested_date,
+        currency: d.currency || prev.currency,
+        notes: d.notes || prev.notes,
+      }));
+      if (d.lines.length) {
+        setLines(
+          d.lines.map((l) => ({
+            product_id: l.product_id ? String(l.product_id) : "",
+            pack_style_id: l.pack_style_id ? String(l.pack_style_id) : "",
+            qty: l.quantity != null ? String(l.quantity) : "",
+            unit: l.unit || "caja",
+            unit_price: l.unit_price != null ? String(l.unit_price) : "",
+          })),
+        );
+      }
+      const sinCoincidencia = d.lines.filter((l) => !l.pack_style_id).length;
+      const notas: string[] = ["Leído automáticamente — revisa los datos antes de guardar."];
+      if (!d.customer_id && d.customer_name) notas.push(`Cliente en el PO: "${d.customer_name}" — no coincide con el catálogo, selecciónalo a mano.`);
+      if (sinCoincidencia) notas.push(`${sinCoincidencia} línea(s) sin SKU reconocido — complétalas a mano.`);
+      setExtractMsg(notas.join(" "));
+    } catch (e) {
+      setExtractErr(e instanceof Error ? e.message : "No se pudo leer el archivo");
+    } finally {
+      setExtracting(false);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -74,17 +198,23 @@ function Page() {
       setErr("Agrega al menos un producto con cantidad.");
       return;
     }
+    if (!form.requested_date) {
+      setErr("Captura la fecha de entrega solicitada por el cliente.");
+      return;
+    }
     setSaving(true);
     setErr(null);
     setMsg(null);
     try {
-      const r = await createCustomerPO({
-        data: {
+      const fd = new FormData();
+      fd.append(
+        "payload",
+        JSON.stringify({
           customer_id: Number(form.customer_id),
           customer_po_number: form.customer_po_number || undefined,
           po_date: form.po_date || undefined,
+          requested_date: form.requested_date || undefined,
           currency: form.currency,
-          attachment_url: form.attachment_url || undefined,
           notes: form.notes || undefined,
           lines: ready.map((l) => ({
             product_id: Number(l.product_id),
@@ -93,18 +223,11 @@ function Page() {
             unit: l.unit || "caja",
             unit_price: l.unit_price ? Number(l.unit_price) : undefined,
           })),
-        },
-      });
-      setOpen(false);
-      setForm({
-        customer_id: "",
-        customer_po_number: "",
-        po_date: todayISO(),
-        currency: "USD",
-        attachment_url: "",
-        notes: "",
-      });
-      setLines([emptyLine()]);
+        }),
+      );
+      if (file) fd.append("file", file);
+      const r = await createCustomerPO({ data: fd });
+      closeCreate();
       setMsg(`Customer PO ${r.cpo_number} capturado`);
       await cpos.reload();
     } catch (e2) {
@@ -130,6 +253,14 @@ function Page() {
     }
   }
 
+  async function rechazar(id: number, reason: string) {
+    const r = await rejectCustomerPO({ data: { customer_po_id: id, reason } });
+    setRejecting(false);
+    setDetail(null);
+    setMsg(`${r.cpo_number} rechazado`);
+    await cpos.reload();
+  }
+
   return (
     <div>
       <PageHeader
@@ -152,6 +283,7 @@ function Page() {
           <option value="all">All statuses</option>
           <option value="open">Open</option>
           <option value="converted">Converted</option>
+          <option value="rejected">Rejected</option>
         </Select>
         <Input
           className="max-w-sm"
@@ -165,13 +297,14 @@ function Page() {
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border bg-surface">
-        <table className="w-full min-w-[780px] text-left text-sm">
+        <table className="w-full min-w-[860px] text-left text-sm">
           <thead className="border-b border-border text-xs uppercase tracking-wide text-muted">
             <tr>
               <th className="px-4 py-3 font-medium">Folio</th>
               <th className="px-4 py-3 font-medium">Customer</th>
               <th className="px-4 py-3 font-medium">Customer PO #</th>
-              <th className="px-4 py-3 font-medium">Date</th>
+              <th className="px-4 py-3 font-medium">PO date</th>
+              <th className="px-4 py-3 font-medium">Delivery</th>
               <th className="px-4 py-3 font-medium">Currency</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Attachment</th>
@@ -195,14 +328,15 @@ function Page() {
                 <td className="px-4 py-3 font-medium">{cpo.customer_name}</td>
                 <td className="px-4 py-3 font-mono text-xs">{cpo.customer_po_number ?? "—"}</td>
                 <td className="px-4 py-3 text-muted">{fecha(cpo.po_date)}</td>
+                <td className="px-4 py-3 text-muted">{cpo.requested_date ? fecha(cpo.requested_date) : "—"}</td>
                 <td className="px-4 py-3">{cpo.currency}</td>
                 <td className="px-4 py-3">
                   <Badge tone={orderTone(cpo.status)}>{orderLabel(cpo.status)}</Badge>
                 </td>
                 <td className="px-4 py-3">
-                  {cpo.attachment_url ? (
+                  {cpo.has_attachment ? (
                     <a
-                      href={cpo.attachment_url}
+                      href={`/api/cpo-attachment/${cpo.id}`}
                       target="_blank"
                       rel="noreferrer"
                       className="text-xs font-medium text-primary underline-offset-2 hover:underline"
@@ -217,7 +351,7 @@ function Page() {
             ))}
             {filtered.length === 0 && !cpos.loading ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted">
+                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted">
                   No hay Customer PO con ese filtro.
                 </td>
               </tr>
@@ -227,8 +361,19 @@ function Page() {
       </div>
 
       {open ? (
-        <Modal wide title="New customer PO" subtitle="Capture the PO the customer sent" onClose={() => setOpen(false)}>
+        <Modal wide title="New customer PO" subtitle="Capture the PO the customer sent" onClose={closeCreate}>
           <form className="grid gap-3" onSubmit={submit}>
+            <Field label="Archivo del PO (PDF o foto)">
+              <Input
+                key={fileInputKey}
+                type="file"
+                accept="application/pdf,image/png,image/jpeg,image/webp"
+                onChange={(e) => void onFile(e.target.files?.[0] ?? null)}
+              />
+            </Field>
+            {extracting ? <p className="text-xs text-muted">Leyendo el archivo…</p> : null}
+            {extractMsg ? <p className="text-xs text-ok">{extractMsg}</p> : null}
+            {extractErr ? <p className="text-xs text-danger">No pude leerlo: {extractErr} Captura los datos a mano.</p> : null}
             <Field label="Customer *">
               <Select required value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })}>
                 <option value="">Seleccionar</option>
@@ -251,18 +396,19 @@ function Page() {
                 <Input type="date" value={form.po_date} onChange={(e) => setForm({ ...form, po_date: e.target.value })} />
               </Field>
             </div>
+            <Field label="Fecha de entrega solicitada *">
+              <Input
+                required
+                type="date"
+                value={form.requested_date}
+                onChange={(e) => setForm({ ...form, requested_date: e.target.value })}
+              />
+            </Field>
             <Field label="Moneda">
               <Select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
                 <option value="USD">USD</option>
                 <option value="MXN">MXN</option>
               </Select>
-            </Field>
-            <Field label="Adjunto del PO">
-              <Input
-                placeholder="Pega una URL de Drive…"
-                value={form.attachment_url}
-                onChange={(e) => setForm({ ...form, attachment_url: e.target.value })}
-              />
             </Field>
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Lines</p>
@@ -330,7 +476,7 @@ function Page() {
               <Button type="submit" disabled={saving}>
                 {saving ? "Saving…" : "Create customer PO"}
               </Button>
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              <Button type="button" variant="outline" onClick={closeCreate}>
                 Cancelar
               </Button>
             </div>
@@ -359,6 +505,10 @@ function Page() {
               <p className="mt-1 text-sm">{fecha(selected.po_date)}</p>
             </Panel>
             <Panel className="p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Fecha de entrega solicitada</p>
+              <p className="mt-1 text-sm">{selected.requested_date ? fecha(selected.requested_date) : "—"}</p>
+            </Panel>
+            <Panel className="p-3">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Moneda</p>
               <p className="mt-1 text-sm">{selected.currency}</p>
             </Panel>
@@ -370,14 +520,14 @@ function Page() {
             </Panel>
             <Panel className="p-3">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Adjunto</p>
-              {selected.attachment_url ? (
+              {selected.has_attachment ? (
                 <a
-                  href={selected.attachment_url}
+                  href={`/api/cpo-attachment/${selected.id}`}
                   target="_blank"
                   rel="noreferrer"
                   className="mt-1 inline-block text-sm font-medium text-primary underline-offset-2 hover:underline"
                 >
-                  Ver adjunto
+                  Ver adjunto{selected.attachment_filename ? ` (${selected.attachment_filename})` : ""}
                 </a>
               ) : (
                 <p className="mt-1 text-sm text-subtle">—</p>
@@ -412,22 +562,81 @@ function Page() {
             </table>
           </div>
           {selected.notes ? <p className="mt-3 text-xs text-muted">{selected.notes}</p> : null}
+          {selected.status === "rejected" ? (
+            <p className="mt-3 text-xs text-danger">
+              Rechazado por {selected.rejected_by || "—"} · {selected.rejected_at ? new Date(selected.rejected_at).toLocaleString() : ""}
+              {selected.rejected_reason ? ` · ${selected.rejected_reason}` : ""}
+            </p>
+          ) : null}
           {err && detail ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
           <div className="mt-4 flex flex-wrap gap-2">
             {selected.status === "open" ? (
-              <Button disabled={saving} onClick={() => void convertir(selected.id)}>
-                {saving ? "Converting…" : "Convert to sales order"}
-              </Button>
+              <>
+                <Button disabled={saving} onClick={() => void convertir(selected.id)}>
+                  {saving ? "Converting…" : "Convert to sales order"}
+                </Button>
+                <Button variant="outline" disabled={saving} onClick={() => setRejecting(true)}>
+                  Rechazar
+                </Button>
+              </>
             ) : selected.so_number ? (
               <Link to="/ventas" className="inline-flex min-h-11 items-center text-sm font-medium text-primary underline-offset-2 hover:underline">
                 Ver venta {selected.so_number}
               </Link>
+            ) : null}
+            {selected.status === "converted" || selected.status === "rejected" ? (
+              <SendButton
+                title={selected.status === "rejected" ? "Rechazo de PO" : "Confirmación de pedido"}
+                number={selected.status === "rejected" ? selected.cpo_number : selected.so_number || selected.cpo_number}
+                partyName={selected.customer_name}
+                email={selectedCustomer?.email}
+                phone={selectedCustomer?.phone}
+                docs={[]}
+                lines={selected.lines.map((l) => ({
+                  qty: l.quantity,
+                  unit: l.unit,
+                  name: l.product_name,
+                  sku: l.sku_code,
+                  unit_price: l.unit_price ?? undefined,
+                  amount: l.unit_price ? l.quantity * l.unit_price : undefined,
+                }))}
+                total={selected.lines.reduce((s, l) => s + l.quantity * (l.unit_price || 0), 0)}
+                pdf={{
+                  kindLabel: selected.status === "rejected" ? "Customer PO — Rejected" : "Customer PO — Confirmed",
+                  number: selected.cpo_number,
+                  date: selected.po_date,
+                  due: selected.requested_date,
+                  dueLabel: "Delivery",
+                  terms: null,
+                  reference: selected.so_number,
+                  partyTitle: "Customer",
+                  party: { name: selected.customer_name, lines: [selectedCustomer?.email, selectedCustomer?.phone].filter((x): x is string => Boolean(x)) },
+                  shipTitle: null,
+                  ship: null,
+                  lines: selected.lines.map((l) => ({
+                    sku: l.sku_code || "",
+                    description: l.product_name,
+                    qty: l.quantity,
+                    unit: l.unit,
+                    unit_price: l.unit_price || 0,
+                    amount: l.unit_price ? l.quantity * l.unit_price : 0,
+                  })),
+                  subtotal: selected.lines.reduce((s, l) => s + l.quantity * (l.unit_price || 0), 0),
+                  total: selected.lines.reduce((s, l) => s + l.quantity * (l.unit_price || 0), 0),
+                  notes: selected.status === "rejected" ? selected.rejected_reason : selected.notes,
+                  showPaca: false,
+                }}
+              />
             ) : null}
             <Button variant="outline" onClick={() => setDetail(null)}>
               Cerrar
             </Button>
           </div>
         </Modal>
+      ) : null}
+
+      {rejecting && selected ? (
+        <RejectDialog cpoNumber={selected.cpo_number} onClose={() => setRejecting(false)} onConfirm={(reason) => rechazar(selected.id, reason)} />
       ) : null}
     </div>
   );

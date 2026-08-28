@@ -484,7 +484,7 @@ function Page() {
                         <Badge tone={orderTone(row.status)}>{orderLabel(row.status)}</Badge>
                       </td>
                       <td className="px-3 py-2">{row.customer_name}</td>
-                      <td className="px-3 py-2">{fecha(row.order_date)}</td>
+                      <td className="px-3 py-2">{fecha(row.requested_date || row.order_date)}</td>
                       <td className="px-3 py-2">Delivery to customer</td>
                       <td className="px-3 py-2 text-right">{money(total)}</td>
                     </tr>
@@ -746,7 +746,7 @@ function SoDetail({
           {row.customer_name}
           <div className="text-[11px] font-normal text-subtle">Price sheet: Default</div>
         </MetaCard>
-        <MetaCard label="Requested date">{fecha(row.order_date)}</MetaCard>
+        <MetaCard label="Requested date">{fecha(row.requested_date || row.order_date)}</MetaCard>
         <MetaCard label="Pickup date">{row.ship_date ? fecha(row.ship_date) : "—"}</MetaCard>
         <MetaCard label="Order type">Delivery to customer</MetaCard>
         <MetaCard label="Destination" />

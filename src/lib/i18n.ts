@@ -292,6 +292,7 @@ const ES: Record<string, string> = {
   "Paid in": "Abonado",
   Unpaid: "Pendiente",
   Converted: "Convertida",
+  Rejected: "Rechazada",
   Paid: "Pagada",
   Overdue: "Vencida",
   Open: "Abierta",
