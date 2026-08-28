@@ -114,16 +114,29 @@ const baseURL = explicitBaseURL ?? {
   fallback: "http://localhost:8080",
 };
 
+// Vercel sets these automatically on every deployment it builds — prod AND
+// every preview branch — with no per-app or per-branch config needed:
+//   VERCEL_URL         this exact deployment's own unique *.vercel.app host
+//   VERCEL_BRANCH_URL  the branch's stable alias host (same across re-pushes)
+// Trusting them lets a preview deployment's email/password sign-in work (the
+// browser's Origin header is the preview's own host, not BETTER_AUTH_URL)
+// without touching BETTER_AUTH_URL itself — that stays pinned to the real
+// prod domain, so prod's origin-checking and OAuth redirects are unaffected.
+const vercelDeploymentOrigins: string[] = [env("VERCEL_URL"), env("VERCEL_BRANCH_URL")]
+  .filter((host): host is string => Boolean(host))
+  .map((host) => `https://${host}`);
+
 // Origins Better Auth accepts on credentialed POSTs (sign-up/sign-in, etc.).
 // Missing entries here surface as FORBIDDEN "Invalid origin".
 const trustedOrigins: string[] = explicitBaseURL
-  ? [explicitBaseURL, ...LOCAL_DEV_ORIGINS]
+  ? [explicitBaseURL, ...LOCAL_DEV_ORIGINS, ...vercelDeploymentOrigins]
   : [
       // Host wildcards (matched against Origin's host)
       ...previewAllowedHosts,
       // Full-origin wildcards (matched against Origin)
       ...previewAllowedHosts.flatMap((host) => [`https://${host}`, `http://${host}`]),
       ...LOCAL_DEV_ORIGINS,
+      ...vercelDeploymentOrigins,
     ];
 
 const databaseUrl = env("DATABASE_URL");
