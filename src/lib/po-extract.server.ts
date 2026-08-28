@@ -10,6 +10,11 @@ const ExtractionSchema = z.object({
   po_date: z.string().nullable(),
   requested_date: z.string().nullable(),
   currency: z.string().nullable(),
+  payment_terms: z.string().nullable(),
+  ship_to_address_line: z.string().nullable(),
+  ship_to_city: z.string().nullable(),
+  ship_to_state: z.string().nullable(),
+  ship_to_zip: z.string().nullable(),
   notes: z.string().nullable(),
   lines: z.array(
     z.object({
@@ -29,7 +34,9 @@ Extrae únicamente lo que el documento diga literalmente. Nunca inventes ni asum
 Si un dato no aparece, ponlo en null — no lo adivines.
 Fechas en formato ISO yyyy-mm-dd. Si el documento no trae año, asume el año actual.
 Si el documento no es legible o no parece un PO, marca readable=false y explica por qué en "reason".
-"unit" es la unidad de empaque (ej. caja, box, carton, bin, lb, kg) tal como aparece o se infiere del contexto — en null si no es claro.`;
+"unit" es la unidad de empaque (ej. caja, box, carton, bin, lb, kg) tal como aparece o se infiere del contexto — en null si no es claro.
+"payment_terms" son las condiciones de pago tal como aparecen (ej. "Net 21", "COD", "Net 30") — null si no se mencionan.
+"ship_to_*" son los datos del domicilio de entrega (SHIP TO), separados de cualquier domicilio de facturación (BILL TO) — null si el documento no trae uno.`;
 
 export type ExtractResult =
   | { ok: true; data: Extraction }
@@ -109,6 +116,23 @@ export function matchCustomer(name: string | null, customers: Array<{ id: number
   if (exact) return exact.id;
   const partial = customers.find((c) => normalize(c.name).includes(needle) || needle.includes(normalize(c.name)));
   return partial ? partial.id : null;
+}
+
+export function matchLocation(
+  shipTo: { ship_to_address_line: string | null; ship_to_city: string | null },
+  locations: Array<{ id: number; address_line: string; city: string | null }>,
+): number | null {
+  if (!shipTo.ship_to_address_line) return null;
+  const needle = normalize(shipTo.ship_to_address_line);
+  if (!needle) return null;
+  const exact = locations.find((l) => normalize(l.address_line) === needle);
+  if (exact) return exact.id;
+  const partial = locations.find((l) => {
+    const addr = normalize(l.address_line);
+    return addr.includes(needle) || needle.includes(addr);
+  });
+  if (partial) return partial.id;
+  return null;
 }
 
 export function matchSku(
