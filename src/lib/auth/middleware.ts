@@ -1,4 +1,5 @@
 import { createMiddleware } from "@tanstack/react-start";
+import type { ModuleId } from "@/lib/access";
 
 /**
  * Auth middleware for server functions — the standard way to get the caller's
@@ -45,3 +46,21 @@ export const authMiddleware = createMiddleware({ type: "function" })
     const userId = await requireUserId(context.bearerToken);
     return next({ context: { userId } });
   });
+
+/**
+ * Composes on top of `authMiddleware`: after resolving a verified session,
+ * rejects with a clean 403 (`ModuleAccessError`) unless the caller's staff
+ * row is `active` and holds `moduleId` (or is admin). The UI already hides
+ * the buttons for this — this is the check that stops someone calling the
+ * server function directly. Use in place of `authMiddleware` on any function
+ * that only one module's people should touch.
+ */
+export function moduleMiddleware(moduleId: ModuleId) {
+  return createMiddleware({ type: "function" })
+    .middleware([authMiddleware])
+    .server(async ({ next, context }) => {
+      const { requireModule } = await import("./access.server");
+      await requireModule(context.userId, moduleId);
+      return next();
+    });
+}

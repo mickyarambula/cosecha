@@ -244,7 +244,7 @@ function Page() {
             {credits.map((c) => (
               <tr key={c.id} className="border-b border-border">
                 <td className="px-3 py-2 font-mono text-xs">
-                  <Link to="/doc/$tipo/$id" params={{ tipo: "factura", id: String(c.id) }} className="text-link">
+                  <Link to="/doc/$tipo/$id" params={{ tipo: "factura", id: c.share_token }} className="text-link">
                     {c.invoice_number}
                   </Link>
                 </td>
@@ -368,7 +368,7 @@ function Page() {
             {rows.map((i) => (
               <tr key={i.id} className="border-b border-border">
                 <td className="px-3 py-2">
-                  <Link to="/doc/$tipo/$id" params={{ tipo: "factura", id: String(i.id) }} className="font-mono text-xs text-link">
+                  <Link to="/doc/$tipo/$id" params={{ tipo: "factura", id: i.share_token }} className="font-mono text-xs text-link">
                     {i.invoice_number.replace(/^PP-\d+-/, "")}
                   </Link>
                 </td>

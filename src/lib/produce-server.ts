@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createServerFn } from "@tanstack/react-start";
-import { authMiddleware } from "@/lib/auth/middleware";
+import { authMiddleware, moduleMiddleware } from "@/lib/auth/middleware";
 import { z } from "zod";
 import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
@@ -889,25 +889,29 @@ async function loadPoLots(sql, poId) {
 		};
 	});
 }
-export const getSettlement = createServerFn({ method: "GET" }).validator(z.object({ purchase_order_id: z.number() })).handler(async ({ data }) => {
-	const sql = await getSql();
+/**
+ * Shared by `getSettlement` (authenticated, finance-only) and `getVendorPortal`
+ * (public, gated by the PO's `share_token` instead). Neither calls the other's
+ * server fn — this plain function is the one place the math lives.
+ */
+async function loadSettlement(sql, purchase_order_id: number) {
 	const [po] = await sql.query(`select po.id, po.po_number, s.name as supplier_name, po.status,
               coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
               coalesce(po.vendor_share_level,'po') as vendor_share_level,
               coalesce(po.signed_off,false) as signed_off
        from purchase_orders po join suppliers s on s.id = po.supplier_id
-       where po.id = $1`, [data.purchase_order_id]);
+       where po.id = $1`, [purchase_order_id]);
 	if (!po) throw new Error("Purchase order not found");
-	const expenses = await sql.query(`select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`, [data.purchase_order_id]);
+	const expenses = await sql.query(`select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`, [purchase_order_id]);
 	const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
 	const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
-	const lotsRaw = await loadPoLots(sql, data.purchase_order_id);
+	const lotsRaw = await loadPoLots(sql, purchase_order_id);
 	const target = po.target_profit_pct != null ? n(po.target_profit_pct) : null;
 	const lots = computeSettlementLots(lotsRaw, expense_total, allocBy, target);
 	const revenue = lots.reduce((s, l) => s + l.revenue, 0);
 	const t_cost = lots.reduce((s, l) => s + l.t_cost, 0);
 	const profit = lots.reduce((s, l) => s + l.profit, 0);
-	const paid = n((await sql.query(`select coalesce(sum(paid),0)::text as paid from supplier_bills where purchase_order_id = $1`, [data.purchase_order_id]))[0]?.paid);
+	const paid = n((await sql.query(`select coalesce(sum(paid),0)::text as paid from supplier_bills where purchase_order_id = $1`, [purchase_order_id]))[0]?.paid);
 	return {
 		po_id: po.id,
 		po_number: po.po_number,
@@ -927,6 +931,10 @@ export const getSettlement = createServerFn({ method: "GET" }).validator(z.objec
 		balance_due: Math.max(t_cost - paid, 0),
 		lots
 	};
+}
+export const getSettlement = createServerFn({ method: "GET" }).validator(z.object({ purchase_order_id: z.number() })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	return loadSettlement(sql, data.purchase_order_id);
 });
 export const applySettlement = createServerFn({ method: "POST" }).validator(z.object({
 	purchase_order_id: z.number(),
@@ -935,7 +943,7 @@ export const applySettlement = createServerFn({ method: "POST" }).validator(z.ob
 		lot_id: z.number(),
 		unit_cost: z.number().min(0)
 	})).optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	if (data.target_profit_pct != null) await sql.query(`update purchase_orders set target_profit_pct = $1 where id = $2`, [data.target_profit_pct, data.purchase_order_id]);
 	const expenses = await sql.query(`select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`, [data.purchase_order_id]);
@@ -1034,17 +1042,17 @@ export const setVendorShare = createServerFn({ method: "POST" }).validator(z.obj
 		"basic",
 		"detailed"
 	])
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	await (await getSql()).query(`update purchase_orders set vendor_share_level = $1 where id = $2`, [data.level, data.purchase_order_id]);
 	return { ok: true };
 });
-export const getVendorPortal = createServerFn({ method: "GET" }).validator(z.object({ purchase_order_id: z.number() })).handler(async ({ data }) => {
+export const getVendorPortal = createServerFn({ method: "GET" }).validator(z.object({ token: z.string().min(16) })).handler(async ({ data }) => {
 	const sql = await getSql();
-	const settlement = await getSettlement({ data: { purchase_order_id: data.purchase_order_id } });
-	const [po] = await sql.query(`select po.po_number, s.name as supplier_name, po.expected_date::text, po.vendor_invoice, po.bol, po.shipping_ref,
+	const [po] = await sql.query(`select po.id, po.po_number, s.name as supplier_name, po.expected_date::text, po.vendor_invoice, po.bol, po.shipping_ref,
               coalesce(po.vendor_share_level,'po') as vendor_share_level
-       from purchase_orders po join suppliers s on s.id = po.supplier_id where po.id = $1`, [data.purchase_order_id]);
+       from purchase_orders po join suppliers s on s.id = po.supplier_id where po.share_token = $1`, [data.token]);
 	if (!po) throw new Error("Purchase order not found");
+	const settlement = await loadSettlement(sql, po.id);
 	const sales = await sql.query(`select so.order_date::text, p.name as item, l.lot_number, sol.quantity_shipped::text as qty,
               sol.unit_price::text, (sol.quantity_shipped * coalesce(sol.unit_price,0))::text as total
        from sales_order_lines sol
@@ -1052,8 +1060,8 @@ export const getVendorPortal = createServerFn({ method: "GET" }).validator(z.obj
        join lots l on l.id = sol.lot_id
        join products p on p.id = sol.product_id
        where l.purchase_order_id = $1 and sol.quantity_shipped > 0
-       order by so.order_date, l.lot_number`, [data.purchase_order_id]);
-	const expenses = await sql.query(`select category, amount::text, notes from expenses where purchase_order_id = $1 order by id`, [data.purchase_order_id]);
+       order by so.order_date, l.lot_number`, [po.id]);
+	const expenses = await sql.query(`select category, amount::text, notes from expenses where purchase_order_id = $1 order by id`, [po.id]);
 	return {
 		...settlement,
 		expected_date: po.expected_date,
@@ -1128,7 +1136,7 @@ export const listPurchasedLots = createServerFn({ method: "GET" }).middleware([a
 export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	const sql = await getSql();
 	const orders = await sql.query(`
-    select po.id, po.po_number, po.supplier_id, s.name as supplier_name, s.phone as supplier_phone, s.email as supplier_email, po.status,
+    select po.id, po.po_number, po.share_token, po.supplier_id, s.name as supplier_name, s.phone as supplier_phone, s.email as supplier_email, po.status,
            po.order_date::text, po.expected_date::text, po.notes, po.sales_order_id, so.so_number,
            coalesce(po.order_type, 'entrega') as order_type, po.bol, po.vendor_invoice, po.shipping_ref,
            coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
@@ -1246,7 +1254,7 @@ export const createPurchaseOrder = createServerFn({ method: "POST" }).validator(
 		po_number
 	};
 });
-export const listExpenses = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listExpenses = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	return (await (await getSql()).query(`
     select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
            e.purchase_order_id, po.po_number, e.quantity::text, e.unit_cost::text,
@@ -1280,7 +1288,7 @@ export const createExpense = createServerFn({ method: "POST" }).validator(z.obje
 	notes: z.string().optional(),
 	payable: z.boolean().optional(),
 	alloc_by: z.enum(["pallet", "unit"]).optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const expense_number = await nextCode(sql, "expenses", "expense_number", "EXP-");
 	const payable = data.payable !== false;
@@ -1312,7 +1320,7 @@ export const registerPagoGasto = createServerFn({ method: "POST" }).validator(z.
 	expense_id: z.number(),
 	amount: z.number().positive(),
 	notes: z.string().optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [exp] = await sql.query(`select e.id, e.expense_number, s.name as supplier_name, e.amount::text, e.paid::text
        from expenses e join suppliers s on s.id = e.supplier_id where e.id = $1`, [data.expense_id]);
@@ -1505,7 +1513,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" }).validator(z
 export const listSalesOrders = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	const sql = await getSql();
 	const orders = await sql.query(`
-    select so.id, so.so_number, so.customer_id, c.name as customer_name, c.phone as customer_phone, c.email as customer_email, c.payment_terms, so.status,
+    select so.id, so.so_number, so.share_token, so.customer_id, c.name as customer_name, c.phone as customer_phone, c.email as customer_email, c.payment_terms, so.status,
            so.order_date::text, so.ship_date::text, so.notes, so.customer_po_id,
            cpo.cpo_number, cpo.customer_po_number
     from sales_orders so join customers c on c.id = so.customer_id
@@ -1568,13 +1576,14 @@ export const createSalesOrder = createServerFn({ method: "POST" }).validator(z.o
 })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
-	const id = (await sql.query(`insert into sales_orders (so_number, customer_id, status, notes, customer_po_id)
-       values ($1,$2,'confirmed',$3,$4) returning id`, [
+	const created = (await sql.query(`insert into sales_orders (so_number, customer_id, status, notes, customer_po_id)
+       values ($1,$2,'confirmed',$3,$4) returning id, share_token`, [
 		so_number,
 		data.customer_id,
 		data.notes || null,
 		data.customer_po_id ?? null
-	]))[0].id;
+	]))[0];
+	const id = created.id;
 	for (const line of data.lines) await sql.query(`insert into sales_order_lines (sales_order_id, product_id, lot_id, quantity_ordered, unit, unit_price, pack_style_id)
          values ($1,$2,$3,$4,$5,$6,$7)`, [
 		id,
@@ -1587,7 +1596,8 @@ export const createSalesOrder = createServerFn({ method: "POST" }).validator(z.o
 	]);
 	return {
 		id,
-		so_number
+		so_number,
+		share_token: created.share_token
 	};
 });
 export const listCustomerPOs = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
@@ -1881,10 +1891,10 @@ export const createBillFromPO = createServerFn({ method: "POST" }).validator(z.o
 		received
 	};
 });
-export const listInvoices = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listInvoices = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const sql = await getSql();
 	const invoices = await sql.query(`
-    select i.id, i.invoice_number, i.sales_order_id, so.so_number, i.customer_id, c.name as customer_name,
+    select i.id, i.invoice_number, i.share_token, i.sales_order_id, so.so_number, i.customer_id, c.name as customer_name,
            c.phone as customer_phone, c.email as customer_email,
            i.status, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.paid::text, i.notes,
            coalesce(i.invoice_type,'sale') as invoice_type, c.payment_terms, i.sales_rep
@@ -1916,7 +1926,7 @@ export const listInvoices = createServerFn({ method: "GET" }).middleware([authMi
 		};
 	});
 });
-export const listBills = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listBills = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	return (await (await getSql()).query(`
     select b.id, b.bill_number, b.purchase_order_id, po.po_number, b.supplier_id, s.name as supplier_name,
            s.phone as supplier_phone, s.email as supplier_email,
@@ -1942,7 +1952,7 @@ export const listBills = createServerFn({ method: "GET" }).middleware([authMiddl
 		};
 	});
 });
-export const listCash = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listCash = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const movements = (await (await getSql()).query(`
     select m.id, m.folio, m.mov_date::text, m.kind, m.counterparty,
            i.invoice_number, b.bill_number, m.amount::text, m.notes
@@ -1963,7 +1973,7 @@ export const registerCobro = createServerFn({ method: "POST" }).validator(z.obje
 	invoice_id: z.number(),
 	amount: z.number().positive(),
 	notes: z.string().optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [inv] = await sql.query(`select i.id, i.invoice_number, c.name as customer_name, i.total::text, i.paid::text
        from invoices i join customers c on c.id = i.customer_id where i.id = $1`, [data.invoice_id]);
@@ -1998,7 +2008,7 @@ export const registerPago = createServerFn({ method: "POST" }).validator(z.objec
 	bill_id: z.number(),
 	amount: z.number().positive(),
 	notes: z.string().optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [bill] = await sql.query(`select b.id, b.bill_number, s.name as supplier_name, b.total::text, b.paid::text
        from supplier_bills b join suppliers s on s.id = b.supplier_id where b.id = $1`, [data.bill_id]);
@@ -2052,21 +2062,21 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 		"bol",
 		"confirm"
 	]),
-	id: z.coerce.number()
+	token: z.string().min(16)
 })).handler(async ({ data }) => {
 	const sql = await getSql();
 	const company = await loadCompany(sql);
 	if ((data.tipo === "pick" || data.tipo === "bol" || data.tipo === "confirm" ? "ov" : data.tipo) === "factura") {
-		const [inv] = await sql.query(`select i.invoice_number, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.notes,
+		const [inv] = await sql.query(`select i.id, i.invoice_number, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.notes,
                 so.so_number, c.name as customer_name, c.contact_name, c.phone, c.email, c.city, c.payment_terms
          from invoices i
          join customers c on c.id = i.customer_id
          left join sales_orders so on so.id = i.sales_order_id
-         where i.id = $1`, [data.id]);
+         where i.share_token = $1`, [data.token]);
 		if (!inv) throw new Error("Factura no encontrada");
 		const lines = (await sql.query(`select il.description, il.quantity::text, il.unit, il.unit_price::text, il.amount::text, p.sku
          from invoice_lines il left join products p on p.id = il.product_id
-         where il.invoice_id = $1 order by il.id`, [data.id])).map((l) => ({
+         where il.invoice_id = $1 order by il.id`, [inv.id])).map((l) => ({
 			sku: l.sku || "",
 			description: l.description || "",
 			qty: n(l.quantity),
@@ -2087,7 +2097,7 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 			if (paca) showPaca = paca.value !== "false";
 		} catch {}
 		return {
-			id: data.id,
+			id: inv.id,
 			tipo: "factura",
 			kindLabel: "Invoice",
 			number: inv.invoice_number,
@@ -2108,14 +2118,14 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 		};
 	}
 	if (data.tipo === "oc") {
-		const [po] = await sql.query(`select po.po_number, po.order_date::text, po.expected_date::text, po.notes,
+		const [po] = await sql.query(`select po.id, po.po_number, po.order_date::text, po.expected_date::text, po.notes,
                 s.name as supplier_name, s.contact_name, s.phone, s.email, s.city, s.country
          from purchase_orders po join suppliers s on s.id = po.supplier_id
-         where po.id = $1`, [data.id]);
+         where po.share_token = $1`, [data.token]);
 		if (!po) throw new Error("Orden de compra no encontrada");
 		const lines = (await sql.query(`select p.name as product_name, p.sku, l.quantity_ordered::text, l.unit, l.unit_cost::text
          from purchase_order_lines l join products p on p.id = l.product_id
-         where l.purchase_order_id = $1 order by l.id`, [data.id])).map((l) => ({
+         where l.purchase_order_id = $1 order by l.id`, [po.id])).map((l) => ({
 			sku: l.sku || "",
 			description: l.product_name,
 			qty: n(l.quantity_ordered),
@@ -2125,7 +2135,7 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 		}));
 		const subtotal = lines.reduce((s, l) => s + l.amount, 0);
 		return {
-			id: data.id,
+			id: po.id,
 			tipo: "oc",
 			kindLabel: "Purchase Order",
 			number: po.po_number,
@@ -2155,14 +2165,14 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 			company
 		};
 	}
-	const [so] = await sql.query(`select so.so_number, so.order_date::text, so.ship_date::text, so.notes, c.payment_terms,
+	const [so] = await sql.query(`select so.id, so.so_number, so.order_date::text, so.ship_date::text, so.notes, c.payment_terms,
               c.name as customer_name, c.contact_name, c.phone, c.email, c.city
        from sales_orders so join customers c on c.id = so.customer_id
-       where so.id = $1`, [data.id]);
+       where so.share_token = $1`, [data.token]);
 	if (!so) throw new Error("Orden de venta no encontrada");
 	const lines = (await sql.query(`select p.name as product_name, p.sku, l.quantity_ordered::text, l.unit, l.unit_price::text
        from sales_order_lines l join products p on p.id = l.product_id
-       where l.sales_order_id = $1 order by l.id`, [data.id])).map((l) => ({
+       where l.sales_order_id = $1 order by l.id`, [so.id])).map((l) => ({
 		sku: l.sku || "",
 		description: l.product_name,
 		qty: n(l.quantity_ordered),
@@ -2179,7 +2189,7 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 		city: so.city
 	});
 	return {
-		id: data.id,
+		id: so.id,
 		tipo: "ov",
 		kindLabel: "Sales Order",
 		number: so.so_number,
@@ -2203,7 +2213,7 @@ function payableStatus(amount, paid) {
 	const st = moneyStatus(amount, paid);
 	return st === "open" ? "Unpaid" : st === "partial" ? "Partially paid" : "Paid";
 }
-export const listPayables = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listPayables = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const sql = await getSql();
 	const expenses = await sql.query(`
     select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
@@ -2272,7 +2282,7 @@ export const listPayables = createServerFn({ method: "GET" }).middleware([authMi
 	});
 	return [...expRows, ...poRows];
 });
-export const listExpenseLinks = createServerFn({ method: "GET" }).validator(z.object({ expense_id: z.number() })).middleware([authMiddleware]).handler(async ({ data }) => {
+export const listExpenseLinks = createServerFn({ method: "GET" }).validator(z.object({ expense_id: z.number() })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [exp] = await sql.query(`select e.id, e.expense_number, e.category, s.name as supplier_name, e.invoice_number,
               e.issue_date::text, e.amount::text, e.payable, e.notes
@@ -2304,7 +2314,7 @@ export const connectExpensePo = createServerFn({ method: "POST" }).validator(z.o
 	expense_id: z.number(),
 	purchase_order_id: z.number(),
 	amount: z.number().optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [exp] = await sql.query(`select amount::text from expenses where id = $1`, [data.expense_id]);
 	if (!exp) throw new Error("Expense not found");
@@ -2320,7 +2330,7 @@ export const connectExpensePo = createServerFn({ method: "POST" }).validator(z.o
 export const disconnectExpensePo = createServerFn({ method: "POST" }).validator(z.object({
 	expense_id: z.number(),
 	purchase_order_id: z.number()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	await (await getSql()).query(`delete from expense_po_links where expense_id = $1 and purchase_order_id = $2`, [data.expense_id, data.purchase_order_id]);
 	return { ok: true };
 });
@@ -2335,7 +2345,7 @@ export const registerVendorPayment = createServerFn({ method: "POST" }).validato
 		id: z.number(),
 		amount: z.number().positive()
 	})).min(1)
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [sup] = await sql.query(`select name from suppliers where id = $1`, [data.supplier_id]);
 	if (!sup) throw new Error("Vendor not found");
@@ -2388,7 +2398,7 @@ export const registerCustomerPayment = createServerFn({ method: "POST" }).valida
 		invoice_id: z.number(),
 		amount: z.number().positive()
 	})).min(1)
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [cust] = await sql.query(`select name from customers where id = $1`, [data.customer_id]);
 	if (!cust) throw new Error("Customer not found");
@@ -2435,7 +2445,7 @@ export const createCreditInvoice = createServerFn({ method: "POST" }).validator(
 		qty: z.number(),
 		credit_per_unit: z.number()
 	})).min(1)
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const [so] = await sql.query(`select id, so_number, customer_id from sales_orders where id = $1`, [data.sales_order_id]);
 	if (!so) throw new Error("Sales order not found");
@@ -2470,7 +2480,7 @@ export const createCreditInvoice = createServerFn({ method: "POST" }).validator(
 		total: -creditTotal
 	};
 });
-export const listGlAccounts = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listGlAccounts = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	return (await (await getSql()).query(`
     select id, number, name, description, statement, kind, subtype, parent_number,
            tracking_start::text, starting_balance::text, sort_order
@@ -2496,7 +2506,7 @@ export const createGlAccount = createServerFn({ method: "POST" }).validator(z.ob
 	subtype: z.string().optional(),
 	parent_number: z.string().optional(),
 	starting_balance: z.number().optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	await (await getSql()).query(`insert into gl_accounts (number, name, description, statement, kind, subtype, parent_number, tracking_start, starting_balance, sort_order)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,90)`, [
 		data.number,
@@ -2511,19 +2521,19 @@ export const createGlAccount = createServerFn({ method: "POST" }).validator(z.ob
 	]);
 	return { ok: true };
 });
-export const listGlMappings = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listGlMappings = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	return (await getSql()).query(`select map_key, account_number from gl_mappings`);
 });
 export const saveGlMappings = createServerFn({ method: "POST" }).validator(z.object({ mappings: z.array(z.object({
 	map_key: z.string(),
 	account_number: z.string()
-})) })).middleware([authMiddleware]).handler(async ({ data }) => {
+})) })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	for (const m of data.mappings) await sql.query(`insert into gl_mappings (map_key, account_number) values ($1,$2)
          on conflict (map_key) do update set account_number = excluded.account_number`, [m.map_key, m.account_number]);
 	return { ok: true };
 });
-export const getFinancials = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const getFinancials = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const sql = await getSql();
 	const invoices = await sql.query(`select coalesce(invoice_type,'sale') as invoice_type, total::text, paid::text, issue_date::text, status from invoices`);
 	const cogsRows = await sql.query(`
@@ -2606,7 +2616,7 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([authM
 		})
 	};
 });
-export const listVendorPayments = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listVendorPayments = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	const sql = await getSql();
 	const movs = await sql.query(`
     select id, folio, mov_date::text, counterparty, amount::text, notes
@@ -2983,11 +2993,11 @@ export const createPackOut = createServerFn({ method: "POST" }).middleware([auth
 		unit_cost
 	};
 });
-export const listBankAccounts = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => (await getSql()).query(`select id, name, bank_name, last4, opening_balance::text from bank_accounts where is_active order by id`).then((rows) => rows.map((r) => ({
+export const listBankAccounts = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => (await getSql()).query(`select id, name, bank_name, last4, opening_balance::text from bank_accounts where is_active order by id`).then((rows) => rows.map((r) => ({
 	...r,
 	opening_balance: n(r.opening_balance)
 }))));
-export const listBankLines = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+export const listBankLines = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
 	return (await (await getSql()).query(`select b.id, b.bank_account_id, a.name as bank_name, b.line_date::text, b.description, b.amount::text,
               b.cash_movement_id, b.status, m.folio
        from bank_lines b
@@ -2998,7 +3008,7 @@ export const listBankLines = createServerFn({ method: "GET" }).middleware([authM
 		amount: n(l.amount)
 	}));
 });
-export const addBankLine = createServerFn({ method: "POST" }).middleware([authMiddleware]).validator(z.object({
+export const addBankLine = createServerFn({ method: "POST" }).middleware([moduleMiddleware("finance")]).validator(z.object({
 	bank_account_id: z.number(),
 	line_date: z.string(),
 	description: z.string().min(1),
@@ -3011,7 +3021,7 @@ export const addBankLine = createServerFn({ method: "POST" }).middleware([authMi
 		data.amount
 	]))[0].id };
 });
-export const matchBankLine = createServerFn({ method: "POST" }).middleware([authMiddleware]).validator(z.object({
+export const matchBankLine = createServerFn({ method: "POST" }).middleware([moduleMiddleware("finance")]).validator(z.object({
 	line_id: z.number(),
 	cash_movement_id: z.number()
 })).handler(async ({ data }) => {
@@ -3026,7 +3036,7 @@ export const matchBankLine = createServerFn({ method: "POST" }).middleware([auth
 		folio: mov.folio
 	};
 });
-export const ignoreBankLine = createServerFn({ method: "POST" }).middleware([authMiddleware]).validator(z.object({ line_id: z.number() })).handler(async ({ data }) => {
+export const ignoreBankLine = createServerFn({ method: "POST" }).middleware([moduleMiddleware("finance")]).validator(z.object({ line_id: z.number() })).handler(async ({ data }) => {
 	await (await getSql()).query(`update bank_lines set status = 'ignored', cash_movement_id = null where id = $1`, [data.line_id]);
 	return { ok: true };
 });
@@ -3200,13 +3210,14 @@ export const wipeLiveTests = createServerFn({ method: "POST" })
 		const after = await countLiveActivity(sql);
 		return { ok: true, before, after, remaining: wipeTotal(after) };
 	});
-export const listSettlements = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
-	const pos = await (await getSql()).query(`select po.id, po.po_number, s.name as supplier_name, coalesce(po.signed_off,false) as signed_off,
+export const listSettlements = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
+	const sql = await getSql();
+	const pos = await sql.query(`select po.id, po.po_number, s.name as supplier_name, coalesce(po.signed_off,false) as signed_off,
               coalesce(po.costing_mode,'pas') as costing_mode, po.status
        from purchase_orders po join suppliers s on s.id = po.supplier_id order by po.id desc`);
 	const out: any[] = [];
 	for (const po of pos) {
-		const settlement = await getSettlement({ data: { purchase_order_id: po.id } });
+		const settlement = await loadSettlement(sql, po.id);
 		out.push({
 			po_id: po.id,
 			po_number: po.po_number,
@@ -3226,7 +3237,7 @@ export const listSettlements = createServerFn({ method: "GET" }).middleware([aut
 export const listConcepts = createServerFn({ method: "GET" }).validator(z.object({
 	kind: z.enum(["ingreso", "gasto"]).optional(),
 	activeOnly: z.boolean().optional()
-}).optional()).middleware([authMiddleware]).handler(async ({ data }) => {
+}).optional()).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const kind = data?.kind;
 	const activeOnly = data?.activeOnly !== false;
@@ -3240,7 +3251,7 @@ export const addConcept = createServerFn({ method: "POST" }).validator(z.object(
 	kind: z.enum(["ingreso", "gasto"]),
 	partida: z.string().min(1),
 	name: z.string().min(1)
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const name = data.name.trim();
 	const partida = data.partida.trim();
@@ -3271,7 +3282,7 @@ export const addConcept = createServerFn({ method: "POST" }).validator(z.object(
 export const setConceptActive = createServerFn({ method: "POST" }).validator(z.object({
 	id: z.number(),
 	is_active: z.boolean()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	await (await getSql()).query(`update money_concepts set is_active = $1 where id = $2`, [data.is_active, data.id]);
 	return { ok: true };
 });
@@ -3288,7 +3299,7 @@ export const registerCashMovement = createServerFn({ method: "POST" }).validator
 	amount: z.number().positive(),
 	concept: z.string().optional(),
 	notes: z.string().optional()
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const folio = (data.folio || "").trim() || await nextCode(sql, "cash_movements", "folio", "MOV-");
 	const [dup] = await sql.query(`select id from cash_movements where folio = $1`, [folio]);

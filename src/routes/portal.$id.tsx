@@ -13,8 +13,7 @@ export const Route = createFileRoute("/portal/$id")({
 
 function Page() {
   const { id } = Route.useParams();
-  const poId = Number(id);
-  const portal = useAsync(() => getVendorPortal({ data: { purchase_order_id: poId } }), [poId]);
+  const portal = useAsync(() => getVendorPortal({ data: { token: id } }), [id]);
   const d = portal.data;
   const level = d?.level ?? "po";
 

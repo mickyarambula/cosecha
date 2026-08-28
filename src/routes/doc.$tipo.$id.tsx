@@ -8,7 +8,7 @@ export const Route = createFileRoute("/doc/$tipo/$id")({
     if (tipo !== "factura" && tipo !== "oc" && tipo !== "ov" && tipo !== "pick" && tipo !== "bol" && tipo !== "confirm") {
       throw new Error("Documento no reconocido");
     }
-    return getPrintDoc({ data: { tipo, id: Number(params.id) } });
+    return getPrintDoc({ data: { tipo, token: params.id } });
   },
   component: Page,
 });

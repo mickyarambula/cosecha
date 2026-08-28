@@ -779,11 +779,11 @@ function Page() {
           <div className="mt-4 rounded-lg bg-action px-3 py-3 text-action-fg">
             <p className="text-[11px] uppercase tracking-wide text-white/80">Share info with selected contacts using link</p>
             <div className="mt-2 flex items-center gap-2 rounded-md bg-white/15 px-2 py-1.5">
-              <code className="flex-1 truncate text-xs">{`/portal/${sharePo.id}`}</code>
+              <code className="flex-1 truncate text-xs">{`/portal/${sharePo.share_token}`}</code>
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void navigator.clipboard?.writeText(`${window.location.origin}/portal/${sharePo.id}`)}
+                onClick={() => void navigator.clipboard?.writeText(`${window.location.origin}/portal/${sharePo.share_token}`)}
               >
                 <Copy className="size-3.5" /> Copy link
               </Button>
@@ -820,7 +820,7 @@ function Page() {
                   void setVendorShare({ data: { purchase_order_id: sharePo.id, level: shareLevel } }).then(() => {
                     setShareId(null);
                     void orders.reload();
-                    window.location.href = `/portal/${sharePo.id}`;
+                    window.location.href = `/portal/${sharePo.share_token}`;
                   });
                 }}
               >
@@ -999,7 +999,7 @@ function PoDetail({
 
       <div className="mt-4 grid gap-2 lg:grid-cols-4">
         <div className="rounded-md border border-border p-3 text-sm">
-          <Link to="/doc/$tipo/$id" params={{ tipo: "oc", id: String(row.id) }} className="flex items-center gap-2 text-link">
+          <Link to="/doc/$tipo/$id" params={{ tipo: "oc", id: row.share_token }} className="flex items-center gap-2 text-link">
             <Printer className="size-3.5" /> Print purchase order
           </Link>
           <p className="mt-2 text-link">Print lot labels</p>

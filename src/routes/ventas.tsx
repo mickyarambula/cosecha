@@ -65,6 +65,7 @@ function Page() {
   const [placed, setPlaced] = useState<{
     id: number;
     so_number: string;
+    share_token: string;
     customer_name: string;
     customer_email?: string | null;
     customer_phone?: string | null;
@@ -131,6 +132,7 @@ function Page() {
       setPlaced({
         id: r.id,
         so_number: r.so_number,
+        share_token: r.share_token,
         customer_name: cust?.name || "",
         customer_email: cust?.email,
         customer_phone: cust?.phone,
@@ -374,7 +376,7 @@ function Page() {
               <Button
                 onClick={() => {
                   const tipo = printDocs.pick ? "pick" : printDocs.confirm ? "confirm" : printDocs.bol ? "bol" : "ov";
-                  window.open(`/doc/${tipo}/${placed.id}`, "_blank");
+                  window.open(`/doc/${tipo}/${placed.share_token}`, "_blank");
                   setPrintOpen(false);
                 }}
               >
@@ -782,7 +784,7 @@ function SoDetail({
       </div>
       <div className="mt-4 grid gap-2 lg:grid-cols-4">
         <div className="rounded-md border border-border p-3 text-sm">
-          <Link className="text-link" to="/doc/$tipo/$id" params={{ tipo: "ov", id: String(row.id) }}>
+          <Link className="text-link" to="/doc/$tipo/$id" params={{ tipo: "ov", id: row.share_token }}>
             Print documents
           </Link>
           <div className="mt-2">
