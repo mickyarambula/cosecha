@@ -65,7 +65,23 @@ export async function getSessionUser(
     headers.set("Authorization", `Bearer ${bearerToken}`);
   }
   const session = await auth.api.getSession({ headers });
-  if (!session?.user) return null;
+  if (!session?.user) {
+    // Diagnostic only — never logs cookie/token VALUES, just whether the
+    // session cookie name showed up on this request at all. Distinguishes
+    // "no cookie arrived" (browser never stored/sent it — a Set-Cookie
+    // attribute problem) from "cookie arrived but Better Auth rejected it"
+    // (expired/invalid session row).
+    const { SESSION_TOKEN_COOKIE } = await import("./server");
+    const cookieHeader = headers.get("cookie") ?? "";
+    console.warn("[auth] getSessionUser: no session", {
+      host: headers.get("host"),
+      origin: headers.get("origin"),
+      hasSessionCookieName: cookieHeader.includes(`${SESSION_TOKEN_COOKIE}=`),
+      cookieNamesSeen: cookieHeader.split(";").map((c) => c.trim().split("=")[0]).filter(Boolean),
+      hadBearerToken: Boolean(bearerToken),
+    });
+    return null;
+  }
   return { id: session.user.id, email: session.user.email ?? null };
 }
 
