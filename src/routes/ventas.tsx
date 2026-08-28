@@ -749,7 +749,19 @@ function SoDetail({
         <MetaCard label="Requested date">{fecha(row.requested_date || row.order_date)}</MetaCard>
         <MetaCard label="Pickup date">{row.ship_date ? fecha(row.ship_date) : "—"}</MetaCard>
         <MetaCard label="Order type">Delivery to customer</MetaCard>
-        <MetaCard label="Destination" />
+        <MetaCard label="Destination">
+          {row.ship_to_address_line ? (
+            <>
+              {[row.ship_to_label, row.ship_to_address_line].filter(Boolean).join(" · ")}
+              <div className="text-[11px] font-normal text-subtle">
+                {[row.ship_to_city, row.ship_to_state, row.ship_to_zip].filter(Boolean).join(", ")}
+              </div>
+            </>
+          ) : (
+            "—"
+          )}
+        </MetaCard>
+        <MetaCard label="Payment terms">{row.payment_terms || row.customer_payment_terms || "—"}</MetaCard>
         <MetaCard label="SO invoice #">{row.invoice?.invoice_number || "—"}</MetaCard>
         <MetaCard label="Customer PO #">{row.customer_po_number || "—"}</MetaCard>
         <MetaCard label="Order total">
@@ -761,6 +773,12 @@ function SoDetail({
         <MetaCard label="Sales rep">{COMPANY.userName}</MetaCard>
         <MetaCard label="Fulfilled by">{row.status === "completed" ? `Auto-fulfilled ${fecha(row.order_date)}` : "—"}</MetaCard>
       </div>
+      {row.ship_to_instructions ? (
+        <div className="mt-3 rounded-md border border-warn/40 bg-warn/5 p-3 text-xs">
+          <p className="mb-1 font-semibold uppercase tracking-wide text-warn">Instrucciones de recibo en este destino</p>
+          <p className="whitespace-pre-wrap">{row.ship_to_instructions}</p>
+        </div>
+      ) : null}
       <p className="mt-5 mb-2 text-sm font-semibold">Inventory Items</p>
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full text-left text-sm">

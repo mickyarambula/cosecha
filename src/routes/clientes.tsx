@@ -2,9 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal, TabActions } from "@/components/app-shell";
 import { PartySkuPanel } from "@/components/party-skus";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
-import { createCustomer, listCustomers, updateCustomer } from "@/lib/produce-server";
+import { CustomerLocationModal } from "@/components/customer-location-form";
+import { createCustomer, listCustomerLocations, listCustomers, setDefaultCustomerLocation, updateCustomer } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +63,8 @@ function Page() {
     contact_name: "",
     city: "",
   });
+  const locations = useAsync(() => (current ? listCustomerLocations({ data: { customer_id: current.id } }) : Promise.resolve([])), [current?.id]);
+  const [locationModal, setLocationModal] = useState<"new" | number | null>(null);
 
   function pick(id: number) {
     const c = (data ?? []).find((x) => x.id === id);
@@ -243,15 +247,41 @@ function Page() {
               </label>
             </div>
             <div className="mt-6">
-              <p className="mb-2 text-sm font-semibold">Addresses</p>
-              <div className="flex flex-wrap gap-2">
-                <div className="w-32 rounded-md border border-danger/40 p-3 text-center text-xs text-danger">Default shipping</div>
-                <div className="w-32 rounded-md border border-border p-3 text-center text-xs">
-                  {edit.name}
-                  <div className="text-muted">Default billing</div>
-                </div>
-                <button type="button" className="w-32 rounded-md border border-dashed border-border p-3 text-xs text-muted">
-                  + Add address
+              <p className="mb-2 text-sm font-semibold">Delivery destinations</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(locations.data ?? []).map((loc) => (
+                  <div key={loc.id} className="rounded-md border border-border p-3 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-medium text-fg">{loc.label || loc.address_line}</p>
+                        {loc.label ? <p className="text-muted">{loc.address_line}</p> : null}
+                        <p className="text-muted">{[loc.city, loc.state, loc.zip].filter(Boolean).join(", ")}</p>
+                      </div>
+                      {loc.is_default ? <Badge tone="ok">Default</Badge> : null}
+                    </div>
+                    {loc.receiving_instructions ? <p className="mt-2 whitespace-pre-wrap text-warn">{loc.receiving_instructions}</p> : null}
+                    <div className="mt-2 flex gap-3">
+                      <button type="button" className="font-medium text-link" onClick={() => setLocationModal(loc.id)}>
+                        Edit
+                      </button>
+                      {!loc.is_default ? (
+                        <button
+                          type="button"
+                          className="font-medium text-link"
+                          onClick={() => void setDefaultCustomerLocation({ data: { id: loc.id } }).then(() => locations.reload())}
+                        >
+                          Set as default
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="rounded-md border border-dashed border-border p-3 text-xs text-muted"
+                  onClick={() => setLocationModal("new")}
+                >
+                  + Add destination
                 </button>
               </div>
             </div>
@@ -367,6 +397,19 @@ function Page() {
             </div>
           </form>
         </Modal>
+      ) : null}
+
+      {locationModal !== null && current ? (
+        <CustomerLocationModal
+          customerId={current.id}
+          initial={typeof locationModal === "number" ? (locations.data ?? []).find((l) => l.id === locationModal) : undefined}
+          forceDefault={(locations.data ?? []).length === 0}
+          onClose={() => setLocationModal(null)}
+          onSaved={async () => {
+            setLocationModal(null);
+            await locations.reload();
+          }}
+        />
       ) : null}
     </div>
   );

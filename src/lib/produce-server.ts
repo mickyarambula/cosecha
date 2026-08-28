@@ -711,6 +711,74 @@ export const updateCustomer = createServerFn({ method: "POST" }).validator(z.obj
 	]);
 	return { id: data.id };
 });
+// ---- Destinos de entrega del cliente (Sesión de afinación del CPO) -------
+// Libreta de direcciones SHIP TO por cliente. No confundir con `locations`
+// (Delivery Routes) que es el catálogo de bodegas/cross-docks para RECIBIR
+// compras — ese no tiene customer_id ni dirección completa.
+export const listCustomerLocations = createServerFn({ method: "GET" }).validator(z.object({ customer_id: z.number().optional() })).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	if (data.customer_id) {
+		return sql.query(`select id, customer_id, label, address_line, city, state, zip, receiving_instructions, is_default
+       from customer_locations where customer_id = $1 order by is_default desc, id`, [data.customer_id]);
+	}
+	return sql.query(`select id, customer_id, label, address_line, city, state, zip, receiving_instructions, is_default
+     from customer_locations order by customer_id, is_default desc, id`);
+});
+export const createCustomerLocation = createServerFn({ method: "POST" }).validator(z.object({
+	customer_id: z.number(),
+	label: z.string().optional(),
+	address_line: z.string().min(1),
+	city: z.string().optional(),
+	state: z.string().optional(),
+	zip: z.string().optional(),
+	receiving_instructions: z.string().optional(),
+	is_default: z.boolean().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [{ c }] = await sql.query(`select count(*)::int as c from customer_locations where customer_id = $1`, [data.customer_id]);
+	const isDefault = Boolean(data.is_default) || c === 0;
+	if (isDefault) await sql.query(`update customer_locations set is_default = false where customer_id = $1`, [data.customer_id]);
+	const id = (await sql.query(`insert into customer_locations (customer_id, label, address_line, city, state, zip, receiving_instructions, is_default)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`, [
+		data.customer_id,
+		data.label?.trim() || null,
+		data.address_line.trim(),
+		data.city || null,
+		data.state || null,
+		data.zip || null,
+		data.receiving_instructions || null,
+		isDefault
+	]))[0].id;
+	return { id, is_default: isDefault };
+});
+export const updateCustomerLocation = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	label: z.string().optional(),
+	address_line: z.string().min(1),
+	city: z.string().optional(),
+	state: z.string().optional(),
+	zip: z.string().optional(),
+	receiving_instructions: z.string().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	await (await getSql()).query(`update customer_locations set label=$1, address_line=$2, city=$3, state=$4, zip=$5, receiving_instructions=$6 where id=$7`, [
+		data.label?.trim() || null,
+		data.address_line.trim(),
+		data.city || null,
+		data.state || null,
+		data.zip || null,
+		data.receiving_instructions || null,
+		data.id
+	]);
+	return { id: data.id };
+});
+export const setDefaultCustomerLocation = createServerFn({ method: "POST" }).validator(z.object({ id: z.number() })).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [loc] = await sql.query(`select customer_id from customer_locations where id = $1`, [data.id]);
+	if (!loc) throw new Error("Destino no encontrado");
+	await sql.query(`update customer_locations set is_default = false where customer_id = $1`, [loc.customer_id]);
+	await sql.query(`update customer_locations set is_default = true where id = $1`, [data.id]);
+	return { ok: true };
+});
 export const listLocations = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	return (await getSql()).query(`
     select loc.id, loc.code, loc.name, loc.location_type, loc.city, loc.owner_kind, loc.contact_name, loc.notes,
@@ -1613,12 +1681,16 @@ export const receiveMerchandise = createServerFn({ method: "POST" }).validator(z
 export const listSalesOrders = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	const sql = await getSql();
 	const orders = await sql.query(`
-    select so.id, so.so_number, so.share_token, so.customer_id, c.name as customer_name, c.phone as customer_phone, c.email as customer_email, c.payment_terms, so.status,
+    select so.id, so.so_number, so.share_token, so.customer_id, c.name as customer_name, c.phone as customer_phone, c.email as customer_email,
+           c.payment_terms as customer_payment_terms, so.payment_terms, so.status,
            so.order_date::text, so.ship_date::text, so.requested_date::text, so.notes, so.customer_po_id,
            cpo.cpo_number, cpo.customer_po_number,
+           so.ship_to_location_id, loc.label as ship_to_label, loc.address_line as ship_to_address_line,
+           loc.city as ship_to_city, loc.state as ship_to_state, loc.zip as ship_to_zip, loc.receiving_instructions as ship_to_instructions,
            so.cancelled_at::text, so.cancelled_by, so.cancel_reason
     from sales_orders so join customers c on c.id = so.customer_id
     left join customer_pos cpo on cpo.id = so.customer_po_id
+    left join customer_locations loc on loc.id = so.ship_to_location_id
     order by so.id desc
   `);
 	const lines = await sql.query(`
@@ -1708,10 +1780,14 @@ export const listCustomerPOs = createServerFn({ method: "GET" }).middleware([aut
            cpo.po_date::text, cpo.requested_date::text, cpo.currency, cpo.attachment_url, cpo.notes, cpo.status,
            cpo.attachment_filename, (cpo.attachment_data is not null) as has_attachment,
            cpo.rejected_at::text, cpo.rejected_by, cpo.rejected_reason,
+           cpo.payment_terms, cpo.ship_to_location_id,
+           loc.label as ship_to_label, loc.address_line as ship_to_address_line, loc.city as ship_to_city,
+           loc.state as ship_to_state, loc.zip as ship_to_zip, loc.receiving_instructions as ship_to_instructions,
            (select so.id from sales_orders so where so.customer_po_id = cpo.id order by so.id desc limit 1) as so_id,
            (select so.so_number from sales_orders so where so.customer_po_id = cpo.id order by so.id desc limit 1) as so_number
     from customer_pos cpo
     join customers c on c.id = cpo.customer_id
+    left join customer_locations loc on loc.id = cpo.ship_to_location_id
     order by cpo.id desc
   `);
 	const lines = await sql.query(`
@@ -1737,6 +1813,8 @@ const createCustomerPOPayload = z.object({
 	po_date: z.string().optional(),
 	requested_date: z.string().optional(),
 	currency: z.string().default("USD"),
+	payment_terms: z.string().optional(),
+	ship_to_location_id: z.number().optional(),
 	notes: z.string().optional(),
 	lines: z.array(z.object({
 		product_id: z.number(),
@@ -1769,14 +1847,16 @@ export const createCustomerPO = createServerFn({ method: "POST" }).validator((fo
 	const d = /* @__PURE__ */ new Date();
 	const cpo_number = await nextCode(sql, "customer_pos", "cpo_number", `CPO-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}-`);
 	const id = (await sql.query(`insert into customer_pos
-         (cpo_number, customer_id, customer_po_number, po_date, requested_date, currency, notes, status, attachment_filename, attachment_mime, attachment_data)
-       values ($1,$2,$3,$4,$5,$6,$7,'open',$8,$9,$10) returning id`, [
+         (cpo_number, customer_id, customer_po_number, po_date, requested_date, currency, payment_terms, ship_to_location_id, notes, status, attachment_filename, attachment_mime, attachment_data)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open',$10,$11,$12) returning id`, [
 		cpo_number,
 		payload.customer_id,
 		payload.customer_po_number?.trim() || null,
 		payload.po_date || todayISO(),
 		payload.requested_date || null,
 		payload.currency || "USD",
+		payload.payment_terms?.trim() || null,
+		payload.ship_to_location_id ?? null,
 		payload.notes || null,
 		attachment?.filename ?? null,
 		attachment?.mime ?? null,
@@ -1799,7 +1879,7 @@ export const createCustomerPO = createServerFn({ method: "POST" }).validator((fo
 });
 export const convertCustomerPOToSO = createServerFn({ method: "POST" }).validator(z.object({ customer_po_id: z.number() })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [cpo] = await sql.query(`select id, cpo_number, customer_id, customer_po_number, status, notes, requested_date::text from customer_pos where id = $1`, [data.customer_po_id]);
+	const [cpo] = await sql.query(`select id, cpo_number, customer_id, customer_po_number, status, notes, requested_date::text, payment_terms, ship_to_location_id from customer_pos where id = $1`, [data.customer_po_id]);
 	if (!cpo) throw new Error("Customer PO no encontrado");
 	if (cpo.status === "converted") {
 		const [existing] = await sql.query(`select so_number from sales_orders where customer_po_id = $1 order by id desc limit 1`, [cpo.id]);
@@ -1815,13 +1895,20 @@ export const convertCustomerPOToSO = createServerFn({ method: "POST" }).validato
 		cpo.customer_po_number ? `PO cliente ${cpo.customer_po_number}` : null,
 		cpo.notes
 	].filter(Boolean).join(" · ");
-	const id = (await sql.query(`insert into sales_orders (so_number, customer_id, status, notes, customer_po_id, requested_date)
-       values ($1,$2,'confirmed',$3,$4,$5) returning id`, [
+	// Destino y condiciones de pago viajan del CPO a la venta. Falta seguirlos
+	// más allá: embarque (BOL con el domicilio de este ship_to_location_id) y
+	// factura (usar so.payment_terms, no solo el default del cliente — ya
+	// aplicado en createInvoiceFromSO, pero el documento impreso de la
+	// factura/BOL todavía no imprime la dirección de entrega).
+	const id = (await sql.query(`insert into sales_orders (so_number, customer_id, status, notes, customer_po_id, requested_date, ship_to_location_id, payment_terms)
+       values ($1,$2,'confirmed',$3,$4,$5,$6,$7) returning id`, [
 		so_number,
 		cpo.customer_id,
 		note,
 		cpo.id,
-		cpo.requested_date || null
+		cpo.requested_date || null,
+		cpo.ship_to_location_id || null,
+		cpo.payment_terms || null
 	]))[0].id;
 	for (const line of lines) await sql.query(`insert into sales_order_lines (sales_order_id, product_id, quantity_ordered, unit, unit_price, pack_style_id)
          values ($1,$2,$3,$4,$5,$6)`, [
@@ -1858,7 +1945,7 @@ export const extractCustomerPO = createServerFn({ method: "POST" }).validator((f
 	return file;
 }).middleware([authMiddleware]).handler(async ({ data: file }) => {
 	if (file.size > MAX_ATTACHMENT_BYTES) return { ok: false as const, reason: "El archivo pesa más de 15 MB — súbelo más chico." };
-	const { extractCustomerPOFile, matchCustomer, matchSku } = await import("@/lib/po-extract.server");
+	const { extractCustomerPOFile, matchCustomer, matchSku, matchLocation } = await import("@/lib/po-extract.server");
 	const buf = Buffer.from(await file.arrayBuffer());
 	const result = await extractCustomerPOFile(buf, file.type || "application/octet-stream", file.name);
 	if (!result.ok) return result;
@@ -1873,7 +1960,12 @@ export const extractCustomerPO = createServerFn({ method: "POST" }).validator((f
 		const match = matchSku(line, skuRows);
 		return { ...line, ...match };
 	});
-	return { ok: true as const, data: { ...result.data, customer_id, lines } };
+	let ship_to_location_id: number | null = null;
+	if (customer_id && result.data.ship_to_address_line) {
+		const locations = await sql.query(`select id, address_line, city from customer_locations where customer_id = $1`, [customer_id]);
+		ship_to_location_id = matchLocation(result.data, locations);
+	}
+	return { ok: true as const, data: { ...result.data, customer_id, ship_to_location_id, lines } };
 });
 export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator(z.object({
 	sales_order_id: z.number(),
@@ -1983,7 +2075,7 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" }).validator(
 	const sql = await getSql();
 	const [existing] = await sql.query(`select invoice_number from invoices where sales_order_id = $1 and status <> 'cancelled'`, [data.sales_order_id]);
 	if (existing) throw new Error(`Esta venta ya tiene factura ${existing.invoice_number}`);
-	const [so] = await sql.query(`select so.id, so.so_number, so.customer_id, c.payment_terms, so.status
+	const [so] = await sql.query(`select so.id, so.so_number, so.customer_id, coalesce(so.payment_terms, c.payment_terms) as payment_terms, so.status
        from sales_orders so join customers c on c.id = so.customer_id where so.id = $1`, [data.sales_order_id]);
 	if (!so) throw new Error("Orden de venta no encontrada");
 	if (so.status === "cancelled") throw new Error("Esta orden de venta está cancelada");
@@ -2452,7 +2544,7 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 			company
 		};
 	}
-	const [so] = await sql.query(`select so.id, so.so_number, so.order_date::text, so.ship_date::text, so.notes, c.payment_terms,
+	const [so] = await sql.query(`select so.id, so.so_number, so.order_date::text, so.ship_date::text, so.notes, coalesce(so.payment_terms, c.payment_terms) as payment_terms,
               c.name as customer_name, c.contact_name, c.phone, c.email, c.city
        from sales_orders so join customers c on c.id = so.customer_id
        where so.share_token = $1`, [data.token]);

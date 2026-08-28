@@ -2,14 +2,16 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Kpi, Modal, PageHeader, Panel } from "@/components/app-shell";
 import { packsToSkus, SkuSelect } from "@/components/sku-select";
-import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { SendButton } from "@/components/send-doc";
+import { CustomerLocationModal, type CustomerLocationDraft } from "@/components/customer-location-form";
 import {
   convertCustomerPOToSO,
   createCustomerPO,
   extractCustomerPO,
+  listCustomerLocations,
   listCustomerPOs,
   listCustomers,
   listProducts,
@@ -22,6 +24,21 @@ export const Route = createFileRoute("/cpo")({ component: Page });
 
 type LineDraft = { product_id: string; pack_style_id: string; qty: string; unit: string; unit_price: string };
 
+// El CPO tiene su propio ciclo (abierto/confirmado/rechazado) — nunca el de
+// factura ("Unpaid"), aunque ambos compartan el string interno "open".
+function cpoLabel(status: string) {
+  if (status === "open") return "Open";
+  if (status === "converted") return "Confirmed";
+  if (status === "rejected") return "Rejected";
+  return status;
+}
+function cpoTone(status: string) {
+  if (status === "open") return "warn" as const;
+  if (status === "converted") return "ok" as const;
+  if (status === "rejected") return "danger" as const;
+  return "mute" as const;
+}
+
 function emptyLine(): LineDraft {
   return { product_id: "", pack_style_id: "", qty: "", unit: "caja", unit_price: "" };
 }
@@ -33,6 +50,8 @@ function emptyForm() {
     po_date: todayISO(),
     requested_date: "",
     currency: "USD",
+    payment_terms: "",
+    ship_to_location_id: "",
     notes: "",
   };
 }
@@ -95,6 +114,7 @@ function Page() {
   const cpos = useAsync(() => listCustomerPOs(), []);
   const customers = useAsync(() => listCustomers(), []);
   const products = useAsync(() => listProducts(), []);
+  const locations = useAsync(() => listCustomerLocations({ data: {} }), []);
   const skus = packsToSkus(products.data ?? []);
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<number | null>(null);
@@ -108,9 +128,17 @@ function Page() {
   const [extracting, setExtracting] = useState(false);
   const [extractMsg, setExtractMsg] = useState<string | null>(null);
   const [extractErr, setExtractErr] = useState<string | null>(null);
+  const [detectedShipTo, setDetectedShipTo] = useState<CustomerLocationDraft | null>(null);
+  const [addingLocation, setAddingLocation] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  const customerLocations = useMemo(
+    () => (locations.data ?? []).filter((l) => l.customer_id === Number(form.customer_id)),
+    [locations.data, form.customer_id],
+  );
+  const selectedLocation = customerLocations.find((l) => l.id === Number(form.ship_to_location_id)) ?? null;
 
   const list = cpos.data ?? [];
   const kpis = useMemo(() => {
@@ -142,6 +170,14 @@ function Page() {
     setFileInputKey((k) => k + 1);
     setExtractMsg(null);
     setExtractErr(null);
+    setDetectedShipTo(null);
+  }
+
+  function onCustomerChange(customerId: string) {
+    const custLocs = (locations.data ?? []).filter((l) => l.customer_id === Number(customerId));
+    const def = custLocs.find((l) => l.is_default) ?? (custLocs.length === 1 ? custLocs[0] : null);
+    setDetectedShipTo(null);
+    setForm((prev) => ({ ...prev, customer_id: customerId, ship_to_location_id: def ? String(def.id) : "" }));
   }
 
   async function onFile(f: File | null) {
@@ -166,6 +202,8 @@ function Page() {
         po_date: d.po_date || prev.po_date,
         requested_date: d.requested_date || prev.requested_date,
         currency: d.currency || prev.currency,
+        payment_terms: d.payment_terms || prev.payment_terms,
+        ship_to_location_id: d.ship_to_location_id ? String(d.ship_to_location_id) : prev.ship_to_location_id,
         notes: d.notes || prev.notes,
       }));
       if (d.lines.length) {
@@ -179,10 +217,21 @@ function Page() {
           })),
         );
       }
+      if (!d.ship_to_location_id && d.ship_to_address_line) {
+        setDetectedShipTo({
+          address_line: d.ship_to_address_line,
+          city: d.ship_to_city,
+          state: d.ship_to_state,
+          zip: d.ship_to_zip,
+        });
+      } else {
+        setDetectedShipTo(null);
+      }
       const sinCoincidencia = d.lines.filter((l) => !l.pack_style_id).length;
       const notas: string[] = ["Leído automáticamente — revisa los datos antes de guardar."];
       if (!d.customer_id && d.customer_name) notas.push(`Cliente en el PO: "${d.customer_name}" — no coincide con el catálogo, selecciónalo a mano.`);
       if (sinCoincidencia) notas.push(`${sinCoincidencia} línea(s) sin SKU reconocido — complétalas a mano.`);
+      if (!d.ship_to_location_id && d.ship_to_address_line) notas.push("El PO trae un destino de entrega que no está en la lista — revisa abajo.");
       setExtractMsg(notas.join(" "));
     } catch (e) {
       setExtractErr(e instanceof Error ? e.message : "No se pudo leer el archivo");
@@ -215,6 +264,8 @@ function Page() {
           po_date: form.po_date || undefined,
           requested_date: form.requested_date || undefined,
           currency: form.currency,
+          payment_terms: form.payment_terms || undefined,
+          ship_to_location_id: form.ship_to_location_id ? Number(form.ship_to_location_id) : undefined,
           notes: form.notes || undefined,
           lines: ready.map((l) => ({
             product_id: Number(l.product_id),
@@ -331,7 +382,7 @@ function Page() {
                 <td className="px-4 py-3 text-muted">{cpo.requested_date ? fecha(cpo.requested_date) : "—"}</td>
                 <td className="px-4 py-3">{cpo.currency}</td>
                 <td className="px-4 py-3">
-                  <Badge tone={orderTone(cpo.status)}>{orderLabel(cpo.status)}</Badge>
+                  <Badge tone={cpoTone(cpo.status)}>{cpoLabel(cpo.status)}</Badge>
                 </td>
                 <td className="px-4 py-3">
                   {cpo.has_attachment ? (
@@ -375,7 +426,7 @@ function Page() {
             {extractMsg ? <p className="text-xs text-ok">{extractMsg}</p> : null}
             {extractErr ? <p className="text-xs text-danger">No pude leerlo: {extractErr} Captura los datos a mano.</p> : null}
             <Field label="Customer *">
-              <Select required value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })}>
+              <Select required value={form.customer_id} onChange={(e) => onCustomerChange(e.target.value)}>
                 <option value="">Seleccionar</option>
                 {(customers.data ?? []).map((c) => (
                   <option key={c.id} value={c.id}>
@@ -384,6 +435,50 @@ function Page() {
                 ))}
               </Select>
             </Field>
+            {form.customer_id ? (
+              <Field label="Destino de entrega">
+                <Select
+                  value={form.ship_to_location_id}
+                  onChange={(e) => {
+                    if (e.target.value === "__new__") {
+                      setAddingLocation(true);
+                      return;
+                    }
+                    setForm({ ...form, ship_to_location_id: e.target.value });
+                  }}
+                >
+                  <option value="">Sin destino capturado</option>
+                  {customerLocations.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {[l.label, l.address_line, l.city].filter(Boolean).join(" · ")}
+                      {l.is_default ? " (habitual)" : ""}
+                    </option>
+                  ))}
+                  <option value="__new__">+ Nuevo destino…</option>
+                </Select>
+              </Field>
+            ) : null}
+            {selectedLocation?.receiving_instructions ? (
+              <div className="rounded-md border border-border bg-surface-2 p-3 text-xs">
+                <p className="mb-1 font-semibold uppercase tracking-wide text-muted">Instrucciones de recibo en este destino</p>
+                <p className="whitespace-pre-wrap">{selectedLocation.receiving_instructions}</p>
+              </div>
+            ) : null}
+            {detectedShipTo ? (
+              <div className="rounded-md border border-danger/40 bg-danger/5 p-3 text-xs">
+                <p className="mb-1 font-semibold uppercase tracking-wide text-danger">Destino detectado en el PO — no está en la lista</p>
+                <p>
+                  {[detectedShipTo.address_line, detectedShipTo.city, detectedShipTo.state, detectedShipTo.zip].filter(Boolean).join(", ")}
+                </p>
+                <button
+                  type="button"
+                  className="mt-2 font-medium text-primary underline-offset-2 hover:underline"
+                  onClick={() => setAddingLocation(true)}
+                >
+                  Agregar este destino
+                </button>
+              </div>
+            ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="N° de PO del cliente">
                 <Input
@@ -404,12 +499,21 @@ function Page() {
                 onChange={(e) => setForm({ ...form, requested_date: e.target.value })}
               />
             </Field>
-            <Field label="Moneda">
-              <Select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
-                <option value="USD">USD</option>
-                <option value="MXN">MXN</option>
-              </Select>
-            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Moneda">
+                <Select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
+                  <option value="USD">USD</option>
+                  <option value="MXN">MXN</option>
+                </Select>
+              </Field>
+              <Field label="Condiciones de pago">
+                <Input
+                  placeholder="Ej. Net 21"
+                  value={form.payment_terms}
+                  onChange={(e) => setForm({ ...form, payment_terms: e.target.value })}
+                />
+              </Field>
+            </div>
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Lines</p>
               <div className="space-y-3">
@@ -484,6 +588,21 @@ function Page() {
         </Modal>
       ) : null}
 
+      {addingLocation && form.customer_id ? (
+        <CustomerLocationModal
+          customerId={Number(form.customer_id)}
+          initial={detectedShipTo ?? undefined}
+          forceDefault={customerLocations.length === 0}
+          onClose={() => setAddingLocation(false)}
+          onSaved={async ({ id }) => {
+            setAddingLocation(false);
+            setDetectedShipTo(null);
+            await locations.reload();
+            setForm((prev) => ({ ...prev, ship_to_location_id: String(id) }));
+          }}
+        />
+      ) : null}
+
       {selected ? (
         <Modal
           wide
@@ -513,9 +632,13 @@ function Page() {
               <p className="mt-1 text-sm">{selected.currency}</p>
             </Panel>
             <Panel className="p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Condiciones de pago</p>
+              <p className="mt-1 text-sm">{selected.payment_terms || "—"}</p>
+            </Panel>
+            <Panel className="p-3">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Estado</p>
               <div className="mt-1">
-                <Badge tone={orderTone(selected.status)}>{orderLabel(selected.status)}</Badge>
+                <Badge tone={cpoTone(selected.status)}>{cpoLabel(selected.status)}</Badge>
               </div>
             </Panel>
             <Panel className="p-3">
@@ -531,6 +654,24 @@ function Page() {
                 </a>
               ) : (
                 <p className="mt-1 text-sm text-subtle">—</p>
+              )}
+            </Panel>
+            <Panel className="p-3 sm:col-span-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Destino de entrega</p>
+              {selected.ship_to_address_line ? (
+                <>
+                  <p className="mt-1 text-sm font-medium">
+                    {[selected.ship_to_label, selected.ship_to_address_line].filter(Boolean).join(" · ")}
+                  </p>
+                  <p className="text-xs text-muted">
+                    {[selected.ship_to_city, selected.ship_to_state, selected.ship_to_zip].filter(Boolean).join(", ")}
+                  </p>
+                  {selected.ship_to_instructions ? (
+                    <p className="mt-2 whitespace-pre-wrap text-xs text-warn">{selected.ship_to_instructions}</p>
+                  ) : null}
+                </>
+              ) : (
+                <p className="mt-1 text-sm text-subtle">Sin destino capturado</p>
               )}
             </Panel>
           </div>
