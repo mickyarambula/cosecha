@@ -1614,7 +1614,7 @@ export const listSalesOrders = createServerFn({ method: "GET" }).middleware([aut
 	const sql = await getSql();
 	const orders = await sql.query(`
     select so.id, so.so_number, so.share_token, so.customer_id, c.name as customer_name, c.phone as customer_phone, c.email as customer_email, c.payment_terms, so.status,
-           so.order_date::text, so.ship_date::text, so.notes, so.customer_po_id,
+           so.order_date::text, so.ship_date::text, so.requested_date::text, so.notes, so.customer_po_id,
            cpo.cpo_number, cpo.customer_po_number,
            so.cancelled_at::text, so.cancelled_by, so.cancel_reason
     from sales_orders so join customers c on c.id = so.customer_id
@@ -1705,7 +1705,9 @@ export const listCustomerPOs = createServerFn({ method: "GET" }).middleware([aut
 	const sql = await getSql();
 	const orders = await sql.query(`
     select cpo.id, cpo.cpo_number, cpo.customer_id, c.name as customer_name, cpo.customer_po_number,
-           cpo.po_date::text, cpo.currency, cpo.attachment_url, cpo.notes, cpo.status,
+           cpo.po_date::text, cpo.requested_date::text, cpo.currency, cpo.attachment_url, cpo.notes, cpo.status,
+           cpo.attachment_filename, (cpo.attachment_data is not null) as has_attachment,
+           cpo.rejected_at::text, cpo.rejected_by, cpo.rejected_reason,
            (select so.id from sales_orders so where so.customer_po_id = cpo.id order by so.id desc limit 1) as so_id,
            (select so.so_number from sales_orders so where so.customer_po_id = cpo.id order by so.id desc limit 1) as so_number
     from customer_pos cpo
@@ -1729,12 +1731,12 @@ export const listCustomerPOs = createServerFn({ method: "GET" }).middleware([aut
 		}))
 	}));
 });
-export const createCustomerPO = createServerFn({ method: "POST" }).validator(z.object({
+const createCustomerPOPayload = z.object({
 	customer_id: z.number(),
 	customer_po_number: z.string().optional(),
 	po_date: z.string().optional(),
+	requested_date: z.string().optional(),
 	currency: z.string().default("USD"),
-	attachment_url: z.string().optional(),
 	notes: z.string().optional(),
 	lines: z.array(z.object({
 		product_id: z.number(),
@@ -1744,21 +1746,43 @@ export const createCustomerPO = createServerFn({ method: "POST" }).validator(z.o
 		unit_price: z.number().optional(),
 		notes: z.string().optional()
 	})).min(1)
-})).middleware([authMiddleware]).handler(async ({ data }) => {
+});
+const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+export const createCustomerPO = createServerFn({ method: "POST" }).validator((form: FormData) => {
+	const raw = form.get("payload");
+	if (typeof raw !== "string") throw new Error("Falta la información del PO");
+	const payload = createCustomerPOPayload.parse(JSON.parse(raw));
+	const file = form.get("file");
+	return { payload, file: file instanceof File ? file : null };
+}).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
+	const { payload } = data;
+	let attachment: { filename: string; mime: string; bytes: Buffer } | null = null;
+	if (data.file) {
+		if (data.file.size > MAX_ATTACHMENT_BYTES) throw new Error("El archivo pesa más de 15 MB — súbelo más chico.");
+		attachment = {
+			filename: data.file.name,
+			mime: data.file.type || "application/octet-stream",
+			bytes: Buffer.from(await data.file.arrayBuffer())
+		};
+	}
 	const d = /* @__PURE__ */ new Date();
 	const cpo_number = await nextCode(sql, "customer_pos", "cpo_number", `CPO-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}-`);
-	const id = (await sql.query(`insert into customer_pos (cpo_number, customer_id, customer_po_number, po_date, currency, attachment_url, notes, status)
-       values ($1,$2,$3,$4,$5,$6,$7,'open') returning id`, [
+	const id = (await sql.query(`insert into customer_pos
+         (cpo_number, customer_id, customer_po_number, po_date, requested_date, currency, notes, status, attachment_filename, attachment_mime, attachment_data)
+       values ($1,$2,$3,$4,$5,$6,$7,'open',$8,$9,$10) returning id`, [
 		cpo_number,
-		data.customer_id,
-		data.customer_po_number?.trim() || null,
-		data.po_date || todayISO(),
-		data.currency || "USD",
-		data.attachment_url?.trim() || null,
-		data.notes || null
+		payload.customer_id,
+		payload.customer_po_number?.trim() || null,
+		payload.po_date || todayISO(),
+		payload.requested_date || null,
+		payload.currency || "USD",
+		payload.notes || null,
+		attachment?.filename ?? null,
+		attachment?.mime ?? null,
+		attachment?.bytes ?? null
 	]))[0].id;
-	for (const line of data.lines) await sql.query(`insert into customer_po_lines (customer_po_id, product_id, quantity, unit, unit_price, notes, pack_style_id)
+	for (const line of payload.lines) await sql.query(`insert into customer_po_lines (customer_po_id, product_id, quantity, unit, unit_price, notes, pack_style_id)
          values ($1,$2,$3,$4,$5,$6,$7)`, [
 		id,
 		line.product_id,
@@ -1775,12 +1799,13 @@ export const createCustomerPO = createServerFn({ method: "POST" }).validator(z.o
 });
 export const convertCustomerPOToSO = createServerFn({ method: "POST" }).validator(z.object({ customer_po_id: z.number() })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [cpo] = await sql.query(`select id, cpo_number, customer_id, customer_po_number, status, notes from customer_pos where id = $1`, [data.customer_po_id]);
+	const [cpo] = await sql.query(`select id, cpo_number, customer_id, customer_po_number, status, notes, requested_date::text from customer_pos where id = $1`, [data.customer_po_id]);
 	if (!cpo) throw new Error("Customer PO no encontrado");
 	if (cpo.status === "converted") {
 		const [existing] = await sql.query(`select so_number from sales_orders where customer_po_id = $1 order by id desc limit 1`, [cpo.id]);
 		throw new Error(`Este PO ya se convirtió${existing ? ` a ${existing.so_number}` : ""}`);
 	}
+	if (cpo.status === "rejected") throw new Error("Este Customer PO está rechazado — no se puede convertir");
 	if (cpo.status !== "open") throw new Error("Solo se convierten POs abiertos");
 	const lines = await sql.query(`select product_id, quantity::text, unit, unit_price::text, pack_style_id from customer_po_lines where customer_po_id = $1`, [cpo.id]);
 	if (!lines.length) throw new Error("El Customer PO no tiene líneas");
@@ -1790,12 +1815,13 @@ export const convertCustomerPOToSO = createServerFn({ method: "POST" }).validato
 		cpo.customer_po_number ? `PO cliente ${cpo.customer_po_number}` : null,
 		cpo.notes
 	].filter(Boolean).join(" · ");
-	const id = (await sql.query(`insert into sales_orders (so_number, customer_id, status, notes, customer_po_id)
-       values ($1,$2,'confirmed',$3,$4) returning id`, [
+	const id = (await sql.query(`insert into sales_orders (so_number, customer_id, status, notes, customer_po_id, requested_date)
+       values ($1,$2,'confirmed',$3,$4,$5) returning id`, [
 		so_number,
 		cpo.customer_id,
 		note,
-		cpo.id
+		cpo.id,
+		cpo.requested_date || null
 	]))[0].id;
 	for (const line of lines) await sql.query(`insert into sales_order_lines (sales_order_id, product_id, quantity_ordered, unit, unit_price, pack_style_id)
          values ($1,$2,$3,$4,$5,$6)`, [
@@ -1812,6 +1838,42 @@ export const convertCustomerPOToSO = createServerFn({ method: "POST" }).validato
 		so_number,
 		cpo_number: cpo.cpo_number
 	};
+});
+export const rejectCustomerPO = createServerFn({ method: "POST" }).validator(z.object({
+	customer_po_id: z.number(),
+	reason: z.string().trim().min(1, "Escribe el motivo del rechazo")
+})).middleware([authMiddleware]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	const [cpo] = await sql.query(`select id, cpo_number, status from customer_pos where id = $1`, [data.customer_po_id]);
+	if (!cpo) throw new Error("Customer PO no encontrado");
+	if (cpo.status === "converted") throw new Error("Este Customer PO ya se convirtió a venta — no se puede rechazar");
+	if (cpo.status === "rejected") throw new Error(`El PO ${cpo.cpo_number} ya está rechazado`);
+	const staffName = await staffNameFor(sql, context.userId);
+	await sql.query(`update customer_pos set status='rejected', rejected_at=now(), rejected_by=$1, rejected_reason=$2 where id=$3`, [staffName, data.reason, cpo.id]);
+	return { cpo_number: cpo.cpo_number };
+});
+export const extractCustomerPO = createServerFn({ method: "POST" }).validator((form: FormData) => {
+	const file = form.get("file");
+	if (!(file instanceof File)) throw new Error("Falta el archivo");
+	return file;
+}).middleware([authMiddleware]).handler(async ({ data: file }) => {
+	if (file.size > MAX_ATTACHMENT_BYTES) return { ok: false as const, reason: "El archivo pesa más de 15 MB — súbelo más chico." };
+	const { extractCustomerPOFile, matchCustomer, matchSku } = await import("@/lib/po-extract.server");
+	const buf = Buffer.from(await file.arrayBuffer());
+	const result = await extractCustomerPOFile(buf, file.type || "application/octet-stream", file.name);
+	if (!result.ok) return result;
+	const sql = await getSql();
+	const customers = await sql.query(`select id, name from customers`);
+	const skuRows = await sql.query(`
+    select ps.id, ps.product_id, ps.sku_code, ps.empaque, ps.calibre, p.name as product_name, coalesce(ps.unit_of_measure, 'caja') as unit
+    from pack_styles ps join products p on p.id = ps.product_id
+  `);
+	const customer_id = matchCustomer(result.data.customer_name, customers);
+	const lines = result.data.lines.map((line) => {
+		const match = matchSku(line, skuRows);
+		return { ...line, ...match };
+	});
+	return { ok: true as const, data: { ...result.data, customer_id, lines } };
 });
 export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator(z.object({
 	sales_order_id: z.number(),
