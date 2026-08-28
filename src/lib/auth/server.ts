@@ -30,12 +30,14 @@
  * a verified id via `@/lib/auth/middleware`.
  */
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
 import { bearer, genericOAuth } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { getCookie } from "@tanstack/react-start/server";
 import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { ensureDbReady, getPglite } from "../db";
+import { isAllowedSignupEmail } from "./allowlist";
 import { emailAndPasswordEnabled } from "./email-password";
 import { GROK_PROVIDERS } from "./providers";
 import { pgliteDialect } from "./pglite-dialect";
@@ -208,6 +210,24 @@ export const auth = betterAuth({
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
   ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),
+
+  // Signup allowlist — applies to every path a new user row can be created
+  // (Google, email/password, and any future provider), since they all go
+  // through this same hook. Existing users signing back in are unaffected.
+  databaseHooks: {
+    user: {
+      create: {
+        before: async (user) => {
+          if (!isAllowedSignupEmail(user.email)) {
+            throw APIError.from("FORBIDDEN", {
+              code: "EMAIL_NOT_ALLOWED",
+              message: "Este correo no está autorizado para crear cuenta en Cosecha.",
+            });
+          }
+        },
+      },
+    },
+  },
 
   // `__Host-` prefixed cookies: the browser REFUSES any same-named cookie that
   // carries a `Domain` attribute, so a sibling `*.grok.me` app cannot "toss" a

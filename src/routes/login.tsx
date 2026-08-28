@@ -1,6 +1,6 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BrandWordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
@@ -22,6 +22,17 @@ function Login() {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Surfaces the bounce from a rejected Google sign-in (see errorCallbackURL
+  // below and `databaseHooks.user.create.before` in `server.ts`) — that
+  // rejection happens server-side during the OAuth callback, so it comes back
+  // as a query param on redirect rather than through onEmail's try/catch.
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("error");
+    if (code === "EMAIL_NOT_ALLOWED") {
+      setErr("This email is not authorized to create a Cosecha account. Ask Miguel to add it.");
+    }
+  }, []);
 
   if (isPending) {
     return (
@@ -75,7 +86,7 @@ function Login() {
                   type="button"
                   variant="outline"
                   className="w-full justify-center"
-                  onClick={() => void signIn(p.providerId, { callbackURL: "/" })}
+                  onClick={() => void signIn(p.providerId, { callbackURL: "/", errorCallbackURL: "/login" })}
                 >
                   {t("Continue with")} {p.label}
                 </Button>
