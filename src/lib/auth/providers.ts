@@ -25,6 +25,9 @@ export type GrokProvider = {
   label: string;
 };
 
-export const GROK_PROVIDERS: readonly GrokProvider[] = [
-  { providerId: "grok-google", idp: "google", label: "Google" },
-];
+// Empty for now: this deploy runs outside the platform that provisions the
+// broker's per-app Google/X credentials, so a federated button here would
+// error on click. Email/password (see `email-password.ts`) is the working
+// sign-in path. Add an entry back once real per-app broker credentials exist
+// for this domain, e.g. { providerId: "grok-google", idp: "google", label: "Google" }.
+export const GROK_PROVIDERS: readonly GrokProvider[] = [];
