@@ -4,19 +4,33 @@ ERP de produce fresco para un trader que hoy opera en Drive. Lotes, calidad PACA
 
 El producto se llama **Cosecha**. Los documentos que salen al cliente/proveedor llevan membrete de **Plein Produce LLC**.
 
-La lógica de negocio, el corte, el diseño y las reglas que no se tocan están en **[COSECHA.md](COSECHA.md)**. Léelo antes de cambiar dinero, Chase o facturas de apertura.
+- Lógica y reglas de dinero: **[COSECHA.md](COSECHA.md)**
+- Estado para continuar en otro agente: **[HANDOFF.md](HANDOFF.md)**
+- Instrucciones Claude Code: **[CLAUDE.md](CLAUDE.md)**
+
+## GitHub
+
+| Repo | Visibilidad |
+|---|---|
+| [mickyarambula/cosecha](https://github.com/mickyarambula/cosecha) | **Privado — usar este** |
+| [mickyarambula/erppleinproduce](https://github.com/mickyarambula/erppleinproduce) | Público (mismo snapshot; no preferido) |
+
+No copiar a `erp-plein` (ese es el sistema anterior).
 
 ## Qué cubre hoy
 
-- Catálogos: SKUs reales de Plein (producto × empaque × calibre), contrapartes duales, listas de empaque/calibre
+- Catálogos: SKUs reales de Plein (producto × empaque × calibre), contrapartes duales
 - Customer PO → OV; OC ligada a OV → recepción PACA → lote
-- Inventario por lote y cámara; liquidación PAS; merma; portal vendor
-- Documentos PDF (Invoice, OC, OV) con aviso PACA; Outlook + WhatsApp (el usuario envía)
+- Inventario por lote; liquidación PAS; merma; portal vendor
+- PDF (Invoice, OC, OV) + Outlook + WhatsApp (el usuario envía)
 - CxC / CxP / Tesorería / P&L / Balance
-- Corte de apertura 2026-06-30 (Ingresos/Egresos/Chase). Lo live se puede borrar en Ajustes → Pruebas
+- Corte de apertura 2026-06-30. Lo live se borra en Ajustes → Pruebas
 
-## Repo
+## Arranque
 
-Privado en [`mickyarambula/cosecha`](https://github.com/mickyarambula/cosecha). No copiar a `erp-plein` (ese es el sistema anterior).
+```bash
+npm install
+npm run dev
+```
 
-Si otro chat de Grok usa este proyecto como base: clona este repo, lee `COSECHA.md`, no reconstruyas Cosecha, no publiques, no toques el corte.
+Sin `DATABASE_URL` corre Postgres embebido (PGLite) y aplica `migrations/`. En producción usa Neon.
