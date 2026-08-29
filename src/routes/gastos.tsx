@@ -469,7 +469,7 @@ function CreateExpenseDrawer({
     category: "Materia prima",
     date: todayISO(),
     amount: "",
-    payable: false,
+    payable: true,
     supplier_id: "",
     invoice: "",
   });
@@ -529,9 +529,22 @@ function CreateExpenseDrawer({
         <Field label="Amount">
           <Input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
         </Field>
-        <label className="flex min-h-10 items-end gap-2 pb-2 text-sm">
-          <input type="checkbox" className="size-4 accent-action" checked={form.payable} onChange={(e) => setForm({ ...form, payable: e.target.checked })} />
-          Yes, add to AP
+      </div>
+      <div className="mt-4">
+        <p className="mb-2 text-sm font-medium">¿Ya se pagó este gasto?</p>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="radio" className="mt-1" checked={form.payable} onChange={() => setForm({ ...form, payable: true })} />
+          <span>
+            <strong>Por pagar</strong>
+            <span className="block text-xs text-muted">Todavía se le debe al proveedor — aparece en Cuentas por pagar.</span>
+          </span>
+        </label>
+        <label className="mt-2 flex items-start gap-2 text-sm">
+          <input type="radio" className="mt-1" checked={!form.payable} onChange={() => setForm({ ...form, payable: false })} />
+          <span>
+            <strong>Ya pagado</strong>
+            <span className="block text-xs text-muted">Se pagó en el momento (efectivo/tarjeta) — no genera CxP.</span>
+          </span>
         </label>
       </div>
       {form.payable ? (

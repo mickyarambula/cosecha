@@ -28,6 +28,7 @@ import {
   setExpenseChargedTo,
   setPoCommission,
   setVendorShare,
+  updatePurchaseOrder,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import {
@@ -76,7 +77,36 @@ type DraftLine = {
   unitsPerPallet: string;
   cost: string;
   markup: string;
+  netWeight: number | null;
+  weightUnit: string;
 };
+
+function ceilPallets(qty: string, unitsPerPallet: string): string {
+  const q = Number(qty);
+  const upp = Number(unitsPerPallet);
+  if (!(q > 0) || !(upp > 0)) return "";
+  return String(Math.ceil(q / upp));
+}
+
+function convertTemp(value: number, from: string, to: string): number {
+  if (from === to) return value;
+  return from === "C" ? (value * 9) / 5 + 32 : ((value - 32) * 5) / 9;
+}
+
+// Aviso, no bloqueo: la cámara opera a una temperatura fija; el producto
+// tiene un rango recomendado. Si no se traslapan, se avisa al recibir.
+function tempMismatch(
+  setPoint: number | null | undefined,
+  setUnit: string | null | undefined,
+  min: number | null | undefined,
+  max: number | null | undefined,
+  unit: string | null | undefined,
+): string | null {
+  if (setPoint == null || !setUnit || min == null || max == null || !unit) return null;
+  const setInProductUnit = convertTemp(setPoint, setUnit, unit);
+  if (setInProductUnit >= min - 0.5 && setInProductUnit <= max + 0.5) return null;
+  return `necesita ${min}–${max}°${unit}, esta ubicación está a ${setPoint}°${setUnit}`;
+}
 
 const DEAL_TYPE_LABEL: Record<string, string> = {
   firme: "Firm",
@@ -116,6 +146,7 @@ function Page() {
   const [shareId, setShareId] = useState<number | null>(null);
   const [shareLevel, setShareLevel] = useState<"po" | "basic" | "detailed">("po");
   const [settleId, setSettleId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<number | null>(null);
   const [cancelPo, setCancelPo] = useState<{ id: number; po_number: string } | null>(null);
   const [draft, setDraft] = useState({
     supplier_id: "",
@@ -138,7 +169,7 @@ function Page() {
     amount: "100",
     invoice: "",
     notes: "",
-    payable: false,
+    payable: true,
     by: "pallet",
     charged_to: "plein",
   });
@@ -177,6 +208,8 @@ function Page() {
   const merch = lines.reduce((s, l) => s + Number(l.qty || 0) * Number(l.cost || 0), 0);
 
   function addSku(sku: SkuOption) {
+    const qty = "48";
+    const unitsPerPallet = sku.units_per_pallet ? String(sku.units_per_pallet) : "48";
     setLines((prev) => [
       ...prev,
       {
@@ -186,11 +219,13 @@ function Page() {
         name: sku.product_name,
         unit: sku.empaque || sku.unit || sku.name,
         origin: "MX",
-        qty: "48",
-        pallets: "1",
-        unitsPerPallet: "48",
+        qty,
+        pallets: ceilPallets(qty, unitsPerPallet) || "1",
+        unitsPerPallet,
         cost: "",
-        markup: "30",
+        markup: "",
+        netWeight: sku.net_weight,
+        weightUnit: sku.weight_unit,
       },
     ]);
     setPicker(false);
@@ -511,11 +546,13 @@ function Page() {
                   <th className="px-3 py-2 font-medium">Quantity</th>
                   <th className="px-3 py-2 font-medium">Cost</th>
                   <th className="px-3 py-2 font-medium">B/E</th>
-                  <th className="px-3 py-2 font-medium">$ Markup</th>
+                  {draft.deal_type === "firme" ? <th className="px-3 py-2 font-medium">$ Markup</th> : null}
                 </tr>
               </thead>
               <tbody>
-                {lines.map((l, i) => (
+                {lines.map((l, i) => {
+                  const weight = l.netWeight != null && Number(l.qty) > 0 ? Number(l.qty) * l.netWeight : null;
+                  return (
                   <tr key={l.key} className="border-b border-border align-top">
                     <td className="px-3 py-3">
                       <div className="font-medium">{i + 1}. {l.name}</div>
@@ -533,16 +570,45 @@ function Page() {
                     </td>
                     <td className="px-3 py-3 text-xs text-muted">Auto-generated</td>
                     <td className="px-3 py-3">
-                      <div className="grid w-36 grid-cols-2 gap-1">
-                        <Input value={l.pallets} onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, pallets: e.target.value } : x)))} />
-                        <Input value={l.unitsPerPallet} onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, unitsPerPallet: e.target.value } : x)))} />
+                      <div className="grid w-40 grid-cols-2 gap-1">
+                        <Input
+                          title="Pallets"
+                          placeholder="Pallets"
+                          value={l.pallets}
+                          onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, pallets: e.target.value } : x)))}
+                        />
+                        <Input
+                          title="Cases per pallet"
+                          placeholder="Cases/plt"
+                          value={l.unitsPerPallet}
+                          onChange={(e) =>
+                            setLines((p) =>
+                              p.map((x) =>
+                                x.key === l.key
+                                  ? { ...x, unitsPerPallet: e.target.value, pallets: ceilPallets(x.qty, e.target.value) || x.pallets }
+                                  : x,
+                              ),
+                            )
+                          }
+                        />
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted">
+                        Weight {weight != null ? qty(weight, l.weightUnit) : "—"}
                       </div>
                     </td>
                     <td className="px-3 py-3">
                       <Input
                         className="w-20"
                         value={l.qty}
-                        onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, qty: e.target.value } : x)))}
+                        onChange={(e) =>
+                          setLines((p) =>
+                            p.map((x) =>
+                              x.key === l.key
+                                ? { ...x, qty: e.target.value, pallets: ceilPallets(e.target.value, x.unitsPerPallet) || x.pallets }
+                                : x,
+                            ),
+                          )
+                        }
                       />
                     </td>
                     <td className="px-3 py-3">
@@ -558,15 +624,18 @@ function Page() {
                       ) : null}
                     </td>
                     <td className="px-3 py-3 text-xs text-muted">{draft.deal_type === "firme" ? "" : "Min: PAS"}</td>
-                    <td className="px-3 py-3">
-                      <Input
-                        className="w-20"
-                        value={l.markup}
-                        onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, markup: e.target.value } : x)))}
-                      />
-                    </td>
+                    {draft.deal_type === "firme" ? (
+                      <td className="px-3 py-3">
+                        <Input
+                          className="w-20"
+                          value={l.markup}
+                          onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, markup: e.target.value } : x)))}
+                        />
+                      </td>
+                    ) : null}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -749,6 +818,7 @@ function Page() {
                           <PoDetail
                             row={row}
                             onReceive={() => openRecepcion(row.id)}
+                            onEdit={() => setEditId(row.id)}
                             onBill={() => void facturarProv(row.id)}
                             onExpense={() => setExpenseFor(row.id)}
                             onShare={() => {
@@ -789,6 +859,29 @@ function Page() {
                 </Select>
               </Field>
             </div>
+            {(() => {
+              const loc = (locations.data ?? []).find((l) => String(l.id) === rec.location_id);
+              if (!loc) return null;
+              const seen = new Set<string>();
+              const mismatches = (po?.lines ?? [])
+                .map((l) => ({
+                  name: l.product_name,
+                  issue: tempMismatch(loc.set_point_temp, loc.set_point_unit, l.storage_temp_min, l.storage_temp_max, l.storage_temp_unit),
+                }))
+                .filter((x) => {
+                  if (!x.issue) return false;
+                  const key = `${x.name}|${x.issue}`;
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                });
+              if (!mismatches.length) return null;
+              return (
+                <p className="rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
+                  Temperatura: {mismatches.map((m) => `${m.name} ${m.issue}`).join(" · ")}
+                </p>
+              );
+            })()}
             <Field label="Inspection type">
               <Select value={rec.inspection_type} onChange={(e) => setRec({ ...rec, inspection_type: e.target.value })}>
                 {INSPECCION_TIPOS.map((t) => (
@@ -928,6 +1021,19 @@ function Page() {
           }}
         />
       ) : null}
+      {editId != null && list.find((p) => p.id === editId) ? (
+        <EditOrderModal
+          key={editId}
+          row={list.find((p) => p.id === editId)!}
+          suppliers={suppliers.data ?? []}
+          skus={skus}
+          onClose={() => setEditId(null)}
+          onSaved={() => {
+            setEditId(null);
+            void orders.reload();
+          }}
+        />
+      ) : null}
       {cancelPo ? (
         <CancelDialog
           title={`Cancel order ${poShort(cancelPo.po_number)}`}
@@ -947,6 +1053,7 @@ function Page() {
 function PoDetail({
   row,
   onReceive,
+  onEdit,
   onBill,
   onExpense,
   onShare,
@@ -956,6 +1063,7 @@ function PoDetail({
 }: {
   row: Awaited<ReturnType<typeof listPurchaseOrders>>[number];
   onReceive: () => void;
+  onEdit: () => void;
   onBill: () => void;
   onShare: () => void;
   onExpense: () => void;
@@ -967,6 +1075,10 @@ function PoDetail({
   const received = row.lines.some((l) => l.quantity_received > 0);
   const units = row.lines.reduce((s, l) => s + l.quantity_ordered, 0);
   const pallets = row.lines.reduce((s, l) => s + (l.pallets || 0), 0);
+  const totalWeight = row.lines.reduce((s, l) => s + (l.net_weight != null ? l.quantity_ordered * l.net_weight : 0), 0);
+  const weightUnit = row.lines.find((l) => l.net_weight != null)?.weight_unit || "kg";
+  const hasWeight = row.lines.some((l) => l.net_weight != null);
+  const pendingCost = row.deal_type !== "firme" && row.lines.some((l) => !(l.unit_cost > 0));
   const t = useT();
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
@@ -981,7 +1093,7 @@ function PoDetail({
           <p className="text-xs text-muted">Placed on {fecha(row.order_date)}</p>
           <CancelledNote by={row.cancelled_by} at={row.cancelled_at} reason={row.cancel_reason} />
         </div>
-        <Button size="sm" onClick={onReceive}>
+        <Button size="sm" onClick={onEdit}>
           Edit order
         </Button>
       </div>
@@ -1014,9 +1126,13 @@ function PoDetail({
         <MetaCard label="Order total">
           <div>
             {money(row.order_total)}
-            <div className="text-[11px] font-normal text-subtle">
-              Items: {row.lines.length} · Units: {units}
-            </div>
+            {pendingCost ? (
+              <div className="text-[11px] font-normal text-warn">Costo de la fruta pendiente (PAS) — solo gastos</div>
+            ) : (
+              <div className="text-[11px] font-normal text-subtle">
+                Items: {row.lines.length} · Units: {units}
+              </div>
+            )}
           </div>
         </MetaCard>
       </div>
@@ -1035,11 +1151,13 @@ function PoDetail({
               <th className="px-3 py-2 font-medium">Quantity</th>
               <th className="px-3 py-2 font-medium">Cost</th>
               <th className="px-3 py-2 font-medium">B/E</th>
-              <th className="px-3 py-2 font-medium">$ Markup</th>
+              {row.deal_type === "firme" ? <th className="px-3 py-2 font-medium">$ Markup</th> : null}
             </tr>
           </thead>
           <tbody>
-            {row.lines.map((l, i) => (
+            {row.lines.map((l, i) => {
+              const lineWeight = l.net_weight != null ? l.quantity_ordered * l.net_weight : null;
+              return (
               <tr key={l.id} className="border-t border-border">
                 <td className="px-3 py-3">
                   <div className="font-medium">
@@ -1050,12 +1168,12 @@ function PoDetail({
                   </div>
                 </td>
                 <td className="px-3 py-3 text-xs text-link">
-                  {row.receptions.find((r) => r.lot_sano)?.lot_sano || "—"}
+                  {row.receptions.find((r) => r.purchase_order_line_id === l.id && r.lot_sano)?.lot_sano || "—"}
                 </td>
                 <td className="px-3 py-3 text-xs text-muted">
                   Pallets {l.pallets || 1}
                   <br />
-                  Weight —
+                  Weight {lineWeight != null ? qty(lineWeight, l.weight_unit) : "—"}
                 </td>
                 <td className="px-3 py-3 tabular-nums">{l.quantity_ordered}</td>
                 <td className="px-3 py-3">
@@ -1072,9 +1190,10 @@ function PoDetail({
                   )}
                 </td>
                 <td className="px-3 py-3 text-xs">{l.unit_cost ? money(l.unit_cost + row.expense_total / Math.max(units, 1), 4) : "—"}</td>
-                <td className="px-3 py-3 text-sm">$30.00</td>
+                {row.deal_type === "firme" ? <td className="px-3 py-3 text-sm text-muted">—</td> : null}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1126,11 +1245,11 @@ function PoDetail({
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between">
             <span className="text-muted">Pallets</span>
-            <span>{pallets || 1}</span>
+            <span>{pallets || row.lines.length}</span>
           </div>
           <div className="mt-1 flex justify-between">
             <span className="text-muted">Weight</span>
-            <span>0 lb</span>
+            <span>{hasWeight ? qty(totalWeight, weightUnit) : "—"}</span>
           </div>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
@@ -1182,6 +1301,294 @@ function PoDetail({
   );
 }
 
+function EditOrderModal({
+  row,
+  suppliers,
+  skus,
+  onClose,
+  onSaved,
+}: {
+  row: Awaited<ReturnType<typeof listPurchaseOrders>>[number];
+  suppliers: { id: number; name: string; commission_type?: string | null; commission_rate?: number | null }[];
+  skus: SkuOption[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const billed = !!row.bill;
+  const received = row.lines.some((l) => l.quantity_received > 0);
+  const locked = billed;
+  const [form, setForm] = useState({
+    supplier_id: String(row.supplier_id),
+    deal_type: row.deal_type,
+    commission_type: row.commission_type ?? "",
+    commission_rate: row.commission_rate != null ? String(row.commission_rate) : "",
+    expected_date: row.expected_date || row.order_date || "",
+    order_type: row.order_type === "entrega" ? "Delivery by vendor" : row.order_type,
+    bol: row.bol || "",
+    vendor_invoice: row.vendor_invoice || "",
+    shipping_ref: row.shipping_ref || "",
+    notes: row.notes || "",
+  });
+  const [lines, setLines] = useState(
+    row.lines.map((l) => ({
+      id: l.id as number | undefined,
+      product_id: l.product_id,
+      pack_style_id: l.pack_style_id ?? undefined,
+      name: l.product_name,
+      unit: l.unit,
+      origin: l.origin_country || "MX",
+      qty: String(l.quantity_ordered),
+      pallets: l.pallets ? String(l.pallets) : "",
+      unitsPerPallet: l.units_per_pallet ? String(l.units_per_pallet) : "",
+      cost: l.unit_cost ? String(l.unit_cost) : "",
+      received: l.quantity_received,
+    })),
+  );
+  const [picker, setPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const isFirme = form.deal_type === "firme";
+  const canEditStructure = !locked && !received;
+
+  function addLine(sku: SkuOption) {
+    setLines((p) => [
+      ...p,
+      {
+        id: undefined,
+        product_id: sku.product_id,
+        pack_style_id: sku.id || undefined,
+        name: sku.product_name,
+        unit: sku.empaque || sku.unit || sku.name,
+        origin: "MX",
+        qty: "48",
+        pallets: sku.units_per_pallet ? String(Math.ceil(48 / sku.units_per_pallet)) : "1",
+        unitsPerPallet: sku.units_per_pallet ? String(sku.units_per_pallet) : "48",
+        cost: "",
+        received: 0,
+      },
+    ]);
+    setPicker(false);
+  }
+
+  async function save() {
+    setSaving(true);
+    setMsg(null);
+    try {
+      await updatePurchaseOrder({
+        data: {
+          purchase_order_id: row.id,
+          supplier_id: Number(form.supplier_id),
+          deal_type: form.deal_type as "firme" | "consignacion" | "comision",
+          commission_type: !isFirme && form.commission_type ? (form.commission_type as "per_unit" | "gross_pct" | "net_pct") : undefined,
+          commission_rate: !isFirme && form.commission_type ? Number(form.commission_rate) : undefined,
+          expected_date: form.expected_date || undefined,
+          order_type: form.order_type,
+          bol: form.bol || undefined,
+          vendor_invoice: form.vendor_invoice || undefined,
+          shipping_ref: form.shipping_ref || undefined,
+          notes: form.notes || undefined,
+          lines: lines.map((l) => ({
+            id: l.id,
+            product_id: l.product_id,
+            pack_style_id: l.pack_style_id,
+            quantity_ordered: Number(l.qty),
+            unit: l.unit,
+            unit_cost: isFirme && l.cost ? Number(l.cost) : undefined,
+            pallets: l.pallets ? Number(l.pallets) : undefined,
+            units_per_pallet: l.unitsPerPallet ? Number(l.unitsPerPallet) : undefined,
+            origin_country: l.origin,
+          })),
+        },
+      });
+      onSaved();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "No se pudo guardar");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title={`Edit PO #${poShort(row.po_number)}`} subtitle={row.supplier_name} onClose={onClose} wide>
+      {locked ? (
+        <p className="mb-3 rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
+          Esta orden ya tiene factura de proveedor — solo puedes corregir referencia y notas.
+        </p>
+      ) : received ? (
+        <p className="mb-3 rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
+          Esta orden ya tiene mercancía recibida — proveedor, modalidad y líneas quedan fijos. Puedes corregir costo,
+          pallets, cajas/pallet, origen y subir cantidades (nunca bajarlas de lo ya recibido).
+        </p>
+      ) : null}
+      {msg ? <p className="mb-3 text-sm text-danger">{msg}</p> : null}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Field label="Vendor">
+          <Select
+            disabled={locked || received}
+            value={form.supplier_id}
+            onChange={(e) => {
+              const supplier_id = e.target.value;
+              const sup = suppliers.find((s) => String(s.id) === supplier_id);
+              setForm({
+                ...form,
+                supplier_id,
+                commission_type: sup?.commission_type ?? "",
+                commission_rate: sup?.commission_rate != null ? String(sup.commission_rate) : "",
+              });
+            }}
+          >
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Deal type">
+          <Select
+            disabled={locked || received}
+            value={form.deal_type}
+            onChange={(e) => setForm({ ...form, deal_type: e.target.value })}
+          >
+            <option value="firme">Firme (precio cerrado)</option>
+            <option value="consignacion">Consignación (PAS)</option>
+            <option value="comision">Comisión pura</option>
+          </Select>
+        </Field>
+        {!isFirme ? (
+          <Field label="Plein commission">
+            <div className="flex gap-2">
+              <Select disabled={locked} value={form.commission_type} onChange={(e) => setForm({ ...form, commission_type: e.target.value })}>
+                <option value="">Sin comisión</option>
+                <option value="per_unit">Por caja ($)</option>
+                <option value="gross_pct">% venta bruta</option>
+                <option value="net_pct">% sobre neto</option>
+              </Select>
+              <Input
+                disabled={locked}
+                className="w-20"
+                placeholder={form.commission_type === "per_unit" ? "$" : "%"}
+                value={form.commission_rate}
+                onChange={(e) => setForm({ ...form, commission_rate: e.target.value })}
+              />
+            </div>
+          </Field>
+        ) : null}
+        <Field label="Requested date">
+          <Input type="date" value={form.expected_date} onChange={(e) => setForm({ ...form, expected_date: e.target.value })} />
+        </Field>
+        <Field label="BOL #">
+          <Input value={form.bol} onChange={(e) => setForm({ ...form, bol: e.target.value })} />
+        </Field>
+        <Field label="Vendor invoice #">
+          <Input value={form.vendor_invoice} onChange={(e) => setForm({ ...form, vendor_invoice: e.target.value })} />
+        </Field>
+        <Field label="Shipping reference #">
+          <Input value={form.shipping_ref} onChange={(e) => setForm({ ...form, shipping_ref: e.target.value })} />
+        </Field>
+      </div>
+      <Field label="Notes" className="mt-3">
+        <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+      </Field>
+
+      <div className="mt-4 flex items-center justify-between">
+        <p className="text-sm font-semibold">Inventory Items</p>
+        {canEditStructure ? (
+          <Button size="sm" variant="outline" onClick={() => setPicker(true)}>
+            + Add item
+          </Button>
+        ) : null}
+      </div>
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full min-w-[820px] text-left text-sm">
+          <thead className="bg-surface-2 text-xs text-muted">
+            <tr>
+              <th className="px-3 py-2 font-medium">Item</th>
+              <th className="px-3 py-2 font-medium">Origin</th>
+              <th className="px-3 py-2 font-medium">Pallets / cases per pallet</th>
+              <th className="px-3 py-2 font-medium">Quantity</th>
+              <th className="px-3 py-2 font-medium">Cost</th>
+              {canEditStructure ? <th className="px-3 py-2" /> : null}
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, i) => (
+              <tr key={i} className="border-b border-border align-top">
+                <td className="px-3 py-3">
+                  <div className="font-medium">{i + 1}. {l.name}</div>
+                  <div className="text-xs text-muted">{l.unit}{l.received > 0 ? ` · ${l.received} recibidas` : ""}</div>
+                </td>
+                <td className="px-3 py-3">
+                  <Input
+                    disabled={locked}
+                    className="h-8 w-16"
+                    value={l.origin}
+                    onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, origin: e.target.value } : x)))}
+                  />
+                </td>
+                <td className="px-3 py-3">
+                  <div className="grid w-36 grid-cols-2 gap-1">
+                    <Input
+                      disabled={locked}
+                      placeholder="Pallets"
+                      value={l.pallets}
+                      onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, pallets: e.target.value } : x)))}
+                    />
+                    <Input
+                      disabled={locked}
+                      placeholder="Cases/plt"
+                      value={l.unitsPerPallet}
+                      onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, unitsPerPallet: e.target.value } : x)))}
+                    />
+                  </div>
+                </td>
+                <td className="px-3 py-3">
+                  <Input
+                    disabled={locked}
+                    className="w-20"
+                    value={l.qty}
+                    onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
+                  />
+                </td>
+                <td className="px-3 py-3">
+                  <Input
+                    disabled={locked || !isFirme}
+                    className="w-24"
+                    placeholder="$"
+                    value={l.cost}
+                    onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, cost: e.target.value } : x)))}
+                  />
+                </td>
+                {canEditStructure ? (
+                  <td className="px-3 py-3">
+                    <button
+                      type="button"
+                      className="cursor-pointer text-xs text-danger"
+                      onClick={() => setLines((p) => p.filter((_, j) => j !== i))}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                ) : null}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="outline" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button disabled={saving || !lines.length} onClick={() => void save()}>
+          Save changes
+        </Button>
+      </div>
+      {picker ? <ProductPicker skus={skus} onAdd={addLine} onClose={() => setPicker(false)} /> : null}
+    </Modal>
+  );
+}
+
 function ExpenseModal({
   suppliers,
   form,
@@ -1218,15 +1625,6 @@ function ExpenseModal({
         <Field label="Amount">
           <Input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
         </Field>
-        <label className="flex items-end gap-2 pb-2 text-sm">
-          <input
-            type="checkbox"
-            className="size-4 accent-action"
-            checked={form.payable}
-            onChange={(e) => setForm({ ...form, payable: e.target.checked })}
-          />
-          Yes, add to AP
-        </label>
         <Field label="Vendor">
           <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
             <option value="">Search vendors</option>
@@ -1240,6 +1638,23 @@ function ExpenseModal({
         <Field label="Invoice #">
           <Input value={form.invoice} onChange={(e) => setForm({ ...form, invoice: e.target.value })} />
         </Field>
+      </div>
+      <div className="mt-4">
+        <p className="mb-2 text-sm font-medium">¿Ya se pagó este gasto?</p>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="radio" className="mt-1" checked={form.payable} onChange={() => setForm({ ...form, payable: true })} />
+          <span>
+            <strong>Por pagar</strong>
+            <span className="block text-xs text-muted">Todavía se le debe al proveedor — aparece en Cuentas por pagar.</span>
+          </span>
+        </label>
+        <label className="mt-2 flex items-start gap-2 text-sm">
+          <input type="radio" className="mt-1" checked={!form.payable} onChange={() => setForm({ ...form, payable: false })} />
+          <span>
+            <strong>Ya pagado</strong>
+            <span className="block text-xs text-muted">Se pagó en el momento (efectivo/tarjeta) — no genera CxP.</span>
+          </span>
+        </label>
       </div>
       <Field label="Note" className="mt-3">
         <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />

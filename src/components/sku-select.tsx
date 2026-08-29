@@ -13,6 +13,9 @@ export type SkuOption = {
   calibre: string | null;
   unit: string;
   name: string;
+  units_per_pallet: number | null;
+  net_weight: number | null;
+  weight_unit: string;
 };
 
 export function packsToSkus(
@@ -29,6 +32,9 @@ export function packsToSkus(
       calibre?: string | null;
       name: string;
       unit_of_measure: string;
+      units_per_pallet?: number | null;
+      net_weight?: number | null;
+      weight_unit?: string | null;
     }[];
   }[],
 ): SkuOption[] {
@@ -46,6 +52,9 @@ export function packsToSkus(
         calibre: pk.calibre ?? null,
         unit: pk.unit_of_measure || p.default_unit,
         name: pk.name,
+        units_per_pallet: pk.units_per_pallet || null,
+        net_weight: pk.net_weight || null,
+        weight_unit: pk.weight_unit || "kg",
       }));
   });
 }
