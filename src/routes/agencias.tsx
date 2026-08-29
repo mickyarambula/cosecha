@@ -4,8 +4,14 @@ import { Modal, PageHeader } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
-import { createCustomsBroker, listCustomsBrokers, listSuppliers, updateCustomsBroker } from "@/lib/produce-server";
+import {
+  createCustomsBroker,
+  listCustomsBrokers,
+  listSuppliers,
+  updateCustomsBroker,
+} from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
+import { errorMessage } from "@/lib/utils";
 
 export const Route = createFileRoute("/agencias")({ component: Page });
 
@@ -39,7 +45,12 @@ function Page() {
     const s = q.trim().toLowerCase();
     return (brokers.data ?? [])
       .filter((b) => showInactive || b.is_active)
-      .filter((b) => !s || b.name.toLowerCase().includes(s) || (b.supplier_name ?? "").toLowerCase().includes(s));
+      .filter(
+        (b) =>
+          !s ||
+          b.name.toLowerCase().includes(s) ||
+          (b.supplier_name ?? "").toLowerCase().includes(s),
+      );
   }, [brokers.data, q, showInactive]);
 
   function openCreate() {
@@ -79,36 +90,46 @@ function Page() {
         notes: form.notes || undefined,
       };
       if (editing) {
-        await updateCustomsBroker({ data: { ...payload, id: editing.id, is_active: editing.is_active } });
+        await updateCustomsBroker({
+          data: { ...payload, id: editing.id, is_active: editing.is_active },
+        });
       } else {
         await createCustomsBroker({ data: payload });
       }
       setCreating(false);
       setEditing(null);
       await brokers.reload();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "No se pudo guardar");
+    } catch (e2) {
+      setErr(errorMessage(e2));
     } finally {
       setSaving(false);
     }
   }
 
   async function toggleActive(b: Broker) {
-    await updateCustomsBroker({
-      data: {
-        id: b.id,
-        name: b.name,
-        country: b.country as "MX" | "US",
-        license_number: b.license_number ?? undefined,
-        contact_name: b.contact_name ?? undefined,
-        phone: b.phone ?? undefined,
-        email: b.email ?? undefined,
-        supplier_id: b.supplier_id,
-        notes: b.notes ?? undefined,
-        is_active: !b.is_active,
-      },
-    });
-    await brokers.reload();
+    setErr(null);
+    setSaving(true);
+    try {
+      await updateCustomsBroker({
+        data: {
+          id: b.id,
+          name: b.name,
+          country: b.country as "MX" | "US",
+          license_number: b.license_number ?? undefined,
+          contact_name: b.contact_name ?? undefined,
+          phone: b.phone ?? undefined,
+          email: b.email ?? undefined,
+          supplier_id: b.supplier_id,
+          notes: b.notes ?? undefined,
+          is_active: !b.is_active,
+        },
+      });
+      await brokers.reload();
+    } catch (e2) {
+      setErr(errorMessage(e2, "No se pudo cambiar el estado de la agencia."));
+    } finally {
+      setSaving(false);
+    }
   }
 
   const modalOpen = creating || editing != null;
@@ -121,13 +142,28 @@ function Page() {
         action={<Button onClick={openCreate}>+ Agregar agencia</Button>}
       />
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Input className="max-w-xs" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar agencia o proveedor…" />
+        <Input
+          className="max-w-xs"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Buscar agencia o proveedor…"
+        />
         <label className="flex items-center gap-2 text-sm text-muted">
-          <input type="checkbox" className="size-4 accent-action" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          <input
+            type="checkbox"
+            className="size-4 accent-action"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+          />
           Ver inactivas
         </label>
       </div>
       {brokers.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {err && !modalOpen ? (
+        <p className="mb-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">
+          {err}
+        </p>
+      ) : null}
       <div className="overflow-x-auto rounded-xl border border-border bg-surface">
         <table className="w-full min-w-[820px] text-left text-sm">
           <thead className="border-b border-border text-xs text-muted">
@@ -153,14 +189,25 @@ function Page() {
                 </td>
                 <td className="px-4 py-3 text-muted">{b.supplier_name || "—"}</td>
                 <td className="px-4 py-3">
-                  <Badge tone={b.is_active ? "ok" : "mute"}>{b.is_active ? "Activa" : "Inactiva"}</Badge>
+                  <Badge tone={b.is_active ? "ok" : "mute"}>
+                    {b.is_active ? "Activa" : "Inactiva"}
+                  </Badge>
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex justify-end gap-3">
-                    <button type="button" className="cursor-pointer text-xs text-link" onClick={() => openEdit(b)}>
+                    <button
+                      type="button"
+                      className="cursor-pointer text-xs text-link"
+                      onClick={() => openEdit(b)}
+                    >
                       Editar
                     </button>
-                    <button type="button" className="cursor-pointer text-xs text-danger" onClick={() => void toggleActive(b)}>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      className="cursor-pointer text-xs text-danger disabled:opacity-50"
+                      onClick={() => void toggleActive(b)}
+                    >
                       {b.is_active ? "Desactivar" : "Reactivar"}
                     </button>
                   </div>
@@ -179,53 +226,97 @@ function Page() {
       </div>
 
       {modalOpen ? (
-        <Modal title={editing ? `Editar ${editing.name}` : "Nueva agencia aduanal"} onClose={() => { setCreating(false); setEditing(null); }}>
+        <Modal
+          title={editing ? `Editar ${editing.name}` : "Nueva agencia aduanal"}
+          onClose={() => {
+            setCreating(false);
+            setEditing(null);
+          }}
+        >
           <form onSubmit={(e) => void save(e)}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Agencia aduanal">
-              <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="SEINCO" />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Agencia aduanal">
+                <Input
+                  required
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="SEINCO"
+                />
+              </Field>
+              <Field label="País">
+                <Select
+                  value={form.country}
+                  onChange={(e) => setForm({ ...form, country: e.target.value })}
+                >
+                  <option value="MX">México</option>
+                  <option value="US">Estados Unidos</option>
+                </Select>
+              </Field>
+              <Field label="Licencia / patente">
+                <Input
+                  value={form.license_number}
+                  onChange={(e) => setForm({ ...form, license_number: e.target.value })}
+                />
+              </Field>
+              <Field label="Proveedor ligado (opcional)">
+                <Select
+                  value={form.supplier_id}
+                  onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
+                >
+                  <option value="">Sin proveedor ligado</option>
+                  {(suppliers.data ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Contacto">
+                <Input
+                  value={form.contact_name}
+                  onChange={(e) => setForm({ ...form, contact_name: e.target.value })}
+                />
+              </Field>
+              <Field label="Teléfono">
+                <Input
+                  value={form.phone}
+                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                />
+              </Field>
+              <Field label="Email" className="sm:col-span-2">
+                <Input
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                />
+              </Field>
+            </div>
+            <Field label="Notas" className="mt-3">
+              <Textarea
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              />
             </Field>
-            <Field label="País">
-              <Select value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })}>
-                <option value="MX">México</option>
-                <option value="US">Estados Unidos</option>
-              </Select>
-            </Field>
-            <Field label="Licencia / patente">
-              <Input value={form.license_number} onChange={(e) => setForm({ ...form, license_number: e.target.value })} />
-            </Field>
-            <Field label="Proveedor ligado (opcional)">
-              <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
-                <option value="">Sin proveedor ligado</option>
-                {(suppliers.data ?? []).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Contacto">
-              <Input value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} />
-            </Field>
-            <Field label="Teléfono">
-              <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-            </Field>
-            <Field label="Email" className="sm:col-span-2">
-              <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-            </Field>
-          </div>
-          <Field label="Notas" className="mt-3">
-            <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-          </Field>
-          {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
-          <div className="mt-4 flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => { setCreating(false); setEditing(null); }}>
-              Cancelar
-            </Button>
-            <Button type="submit" disabled={saving}>
-              {saving ? "Guardando…" : "Guardar"}
-            </Button>
-          </div>
+            {err ? (
+              <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">
+                {err}
+              </p>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setCreating(false);
+                  setEditing(null);
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={saving}>
+                {saving ? "Guardando…" : "Guardar"}
+              </Button>
+            </div>
           </form>
         </Modal>
       ) : null}

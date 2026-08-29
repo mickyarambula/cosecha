@@ -4,8 +4,13 @@ import { Modal, PageHeader } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
-import { createBorderCrossing, listBorderCrossings, updateBorderCrossing } from "@/lib/produce-server";
+import {
+  createBorderCrossing,
+  listBorderCrossings,
+  updateBorderCrossing,
+} from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
+import { errorMessage } from "@/lib/utils";
 
 export const Route = createFileRoute("/cruces")({ component: Page });
 
@@ -63,7 +68,9 @@ function Page() {
         state_us: form.state_us || undefined,
       };
       if (editing) {
-        await updateBorderCrossing({ data: { ...payload, id: editing.id, is_active: editing.is_active } });
+        await updateBorderCrossing({
+          data: { ...payload, id: editing.id, is_active: editing.is_active },
+        });
       } else {
         await createBorderCrossing({ data: payload });
       }
@@ -71,25 +78,33 @@ function Page() {
       setEditing(null);
       await crossings.reload();
     } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : "No se pudo guardar");
+      setErr(errorMessage(e2));
     } finally {
       setSaving(false);
     }
   }
 
   async function toggleActive(c: Crossing) {
-    await updateBorderCrossing({
-      data: {
-        id: c.id,
-        name: c.name,
-        port_mx: c.port_mx ?? undefined,
-        port_us: c.port_us ?? undefined,
-        state_mx: c.state_mx ?? undefined,
-        state_us: c.state_us ?? undefined,
-        is_active: !c.is_active,
-      },
-    });
-    await crossings.reload();
+    setErr(null);
+    setSaving(true);
+    try {
+      await updateBorderCrossing({
+        data: {
+          id: c.id,
+          name: c.name,
+          port_mx: c.port_mx ?? undefined,
+          port_us: c.port_us ?? undefined,
+          state_mx: c.state_mx ?? undefined,
+          state_us: c.state_us ?? undefined,
+          is_active: !c.is_active,
+        },
+      });
+      await crossings.reload();
+    } catch (e2) {
+      setErr(errorMessage(e2, "No se pudo cambiar el estado del punto de cruce."));
+    } finally {
+      setSaving(false);
+    }
   }
 
   const modalOpen = creating || editing != null;
@@ -102,13 +117,28 @@ function Page() {
         action={<Button onClick={openCreate}>+ Agregar cruce</Button>}
       />
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Input className="max-w-xs" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar punto de cruce…" />
+        <Input
+          className="max-w-xs"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Buscar punto de cruce…"
+        />
         <label className="flex items-center gap-2 text-sm text-muted">
-          <input type="checkbox" className="size-4 accent-action" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          <input
+            type="checkbox"
+            className="size-4 accent-action"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+          />
           Ver inactivos
         </label>
       </div>
       {crossings.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {err && !modalOpen ? (
+        <p className="mb-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">
+          {err}
+        </p>
+      ) : null}
       <div className="overflow-x-auto rounded-xl border border-border bg-surface">
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="border-b border-border text-xs text-muted">
@@ -133,14 +163,25 @@ function Page() {
                   {c.state_us ? <div className="text-xs">{c.state_us}</div> : null}
                 </td>
                 <td className="px-4 py-3">
-                  <Badge tone={c.is_active ? "ok" : "mute"}>{c.is_active ? "Activo" : "Inactivo"}</Badge>
+                  <Badge tone={c.is_active ? "ok" : "mute"}>
+                    {c.is_active ? "Activo" : "Inactivo"}
+                  </Badge>
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex justify-end gap-3">
-                    <button type="button" className="cursor-pointer text-xs text-link" onClick={() => openEdit(c)}>
+                    <button
+                      type="button"
+                      className="cursor-pointer text-xs text-link"
+                      onClick={() => openEdit(c)}
+                    >
                       Editar
                     </button>
-                    <button type="button" className="cursor-pointer text-xs text-danger" onClick={() => void toggleActive(c)}>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      className="cursor-pointer text-xs text-danger disabled:opacity-50"
+                      onClick={() => void toggleActive(c)}
+                    >
                       {c.is_active ? "Desactivar" : "Reactivar"}
                     </button>
                   </div>
@@ -159,30 +200,64 @@ function Page() {
       </div>
 
       {modalOpen ? (
-        <Modal title={editing ? `Editar ${editing.name}` : "Nuevo punto de cruce"} onClose={() => { setCreating(false); setEditing(null); }}>
+        <Modal
+          title={editing ? `Editar ${editing.name}` : "Nuevo punto de cruce"}
+          onClose={() => {
+            setCreating(false);
+            setEditing(null);
+          }}
+        >
           <form onSubmit={(e) => void save(e)}>
             <div className="grid gap-3">
               <Field label="Punto de cruce">
-                <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nogales" />
+                <Input
+                  required
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Nogales"
+                />
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Garita MX">
-                  <Input value={form.port_mx} onChange={(e) => setForm({ ...form, port_mx: e.target.value })} />
+                  <Input
+                    value={form.port_mx}
+                    onChange={(e) => setForm({ ...form, port_mx: e.target.value })}
+                  />
                 </Field>
                 <Field label="Garita US">
-                  <Input value={form.port_us} onChange={(e) => setForm({ ...form, port_us: e.target.value })} />
+                  <Input
+                    value={form.port_us}
+                    onChange={(e) => setForm({ ...form, port_us: e.target.value })}
+                  />
                 </Field>
                 <Field label="Estado MX">
-                  <Input value={form.state_mx} onChange={(e) => setForm({ ...form, state_mx: e.target.value })} />
+                  <Input
+                    value={form.state_mx}
+                    onChange={(e) => setForm({ ...form, state_mx: e.target.value })}
+                  />
                 </Field>
                 <Field label="Estado US">
-                  <Input value={form.state_us} onChange={(e) => setForm({ ...form, state_us: e.target.value })} />
+                  <Input
+                    value={form.state_us}
+                    onChange={(e) => setForm({ ...form, state_us: e.target.value })}
+                  />
                 </Field>
               </div>
             </div>
-            {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
+            {err ? (
+              <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">
+                {err}
+              </p>
+            ) : null}
             <div className="mt-4 flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => { setCreating(false); setEditing(null); }}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setCreating(false);
+                  setEditing(null);
+                }}
+              >
                 Cancelar
               </Button>
               <Button type="submit" disabled={saving}>
