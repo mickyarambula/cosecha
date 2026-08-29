@@ -63,7 +63,10 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
   return (
     <div className="min-h-dvh bg-bg text-fg">
       <div className="doc-toolbar sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3">
-        <Link to={doc.tipo === "oc" ? "/compras" : doc.tipo === "factura" ? "/cxc" : "/ventas"} className="text-sm font-medium text-primary">
+        <Link
+          to={doc.tipo === "oc" ? "/compras" : doc.tipo === "factura" ? "/cxc" : doc.tipo === "cuenta" ? "/proveedores" : "/ventas"}
+          className="text-sm font-medium text-primary"
+        >
           ← {t("Back")}
         </Link>
         <div className="flex items-center gap-2">

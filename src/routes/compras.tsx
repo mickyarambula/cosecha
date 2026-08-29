@@ -13,6 +13,7 @@ import { COMPANY } from "@/lib/company";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
+  applyAdvanceRecovery,
   applySettlement,
   cancelPurchaseOrder,
   createBillFromPO,
@@ -1312,6 +1313,7 @@ function SettlementModal({
   const [target, setTarget] = useState("");
   const [ctype, setCtype] = useState("");
   const [crate, setCrate] = useState("");
+  const [recover, setRecover] = useState("");
   const [commissionInit, setCommissionInit] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -1320,7 +1322,30 @@ function SettlementModal({
   if (s && !commissionInit) {
     setCtype(s.commission_type ?? "");
     setCrate(s.commission_rate != null ? String(s.commission_rate) : "");
+    // Propuesta de recuperación: lo que alcance entre el saldo vivo y lo
+    // pendiente de la liquidación. Miguel decide el monto final (puede ser 0).
+    if (s.bill && s.grower_balance > 0) {
+      const proposal = Math.min(s.grower_balance, s.bill.remaining);
+      if (proposal > 0) setRecover(proposal.toFixed(2));
+    }
     setCommissionInit(true);
+  }
+
+  async function applyRecovery() {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await applyAdvanceRecovery({
+        data: { purchase_order_id: poId, amount: Number(recover) },
+      });
+      setRecover("");
+      await data.reload();
+      setMsg(`Recuperados ${money(r.applied)} contra ${r.bill_number}`);
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not apply recovery");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function apply(pctVal?: number) {
@@ -1490,12 +1515,39 @@ function SettlementModal({
                       </span>
                       <span className="tabular-nums">−{money(s.breakdown.commission)}</span>
                     </div>
-                    <div className="flex justify-between py-2 text-base font-semibold">
+                    <div className={`flex justify-between py-2 font-semibold ${s.recovered_total > 0 ? "border-b border-border text-sm" : "text-base"}`}>
                       <span>Neto al productor</span>
                       <span className={`tabular-nums ${s.breakdown.net_to_grower < 0 ? "text-danger" : "text-ok"}`}>
                         {money(s.breakdown.net_to_grower)}
                       </span>
                     </div>
+                    {s.recovered_total > 0 ? (
+                      <>
+                        <div className="flex justify-between border-b border-border py-1.5">
+                          <span>
+                            Recuperación de adelantos
+                            <span className="ml-2 text-xs text-muted">
+                              saldo de adelantos: {money(s.grower_balance + s.recovered_total)} antes → {money(s.grower_balance)} después
+                            </span>
+                          </span>
+                          <span className="tabular-nums">−{money(s.recovered_total)}</span>
+                        </div>
+                        {s.recoveries.map((r, i) => (
+                          <div key={i} className="flex justify-between py-1 text-xs text-muted">
+                            <span>
+                              {r.advance_number} — {r.concept}
+                            </span>
+                            <span className="tabular-nums">−{money(r.amount)}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between py-2 text-base font-semibold">
+                          <span>Pago al productor</span>
+                          <span className="tabular-nums text-ok">
+                            {money(Math.max(s.breakdown.net_to_grower - s.recovered_total, 0))}
+                          </span>
+                        </div>
+                      </>
+                    ) : null}
                   </div>
                 </div>
               ) : (
@@ -1505,6 +1557,32 @@ function SettlementModal({
               )}
             </>
           )}
+          {s.grower_balance > 0 ? (
+            s.bill && s.bill.remaining > 0.009 ? (
+              <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
+                <Field label="Recuperar adelantos ($)">
+                  <Input className="w-28" value={recover} onChange={(e) => setRecover(e.target.value)} />
+                </Field>
+                <Button size="sm" disabled={saving || !(Number(recover) > 0)} onClick={() => void applyRecovery()}>
+                  Aplicar
+                </Button>
+                <p className="ml-auto max-w-md text-xs text-muted">
+                  El productor tiene {money(s.grower_balance)} en adelantos vivos. Tú decides cuánto se recupera en esta
+                  carga — puede ser cero. Máximo: lo pendiente de {s.bill.bill_number} ({money(s.bill.remaining)}).
+                </p>
+              </div>
+            ) : s.deal_type === "comision" ? (
+              <p className="mt-3 text-xs text-muted">
+                El productor tiene {money(s.grower_balance)} en adelantos vivos. En comisión pura no nace CxP por la
+                fruta, así que no hay liquidación contra la cual recuperar en esta carga.
+              </p>
+            ) : !s.bill ? (
+              <p className="mt-3 text-xs text-warn">
+                El productor tiene {money(s.grower_balance)} en adelantos vivos. Captura la factura de la liquidación
+                para poder recuperar contra esta carga.
+              </p>
+            ) : null
+          ) : null}
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[980px] text-left text-sm">
               <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">

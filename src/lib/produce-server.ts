@@ -38,7 +38,7 @@ export type PrintLine = {
 };
 export type PrintDoc = {
   id: number;
-  tipo: "factura" | "oc" | "ov";
+  tipo: "factura" | "oc" | "ov" | "cuenta";
   kindLabel: string;
   number: string;
   date: string;
@@ -559,7 +559,7 @@ export const listSuppliers = createServerFn({ method: "GET" }).middleware([authM
 	return (await (await getSql()).query(`select id, code, name, contact_name, phone, email, city, country, notes, is_active,
            coalesce(es_proveedor, true) as es_proveedor,
            coalesce(es_cliente, false) as es_cliente,
-           linked_customer_id, commission_type, commission_rate::text
+           linked_customer_id, commission_type, commission_rate::text, share_token
     from suppliers order by name`)).map((s) => ({
 		...s,
 		commission_rate: s.commission_rate != null ? n(s.commission_rate) : null
@@ -1122,7 +1122,7 @@ async function loadPoLots(sql, poId) {
  * server fn — this plain function is the one place the math lives.
  */
 async function loadSettlement(sql, purchase_order_id: number) {
-	const [po] = await sql.query(`select po.id, po.po_number, s.name as supplier_name, po.status,
+	const [po] = await sql.query(`select po.id, po.po_number, po.supplier_id, s.name as supplier_name, po.status,
               coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
               coalesce(po.vendor_share_level,'po') as vendor_share_level,
               coalesce(po.signed_off,false) as signed_off,
@@ -1146,6 +1146,19 @@ async function loadSettlement(sql, purchase_order_id: number) {
 	const t_cost = lots.reduce((s, l) => s + l.t_cost, 0);
 	const profit = lots.reduce((s, l) => s + l.profit, 0);
 	const paid = n((await sql.query(`select coalesce(sum(paid),0)::text as paid from supplier_bills where purchase_order_id = $1`, [purchase_order_id]))[0]?.paid);
+	// Cuenta corriente del productor: saldo vivo de adelantos, la bill de esta
+	// liquidación (si ya nació) y las recuperaciones ya aplicadas a esta carga.
+	const grower_balance = n((await sql.query(`select coalesce(sum(amount - recovered),0)::text as v
+       from grower_advances where supplier_id = $1 and cancelled_at is null`, [po.supplier_id]))[0]?.v);
+	const [billRow] = await sql.query(`select id, bill_number, total::text, paid::text from supplier_bills
+       where purchase_order_id = $1 and status <> 'cancelled' order by id desc limit 1`, [purchase_order_id]);
+	const recoveries = (await sql.query(`select ap.amount::text, ap.created_at::text, a.advance_number, a.concept
+       from grower_advance_applications ap join grower_advances a on a.id = ap.advance_id
+       where ap.purchase_order_id = $1 order by ap.id`, [purchase_order_id])).map((r) => ({
+		...r,
+		amount: n(r.amount)
+	}));
+	const recovered_total = recoveries.reduce((s, r) => s + r.amount, 0);
 	return {
 		po_id: po.id,
 		po_number: po.po_number,
@@ -1174,6 +1187,16 @@ async function loadSettlement(sql, purchase_order_id: number) {
 		profit_pct: revenue > 0 ? profit / revenue * 100 : 0,
 		paid,
 		balance_due: Math.max(t_cost - paid, 0),
+		grower_balance,
+		bill: billRow ? {
+			id: billRow.id,
+			bill_number: billRow.bill_number,
+			total: n(billRow.total),
+			paid: n(billRow.paid),
+			remaining: Math.max(n(billRow.total) - n(billRow.paid), 0)
+		} : null,
+		recoveries,
+		recovered_total,
 		lots
 	};
 }
@@ -1247,6 +1270,159 @@ export const setExpenseChargedTo = createServerFn({ method: "POST" }).validator(
 	if (!exp) throw new Error("Gasto no encontrado");
 	await sql.query(`update expenses set charged_to = $1 where id = $2`, [data.charged_to, data.expense_id]);
 	return { ok: true };
+});
+/**
+ * Cuenta corriente del productor. Un adelanto sale de caja (cash_movement
+ * kind 'adelanto') y nace como cuenta por cobrar al productor — no es gasto,
+ * no toca expenses ni el P&L. Se recupera contra liquidaciones futuras como
+ * cruce sin caja: baja la CxC al productor y sube supplier_bills.paid.
+ */
+export const createGrowerAdvance = createServerFn({ method: "POST" }).validator(z.object({
+	supplier_id: z.number(),
+	concept: z.string().min(1),
+	amount: z.number().positive(),
+	advance_date: z.string().optional(),
+	purchase_order_id: z.number().optional(),
+	notes: z.string().optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [sup] = await sql.query(`select name from suppliers where id = $1`, [data.supplier_id]);
+	if (!sup) throw new Error("Productor no encontrado");
+	if (data.purchase_order_id != null) {
+		const [po] = await sql.query(`select id from purchase_orders where id = $1 and supplier_id = $2`, [data.purchase_order_id, data.supplier_id]);
+		if (!po) throw new Error("Esa carga no es de este productor");
+	}
+	const advance_number = await nextCode(sql, "grower_advances", "advance_number", "ADE-");
+	const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
+	const date = data.advance_date || todayISO();
+	const movId = (await sql.query(`insert into cash_movements (folio, mov_date, kind, counterparty, amount, notes)
+       values ($1,$2,'adelanto',$3,$4,$5) returning id`, [
+		folio,
+		date,
+		sup.name,
+		-data.amount,
+		`Adelanto ${advance_number} — ${data.concept.trim()}`
+	]))[0].id;
+	const id = (await sql.query(`insert into grower_advances (advance_number, supplier_id, purchase_order_id, advance_date, concept, amount, cash_movement_id, notes)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`, [
+		advance_number,
+		data.supplier_id,
+		data.purchase_order_id ?? null,
+		date,
+		data.concept.trim(),
+		data.amount,
+		movId,
+		data.notes || null
+	]))[0].id;
+	return { id, advance_number, folio };
+});
+async function loadGrowerAccount(sql, supplier_id: number) {
+	const [sup] = await sql.query(`select id, name, contact_name, phone, email, city, country, share_token from suppliers where id = $1`, [supplier_id]);
+	if (!sup) throw new Error("Productor no encontrado");
+	const advances = (await sql.query(`select a.id, a.advance_number, a.advance_date::text, a.concept, a.amount::text, a.recovered::text, a.notes,
+            a.purchase_order_id, po.po_number, a.cancelled_at::text, a.cancelled_by, a.cancel_reason
+     from grower_advances a
+     left join purchase_orders po on po.id = a.purchase_order_id
+     where a.supplier_id = $1
+     order by a.advance_date, a.id`, [supplier_id])).map((a) => ({
+		...a,
+		amount: n(a.amount),
+		recovered: n(a.recovered),
+		balance: a.cancelled_at ? 0 : Math.max(n(a.amount) - n(a.recovered), 0)
+	}));
+	const applications = (await sql.query(`select ap.id, ap.advance_id, ap.amount::text, ap.created_at::text,
+            a.advance_number, a.concept, b.bill_number, po.po_number
+     from grower_advance_applications ap
+     join grower_advances a on a.id = ap.advance_id
+     join supplier_bills b on b.id = ap.supplier_bill_id
+     left join purchase_orders po on po.id = ap.purchase_order_id
+     where a.supplier_id = $1
+     order by ap.id`, [supplier_id])).map((r) => ({
+		...r,
+		amount: n(r.amount)
+	}));
+	const pos = await sql.query(`select id, po_number from purchase_orders
+     where supplier_id = $1 and status <> 'cancelled' order by id desc limit 50`, [supplier_id]);
+	return {
+		supplier: sup,
+		advances,
+		applications,
+		pos,
+		balance: advances.reduce((s, a) => s + a.balance, 0)
+	};
+}
+export const getGrowerAccount = createServerFn({ method: "GET" }).validator(z.object({ supplier_id: z.number() })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	return loadGrowerAccount(sql, data.supplier_id);
+});
+export const applyAdvanceRecovery = createServerFn({ method: "POST" }).validator(z.object({
+	purchase_order_id: z.number(),
+	amount: z.number().positive()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [po] = await sql.query(`select id, po_number, supplier_id from purchase_orders where id = $1`, [data.purchase_order_id]);
+	if (!po) throw new Error("Orden de compra no encontrada");
+	const [bill] = await sql.query(`select id, bill_number, total::text, paid::text from supplier_bills
+       where purchase_order_id = $1 and status <> 'cancelled' order by id desc limit 1`, [po.id]);
+	if (!bill) throw new Error("Esta carga aún no tiene factura de liquidación — captúrala primero.");
+	const remaining = n(bill.total) - n(bill.paid);
+	if (data.amount > remaining + .009) throw new Error(`Solo quedan ${remaining.toFixed(2)} por cubrir en ${bill.bill_number} — no se puede recuperar más que el neto pendiente de esta liquidación.`);
+	// Los adelantos más viejos se recuperan primero (FIFO). Miguel decide el
+	// monto total; el sistema lo reparte y deja rastro por adelanto.
+	const open = await sql.query(`select id, amount::text, recovered::text from grower_advances
+       where supplier_id = $1 and cancelled_at is null and recovered < amount - 0.009
+       order by advance_date, id`, [po.supplier_id]);
+	let left = data.amount;
+	const splits: { id: number; take: number }[] = [];
+	for (const a of open) {
+		if (left <= .009) break;
+		const take = Math.min(n(a.amount) - n(a.recovered), left);
+		splits.push({ id: a.id, take });
+		left -= take;
+	}
+	if (left > .009) throw new Error("El productor no tiene saldo de adelantos suficiente para recuperar ese monto.");
+	for (const s of splits) {
+		// Guarda atómica: recovered nunca puede pasar de amount, así que es
+		// imposible recuperar el mismo adelanto dos veces.
+		const updated = await sql.query(`update grower_advances set recovered = recovered + $1
+         where id = $2 and cancelled_at is null and recovered + $1 <= amount + 0.009 returning id`, [s.take, s.id]);
+		if (!updated.length) throw new Error("El saldo del adelanto cambió — recarga y vuelve a intentar.");
+		await sql.query(`insert into grower_advance_applications (advance_id, supplier_bill_id, purchase_order_id, amount) values ($1,$2,$3,$4)`, [
+			s.id,
+			bill.id,
+			po.id,
+			s.take
+		]);
+	}
+	// Cruce sin caja: la recuperación cubre parte de la liquidación sin
+	// movimiento de dinero — baja la CxC al productor, baja la CxP de la carga.
+	const paid = n(bill.paid) + data.amount;
+	await sql.query(`update supplier_bills set paid = $1, status = $2 where id = $3`, [
+		paid,
+		moneyStatus(n(bill.total), paid),
+		bill.id
+	]);
+	return {
+		ok: true,
+		applied: data.amount,
+		bill_number: bill.bill_number,
+		remaining: n(bill.total) - paid
+	};
+});
+export const cancelGrowerAdvance = createServerFn({ method: "POST" }).validator(z.object({
+	advance_id: z.number(),
+	reason: z.string().optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	const [adv] = await sql.query(`select id, advance_number, recovered::text, cash_movement_id, cancelled_at from grower_advances where id = $1`, [data.advance_id]);
+	if (!adv) throw new Error("Adelanto no encontrado");
+	if (adv.cancelled_at) throw new Error(`${adv.advance_number} ya está cancelado`);
+	if (n(adv.recovered) > .009) throw new Error(`${adv.advance_number} ya tiene recuperaciones aplicadas — no se puede cancelar.`);
+	const staffName = await staffNameFor(sql, context.userId);
+	await sql.query(`update grower_advances set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`, [staffName, data.reason || null, adv.id]);
+	if (adv.cash_movement_id) await sql.query(`update cash_movements set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2
+       where id = $3 and folio <> 'CORTE-CHASE' and cancelled_at is null`, [staffName, data.reason || `Cancelación ${adv.advance_number}`, adv.cash_movement_id]);
+	return { advance_number: adv.advance_number };
 });
 export const wasteLot = createServerFn({ method: "POST" }).validator(z.object({
 	lot_id: z.number(),
@@ -2591,12 +2767,60 @@ export const getPrintDoc = createServerFn({ method: "GET" }).validator(z.object(
 		"ov",
 		"pick",
 		"bol",
-		"confirm"
+		"confirm",
+		"cuenta"
 	]),
 	token: z.string().min(16)
 })).handler(async ({ data }) => {
 	const sql = await getSql();
 	const company = await loadCompany(sql);
+	if (data.tipo === "cuenta") {
+		const [sup] = await sql.query(`select id, name, contact_name, phone, email, city, country from suppliers where share_token = $1`, [data.token]);
+		if (!sup) throw new Error("Productor no encontrado");
+		const account = await loadGrowerAccount(sql, sup.id);
+		const dmy = (iso: string | null) => iso ? iso.slice(0, 10).split("-").reverse().join("/") : "";
+		const entries = [
+			...account.advances.filter((a) => !a.cancelled_at).map((a) => ({
+				date: a.advance_date,
+				sku: a.advance_number,
+				description: `${dmy(a.advance_date)} · Adelanto — ${a.concept}${a.po_number ? ` · carga ${a.po_number}` : ""}`,
+				amount: a.amount
+			})),
+			...account.applications.map((ap) => ({
+				date: ap.created_at,
+				sku: ap.advance_number,
+				description: `${dmy(ap.created_at)} · Recuperación en liquidación ${ap.bill_number}${ap.po_number ? ` · ${ap.po_number}` : ""}`,
+				amount: -ap.amount
+			}))
+		].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+		return {
+			id: sup.id,
+			tipo: "cuenta" as const,
+			kindLabel: "Grower Statement",
+			number: `CTA-${String(sup.id).padStart(3, "0")}`,
+			date: todayISO(),
+			due: null,
+			terms: null,
+			reference: null,
+			partyTitle: "Productor",
+			party: partyOf(sup),
+			shipTitle: null,
+			ship: null,
+			lines: entries.map((e) => ({
+				sku: e.sku,
+				description: e.description,
+				qty: 1,
+				unit: "",
+				unit_price: e.amount,
+				amount: e.amount
+			})),
+			subtotal: account.balance,
+			total: account.balance,
+			notes: "Saldo vivo de adelantos a la fecha. Los adelantos otorgados se recuperan contra liquidaciones futuras del productor.",
+			showPaca: false,
+			company
+		};
+	}
 	if ((data.tipo === "pick" || data.tipo === "bol" || data.tipo === "confirm" ? "ov" : data.tipo) === "factura") {
 		const [inv] = await sql.query(`select i.id, i.invoice_number, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.notes,
                 so.so_number, c.name as customer_name, c.contact_name, c.phone, c.email, c.city, c.payment_terms
@@ -3079,6 +3303,8 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([modul
 	const invVal = await sql.query(`select coalesce(sum(current_qty * coalesce(unit_cost,0)),0)::text as v from lots where current_qty > 0`);
 	const billPayable = await sql.query(`select coalesce(sum(total - paid),0)::text as v from supplier_bills where status <> 'cancelled'`);
 	const expPayable = await sql.query(`select coalesce(sum(amount - paid),0)::text as v from expenses where payable = true`);
+	// Adelantos vivos a productores: activo circulante (CxC al productor).
+	const advRows = await sql.query(`select coalesce(sum(amount - recovered),0)::text as v from grower_advances where cancelled_at is null`);
 	const accounts = await sql.query(`
     select number, name, kind, statement, subtype, parent_number, starting_balance::text, sort_order, description, tracking_start::text
     from gl_accounts where is_active = true order by sort_order
@@ -3117,6 +3343,7 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([modul
 			return Object.entries(expByCat).reduce((s, [k, v]) => s + (known.has(k) ? 0 : v), 0);
 		}
 		if (number === "12000") return ar;
+		if (number === "12500") return n(advRows[0]?.v);
 		if (number === "13000") return inventory;
 		if (number === "14000") return 0;
 		if (number === "16000") return starting + cashBal;
@@ -3680,6 +3907,8 @@ async function wipeLiveActivity(sql: any) {
 	const billIds = await ids(`select id from supplier_bills where purchase_order_id is not null`);
 	const expIds = await ids(`select id from expenses`);
 	await sql.query(`delete from payment_applications`);
+	await sql.query(`delete from grower_advance_applications`);
+	await sql.query(`delete from grower_advances`);
 	await sql.query(`update bank_lines set cash_movement_id = null`);
 	await sql.query(`delete from bank_lines`);
 	await sql.query(`delete from cash_movements where folio <> 'CORTE-CHASE'`);
