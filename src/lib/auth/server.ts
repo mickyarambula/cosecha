@@ -86,13 +86,29 @@ const grokClientSecret = env("GROK_AUTH_CLIENT_SECRET") ?? PREVIEW_CLIENT_SECRET
 export const authConfigured =
   !authDisabled && Boolean(grokClientId && grokClientSecret);
 
+// Vercel sets these automatically on every deployment it builds — prod AND
+// every preview branch — with no per-app or per-branch config needed:
+//   VERCEL_URL         this exact deployment's own unique *.vercel.app host
+//   VERCEL_BRANCH_URL  the branch's stable alias host (same across re-pushes)
+const vercelBranchHost = env("VERCEL_BRANCH_URL");
+
 // This app's own Better Auth origin. When deployed the deployer injects the
 // public URL. In the sandbox live preview there's no fixed URL (each preview gets
 // a dynamic `*.grok-sandbox.com` host), so we hand Better Auth a dynamic baseURL:
 // it derives the origin per-request from the (proxied) host, validated against the
 // preview allowlist, which makes the OAuth `redirect_uri` the concrete preview URL
 // the broker's preview client accepts.
-const explicitBaseURL = env("BETTER_AUTH_URL");
+//
+// On a Vercel PREVIEW branch neither applies: the host is `*.vercel.app`, which
+// is not in the sandbox allowlist, so the dynamic config collapsed to the
+// `http://localhost:8080` fallback and every preview branch needed its own
+// hand-added BETTER_AUTH_URL. Falling back to the branch's own stable alias
+// makes each preview self-consistent with no per-branch config. Production sets
+// BETTER_AUTH_URL explicitly, so `??` short-circuits and this never applies
+// there — and if it ever went missing, a real https origin still beats
+// `localhost:8080`.
+const explicitBaseURL =
+  env("BETTER_AUTH_URL") ?? (vercelBranchHost ? `https://${vercelBranchHost}` : undefined);
 // Explicit `string[]` (not a readonly tuple) — Better Auth's DynamicBaseURLConfig
 // requires a mutable `allowedHosts: string[]`.
 const previewAllowedHosts: string[] = [...PREVIEW_ALLOWED_HOSTS];
@@ -114,15 +130,12 @@ const baseURL = explicitBaseURL ?? {
   fallback: "http://localhost:8080",
 };
 
-// Vercel sets these automatically on every deployment it builds — prod AND
-// every preview branch — with no per-app or per-branch config needed:
-//   VERCEL_URL         this exact deployment's own unique *.vercel.app host
-//   VERCEL_BRANCH_URL  the branch's stable alias host (same across re-pushes)
-// Trusting them lets a preview deployment's email/password sign-in work (the
-// browser's Origin header is the preview's own host, not BETTER_AUTH_URL)
-// without touching BETTER_AUTH_URL itself — that stays pinned to the real
-// prod domain, so prod's origin-checking and OAuth redirects are unaffected.
-const vercelDeploymentOrigins: string[] = [env("VERCEL_URL"), env("VERCEL_BRANCH_URL")]
+// Trusting both Vercel hosts (see `vercelBranchHost` above) lets a preview
+// deployment's email/password sign-in work from EITHER the branch alias or this
+// exact deployment's unique URL — the browser's Origin is whichever one the
+// person opened, not necessarily BETTER_AUTH_URL. On prod BETTER_AUTH_URL stays
+// pinned to the real domain, so prod's origin-checking and OAuth are unaffected.
+const vercelDeploymentOrigins: string[] = [env("VERCEL_URL"), vercelBranchHost]
   .filter((host): host is string => Boolean(host))
   .map((host) => `https://${host}`);
 
