@@ -797,12 +797,14 @@ export const setDefaultCustomerLocation = createServerFn({ method: "POST" }).val
 export const listLocations = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	return (await getSql()).query(`
     select loc.id, loc.code, loc.name, loc.location_type, loc.city, loc.owner_kind, loc.contact_name, loc.notes,
+           loc.set_point_temp::text, loc.set_point_unit,
            coalesce((select sum(quantity) from inventory where location_id = loc.id), 0)::text as lot_qty
     from locations loc
     where loc.is_active
     order by loc.id
   `).then((rows) => rows.map((r) => ({
 		...r,
+		set_point_temp: r.set_point_temp == null ? null : n(r.set_point_temp),
 		lot_qty: n(r.lot_qty)
 	})));
 });
@@ -1606,14 +1608,15 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
 	const lines = await sql.query(`
     select l.id, l.purchase_order_id, l.product_id, p.name as product_name, l.pack_style_id,
            l.quantity_ordered::text, l.quantity_received::text, l.unit, l.unit_cost::text,
-           ps.sku_code, ps.empaque, ps.calibre,
-           l.pallets::text, l.units_per_pallet::text, l.origin_country
+           ps.sku_code, ps.empaque, ps.calibre, ps.net_weight::text, coalesce(ps.weight_unit,'lb') as weight_unit,
+           l.pallets::text, l.units_per_pallet::text, l.origin_country,
+           p.storage_temp_min::text, p.storage_temp_max::text, p.storage_temp_unit
     from purchase_order_lines l
     join products p on p.id = l.product_id
     left join pack_styles ps on ps.id = l.pack_style_id
   `);
 	const recs = await sql.query(`
-    select r.id, r.purchase_order_id, r.received_date::text, rl.result, rl.quantity::text,
+    select r.id, r.purchase_order_id, rl.purchase_order_line_id, r.received_date::text, rl.result, rl.quantity::text,
            ls.lot_number as lot_sano, lr.lot_number as lot_retenido, p.name as product_name, r.warning
     from receptions r
     join reception_lines rl on rl.reception_id = r.id
@@ -1636,7 +1639,11 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
 			quantity_received: n(l.quantity_received),
 			unit_cost: n(l.unit_cost),
 			pallets: n(l.pallets),
-			units_per_pallet: n(l.units_per_pallet)
+			units_per_pallet: n(l.units_per_pallet),
+			net_weight: l.net_weight == null ? null : n(l.net_weight),
+			storage_temp_min: l.storage_temp_min == null ? null : n(l.storage_temp_min),
+			storage_temp_max: l.storage_temp_max == null ? null : n(l.storage_temp_max),
+			storage_temp_unit: l.storage_temp_unit
 		}));
 		const poExpenses = expenses.filter((e) => e.purchase_order_id === o.id).map((e) => ({
 			...e,
@@ -1725,6 +1732,121 @@ export const createPurchaseOrder = createServerFn({ method: "POST" }).validator(
 	return {
 		id,
 		po_number
+	};
+});
+/**
+ * Edita de verdad una OC ya creada — no el modal de recepción. Qué tan lejos
+ * se puede editar depende de cuánto ya pasó en el mundo real:
+ *   - Ya facturada al proveedor (bill activa): solo referencia y notas.
+ *     Proveedor, modalidad, comisión, líneas y cantidades quedan fijas.
+ *   - Ya con mercancía recibida (sin bill todavía): proveedor y modalidad
+ *     quedan fijos (cambiarlos rompería cómo se costeó/recibió), no se
+ *     agregan ni quitan líneas ni se cambia el producto de una existente,
+ *     y la cantidad no puede bajar de lo ya recibido. Costo, pallets,
+ *     cajas/pallet y origen sí se pueden corregir. La comisión sigue
+ *     editable (igual que desde el settlement).
+ *   - Nada recibido todavía: la orden es un borrador real — todo editable,
+ *     incluyendo reemplazar las líneas por completo.
+ */
+export const updatePurchaseOrder = createServerFn({ method: "POST" }).validator(z.object({
+	purchase_order_id: z.number(),
+	supplier_id: z.number(),
+	deal_type: z.enum(["firme", "consignacion", "comision"]),
+	commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).optional(),
+	commission_rate: z.number().min(0).optional(),
+	expected_date: z.string().optional(),
+	notes: z.string().optional(),
+	order_type: z.string().optional(),
+	bol: z.string().optional(),
+	vendor_invoice: z.string().optional(),
+	shipping_ref: z.string().optional(),
+	lines: z.array(z.object({
+		id: z.number().optional(),
+		product_id: z.number(),
+		pack_style_id: z.number().optional(),
+		quantity_ordered: z.number().positive(),
+		unit: z.string(),
+		unit_cost: z.number().optional(),
+		pallets: z.number().optional(),
+		units_per_pallet: z.number().optional(),
+		origin_country: z.string().optional()
+	})).min(1)
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [po] = await sql.query(`select id, po_number, supplier_id, coalesce(deal_type,'firme') as deal_type from purchase_orders where id = $1`, [data.purchase_order_id]);
+	if (!po) throw new Error("Orden de compra no encontrada");
+	const [bill] = await sql.query(`select id from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`, [data.purchase_order_id]);
+	const existingLines = await sql.query(`select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text from purchase_order_lines where purchase_order_id = $1`, [data.purchase_order_id]);
+	const received = existingLines.some((l) => n(l.quantity_received) > 1e-4);
+	if (bill) {
+		if (data.supplier_id !== po.supplier_id) throw new Error("Esta orden ya tiene factura de proveedor — no se puede cambiar el proveedor.");
+		if (data.deal_type !== po.deal_type) throw new Error("Esta orden ya tiene factura de proveedor — no se puede cambiar la modalidad.");
+		if (data.lines.length !== existingLines.length) throw new Error("Esta orden ya tiene factura de proveedor — no se pueden agregar ni quitar líneas.");
+		for (const line of data.lines) {
+			const cur = existingLines.find((l) => l.id === line.id);
+			if (!cur) throw new Error("Esta orden ya tiene factura de proveedor — no se pueden agregar líneas nuevas.");
+			if (Math.abs(n(cur.quantity_ordered) - line.quantity_ordered) > 1e-4) throw new Error("Esta orden ya tiene factura de proveedor — no se puede cambiar la cantidad.");
+		}
+	} else if (received) {
+		if (data.supplier_id !== po.supplier_id) throw new Error("Esta orden ya tiene mercancía recibida — no se puede cambiar el proveedor.");
+		if (data.deal_type !== po.deal_type) throw new Error("Esta orden ya tiene mercancía recibida — no se puede cambiar la modalidad.");
+		if (data.lines.length !== existingLines.length) throw new Error("Esta orden ya tiene mercancía recibida — no se pueden agregar ni quitar líneas.");
+		for (const line of data.lines) {
+			const cur = existingLines.find((l) => l.id === line.id);
+			if (!cur) throw new Error("Esta orden ya tiene mercancía recibida — no se pueden agregar líneas nuevas.");
+			if (cur.product_id !== line.product_id || (cur.pack_style_id ?? null) !== (line.pack_style_id ?? null)) throw new Error("No se puede cambiar el producto de una línea ya recibida.");
+			if (line.quantity_ordered < n(cur.quantity_received) - 1e-4) throw new Error(`No se puede bajar la cantidad por debajo de lo ya recibido (${n(cur.quantity_received)}).`);
+		}
+	}
+	if (data.deal_type === "firme") {
+		if (data.lines.some((l) => !(n(l.unit_cost) > 0))) throw new Error("Trato en firme: captura el costo de cada línea — es un precio cerrado.");
+	} else if (data.lines.some((l) => l.unit_cost != null)) {
+		throw new Error("En consignación o comisión no se captura costo — se define al liquidar, después de vender.");
+	}
+	if (data.commission_type != null && !(n(data.commission_rate) > 0)) throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
+	const withCommission = data.deal_type !== "firme" && data.commission_type != null;
+	await sql.query(`update purchase_orders set supplier_id=$1, deal_type=$2, expected_date=$3, notes=$4, order_type=$5, bol=$6, vendor_invoice=$7, shipping_ref=$8, commission_type=$9, commission_rate=$10 where id=$11`, [
+		data.supplier_id,
+		data.deal_type,
+		data.expected_date || null,
+		data.notes || null,
+		data.order_type || "entrega",
+		data.bol || null,
+		data.vendor_invoice || null,
+		data.shipping_ref || null,
+		withCommission ? data.commission_type : null,
+		withCommission ? data.commission_rate : null,
+		po.id
+	]);
+	if (!bill && !received) {
+		await sql.query(`delete from purchase_order_lines where purchase_order_id = $1`, [po.id]);
+		for (const line of data.lines) await sql.query(`insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, pallets, units_per_pallet, origin_country)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [
+			po.id,
+			line.product_id,
+			line.pack_style_id ?? null,
+			line.quantity_ordered,
+			line.unit,
+			line.unit_cost ?? null,
+			line.pallets ?? null,
+			line.units_per_pallet ?? null,
+			line.origin_country || null
+		]);
+	} else if (!bill) {
+		for (const line of data.lines) await sql.query(`update purchase_order_lines set quantity_ordered=$1, unit_cost=$2, pallets=$3, units_per_pallet=$4, origin_country=$5
+         where id=$6 and purchase_order_id=$7`, [
+			line.quantity_ordered,
+			line.unit_cost ?? null,
+			line.pallets ?? null,
+			line.units_per_pallet ?? null,
+			line.origin_country || null,
+			line.id,
+			po.id
+		]);
+	}
+	return {
+		ok: true,
+		po_number: po.po_number
 	};
 });
 export const listExpenses = createServerFn({ method: "GET" }).middleware([moduleMiddleware("finance")]).handler(async () => {
@@ -2284,9 +2406,18 @@ export const extractCustomerPO = createServerFn({ method: "POST" }).validator((f
 export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator(z.object({
 	sales_order_id: z.number(),
 	supplier_id: z.number(),
-	unit_cost: z.number().positive(),
+	deal_type: z.enum(["firme", "consignacion", "comision"]).default("firme"),
+	unit_cost: z.number().positive().optional(),
+	commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).optional(),
+	commission_rate: z.number().min(0).optional(),
 	notes: z.string().optional()
 })).middleware([authMiddleware]).handler(async ({ data }) => {
+	if (data.deal_type === "firme") {
+		if (!(n(data.unit_cost) > 0)) throw new Error("Trato en firme: captura el costo — es un precio cerrado.");
+	} else if (data.unit_cost != null) {
+		throw new Error("En consignación o comisión no se captura costo — se define al liquidar, después de vender.");
+	}
+	if (data.commission_type != null && !(n(data.commission_rate) > 0)) throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
 	const sql = await getSql();
 	const [so] = await sql.query(`select id, so_number, status from sales_orders where id = $1`, [data.sales_order_id]);
 	if (!so) throw new Error("Orden de venta no encontrada");
@@ -2309,14 +2440,16 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator
 	}).filter((l) => l.remaining > 1e-4);
 	if (!toBuy.length) throw new Error("Esta venta ya tiene compra por todo lo pedido");
 	const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
-	// Cruce: siempre en firme — se compra a un costo conocido específicamente
-	// para surtir esta venta, nunca en consignación ni a comisión.
-	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, deal_type, status, notes, sales_order_id)
-       values ($1,$2,'firme','confirmed',$3,$4) returning id`, [
+	const withCommission = data.deal_type !== "firme" && data.commission_type != null;
+	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, deal_type, status, notes, sales_order_id, commission_type, commission_rate)
+       values ($1,$2,$3,'confirmed',$4,$5,$6,$7) returning id`, [
 		po_number,
 		data.supplier_id,
+		data.deal_type,
 		data.notes || `Generada desde ${so.so_number}`,
-		so.id
+		so.id,
+		withCommission ? data.commission_type : null,
+		withCommission ? data.commission_rate : null
 	]))[0].id;
 	for (const line of toBuy) {
 		let packId = line.pack_style_id;
@@ -2331,7 +2464,7 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator
 			packId,
 			line.remaining,
 			line.unit,
-			data.unit_cost
+			data.deal_type === "firme" ? data.unit_cost : null
 		]);
 	}
 	return {
@@ -2456,7 +2589,14 @@ export const createBillFromPO = createServerFn({ method: "POST" }).validator(z.o
 	if (po.deal_type === "consignacion" && !lines.some((l) => n(l.unit_cost) > 0)) {
 		throw new Error("Este trato es en consignación: el costo se define al liquidar, después de vender. Corre \"Calculate settlement\" primero.");
 	}
-	const total = lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0);
+	// En firme el costo lo capturó Miguel, así que qty × costo ya es exacto.
+	// En consignación liquidada, el costo/unidad que se guardó en cada línea
+	// viene de redondear a 4 decimales el resultado de repartir el neto entre
+	// las cajas — al multiplicar de vuelta por la cantidad, ese redondeo se
+	// puede notar un centavo. Para que la bill cuadre exacto con lo que
+	// Miguel vio en el settlement, se usa el neto ya calculado ahí
+	// (loadSettlement hace la misma cuenta, sin pasar por ese redondeo).
+	const total = po.deal_type === "firme" ? lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0) : Math.round((await loadSettlement(sql, po.id)).inventory_total * 100) / 100;
 	const issue = todayISO();
 	const bill_number = await nextCode(sql, "supplier_bills", "bill_number", "FAC-");
 	return {

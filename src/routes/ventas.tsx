@@ -80,7 +80,13 @@ function Page() {
   const [draft, setDraft] = useState({ customer_id: "", notes: "", requested: todayISO(), type: "Delivery to customer" });
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [shipForm, setShipForm] = useState({ quantity: "", lot_id: "", location_id: "" });
-  const [buyForm, setBuyForm] = useState({ supplier_id: "", unit_cost: "" });
+  const [buyForm, setBuyForm] = useState({
+    supplier_id: "",
+    deal_type: "firme",
+    unit_cost: "",
+    commission_type: "",
+    commission_rate: "",
+  });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -190,13 +196,18 @@ function Page() {
   async function generarCompra(e: React.FormEvent) {
     e.preventDefault();
     if (!buy) return;
+    const isFirme = buyForm.deal_type === "firme";
+    const withCommission = !isFirme && buyForm.commission_type && Number(buyForm.commission_rate) > 0;
     setSaving(true);
     try {
       const r = await createPurchaseFromSO({
         data: {
           sales_order_id: buy.so_id,
           supplier_id: Number(buyForm.supplier_id),
-          unit_cost: Number(buyForm.unit_cost),
+          deal_type: buyForm.deal_type as "firme" | "consignacion" | "comision",
+          unit_cost: isFirme ? Number(buyForm.unit_cost) : undefined,
+          commission_type: withCommission ? (buyForm.commission_type as "per_unit" | "gross_pct" | "net_pct") : undefined,
+          commission_rate: withCommission ? Number(buyForm.commission_rate) : undefined,
         },
       });
       setBuy(null);
@@ -503,7 +514,10 @@ function Page() {
                               setShipForm({ quantity: String(line.open), lot_id: "", location_id: "" });
                             }}
                             onInvoice={() => void facturar(row.id)}
-                            onBuy={() => setBuy({ so_id: row.id, so_number: row.so_number, openQty: row.lines.reduce((s, l) => s + l.open, 0) })}
+                            onBuy={() => {
+                              setBuyForm({ supplier_id: "", deal_type: "firme", unit_cost: "", commission_type: "", commission_rate: "" });
+                              setBuy({ so_id: row.id, so_number: row.so_number, openQty: row.lines.reduce((s, l) => s + l.open, 0) });
+                            }}
                             onCredit={() => setCredit(row.id)}
                             onCancel={() => setCancelSo({ id: row.id, so_number: row.so_number })}
                             saving={saving}
@@ -561,7 +575,20 @@ function Page() {
         <Modal title="Generate purchase from SO" subtitle={buy.so_number} onClose={() => setBuy(null)}>
           <form className="grid gap-3" onSubmit={generarCompra}>
             <Field label="Vendor">
-              <Select required value={buyForm.supplier_id} onChange={(e) => setBuyForm({ ...buyForm, supplier_id: e.target.value })}>
+              <Select
+                required
+                value={buyForm.supplier_id}
+                onChange={(e) => {
+                  const supplier_id = e.target.value;
+                  const sup = (suppliers.data ?? []).find((s) => String(s.id) === supplier_id);
+                  setBuyForm({
+                    ...buyForm,
+                    supplier_id,
+                    commission_type: sup?.commission_type ?? "",
+                    commission_rate: sup?.commission_rate != null ? String(sup.commission_rate) : "",
+                  });
+                }}
+              >
                 <option value="">Select</option>
                 {(suppliers.data ?? []).map((s) => (
                   <option key={s.id} value={s.id}>
@@ -570,9 +597,47 @@ function Page() {
                 ))}
               </Select>
             </Field>
-            <Field label="Unit cost">
-              <Input required value={buyForm.unit_cost} onChange={(e) => setBuyForm({ ...buyForm, unit_cost: e.target.value })} />
+            <Field label="Deal type">
+              <Select
+                required
+                value={buyForm.deal_type}
+                onChange={(e) => setBuyForm({ ...buyForm, deal_type: e.target.value, unit_cost: "" })}
+              >
+                <option value="firme">Firme (precio cerrado)</option>
+                <option value="consignacion">Consignación (PAS)</option>
+                <option value="comision">Comisión pura</option>
+              </Select>
             </Field>
+            {buyForm.deal_type === "firme" ? (
+              <Field label="Unit cost">
+                <Input required value={buyForm.unit_cost} onChange={(e) => setBuyForm({ ...buyForm, unit_cost: e.target.value })} />
+              </Field>
+            ) : (
+              <Field label="Plein commission">
+                <div className="flex gap-2">
+                  <Select
+                    value={buyForm.commission_type}
+                    onChange={(e) => setBuyForm({ ...buyForm, commission_type: e.target.value })}
+                  >
+                    <option value="">Sin comisión</option>
+                    <option value="per_unit">Por caja ($)</option>
+                    <option value="gross_pct">% venta bruta</option>
+                    <option value="net_pct">% sobre neto</option>
+                  </Select>
+                  <Input
+                    className="w-24"
+                    placeholder={buyForm.commission_type === "per_unit" ? "$" : "%"}
+                    value={buyForm.commission_rate}
+                    onChange={(e) => setBuyForm({ ...buyForm, commission_rate: e.target.value })}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  {buyForm.deal_type === "consignacion"
+                    ? "El costo se define al liquidar, después de vender."
+                    : "Plein no compra la fruta — el costo del lote se queda en $0."}
+                </p>
+              </Field>
+            )}
             <Button type="submit" disabled={saving}>
               Create PO
             </Button>
