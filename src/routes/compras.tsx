@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Printer } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Printer, Trash2 } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { MetaCard, Modal } from "@/components/app-shell";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
@@ -54,6 +54,7 @@ export const Route = createFileRoute("/compras")({
 type RecLine = {
   line_id: number;
   product_name: string;
+  sku_code: string | null;
   unit: string;
   pedido: number;
   recibido: number;
@@ -79,6 +80,8 @@ type DraftLine = {
   markup: string;
   netWeight: number | null;
   weightUnit: string;
+  skuCode: string | null;
+  calibre: string | null;
 };
 
 function ceilPallets(qty: string, unitsPerPallet: string): string {
@@ -143,6 +146,7 @@ function Page() {
   const [recvPo, setRecvPo] = useState<number | null>(null);
   const [picker, setPicker] = useState(false);
   const [expenseFor, setExpenseFor] = useState<"draft" | number | null>(null);
+  const [expMsg, setExpMsg] = useState<string | null>(null);
   const [shareId, setShareId] = useState<number | null>(null);
   const [shareLevel, setShareLevel] = useState<"po" | "basic" | "detailed">("po");
   const [settleId, setSettleId] = useState<number | null>(null);
@@ -226,6 +230,8 @@ function Page() {
         markup: "",
         netWeight: sku.net_weight,
         weightUnit: sku.weight_unit,
+        skuCode: sku.sku_code || null,
+        calibre: sku.calibre || null,
       },
     ]);
     setPicker(false);
@@ -279,7 +285,15 @@ function Page() {
 
   async function saveExpense() {
     const poId = expenseFor === "draft" ? undefined : expenseFor ?? undefined;
-    if (!expDraft.supplier_id && !draft.supplier_id) return;
+    if (!expDraft.supplier_id && !draft.supplier_id) {
+      setExpMsg("Escoge a quién se le paga este gasto.");
+      return;
+    }
+    if (!(Number(expDraft.amount) > 0)) {
+      setExpMsg("Captura el monto del gasto.");
+      return;
+    }
+    setExpMsg(null);
     setSaving(true);
     try {
       await createExpense({
@@ -312,7 +326,10 @@ function Page() {
         const pendiente = Math.max(l.quantity_ordered - l.quantity_received, 0);
         return {
           line_id: l.id,
-          product_name: l.product_name,
+          // Con varias líneas del mismo producto en distinto calibre, el nombre
+          // solo no alcanza para saber cuál estás recibiendo.
+          product_name: [l.product_name, l.calibre].filter(Boolean).join(" · "),
+          sku_code: l.sku_code || null,
           unit: l.unit,
           pedido: l.quantity_ordered,
           recibido: l.quantity_received,
@@ -547,6 +564,7 @@ function Page() {
                   <th className="px-3 py-2 font-medium">Cost</th>
                   <th className="px-3 py-2 font-medium">B/E</th>
                   {draft.deal_type === "firme" ? <th className="px-3 py-2 font-medium">$ Markup</th> : null}
+                  <th className="w-10 px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
@@ -555,7 +573,11 @@ function Page() {
                   return (
                   <tr key={l.key} className="border-b border-border align-top">
                     <td className="px-3 py-3">
-                      <div className="font-medium">{i + 1}. {l.name}</div>
+                      <div className="font-medium">
+                        {i + 1}. {l.name}
+                        {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">{l.calibre}</span> : null}
+                      </div>
+                      {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
                         <span>{l.unit}</span>
                         <Input
@@ -633,6 +655,17 @@ function Page() {
                         />
                       </td>
                     ) : null}
+                    <td className="px-3 py-3">
+                      <button
+                        type="button"
+                        title="Quitar línea"
+                        aria-label={`Quitar ${l.name}`}
+                        className="cursor-pointer rounded p-1 text-subtle hover:bg-danger/10 hover:text-danger"
+                        onClick={() => setLines((p) => p.filter((x) => x.key !== l.key))}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </td>
                   </tr>
                   );
                 })}
@@ -696,9 +729,10 @@ function Page() {
             suppliers={suppliers.data ?? []}
             form={expDraft}
             setForm={setExpDraft}
-            onClose={() => setExpenseFor(null)}
+            onClose={() => { setExpenseFor(null); setExpMsg(null); }}
             onSave={() => void saveExpense()}
             saving={saving}
+            msg={expMsg}
           />
         ) : null}
       </div>
@@ -897,6 +931,7 @@ function Page() {
                   <p className="text-sm font-medium">
                     {l.product_name} · pending {qty(l.pendiente, l.unit)}
                   </p>
+                  {l.sku_code ? <p className="text-xs text-subtle">{l.sku_code}</p> : null}
                   <div className="mt-2 grid gap-2 sm:grid-cols-2">
                     <Field label="Result">
                       <Select value={l.resultado} onChange={(e) => setRecLines((p) => p.map((x, idx) => (idx === i ? { ...x, resultado: e.target.value } : x)))}>
@@ -943,9 +978,10 @@ function Page() {
           suppliers={suppliers.data ?? []}
           form={expDraft}
           setForm={setExpDraft}
-          onClose={() => setExpenseFor(null)}
+          onClose={() => { setExpenseFor(null); setExpMsg(null); }}
           onSave={() => void saveExpense()}
           saving={saving}
+          msg={expMsg}
         />
       ) : null}
 
@@ -1162,7 +1198,9 @@ function PoDetail({
                 <td className="px-3 py-3">
                   <div className="font-medium">
                     {i + 1}. {l.product_name}
+                    {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">{l.calibre}</span> : null}
                   </div>
+                  {l.sku_code ? <div className="text-xs text-subtle">{l.sku_code}</div> : null}
                   <div className="text-xs text-muted">
                     {l.unit} · {l.origin_country || "MX"}
                   </div>
@@ -1335,6 +1373,8 @@ function EditOrderModal({
       product_id: l.product_id,
       pack_style_id: l.pack_style_id ?? undefined,
       name: l.product_name,
+      calibre: l.calibre || null,
+      skuCode: l.sku_code || null,
       unit: l.unit,
       origin: l.origin_country || "MX",
       qty: String(l.quantity_ordered),
@@ -1358,6 +1398,8 @@ function EditOrderModal({
         product_id: sku.product_id,
         pack_style_id: sku.id || undefined,
         name: sku.product_name,
+        calibre: sku.calibre || null,
+        skuCode: sku.sku_code || null,
         unit: sku.empaque || sku.unit || sku.name,
         origin: "MX",
         qty: "48",
@@ -1515,7 +1557,11 @@ function EditOrderModal({
             {lines.map((l, i) => (
               <tr key={i} className="border-b border-border align-top">
                 <td className="px-3 py-3">
-                  <div className="font-medium">{i + 1}. {l.name}</div>
+                  <div className="font-medium">
+                    {i + 1}. {l.name}
+                    {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">{l.calibre}</span> : null}
+                  </div>
+                  {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
                   <div className="text-xs text-muted">{l.unit}{l.received > 0 ? ` · ${l.received} recibidas` : ""}</div>
                 </td>
                 <td className="px-3 py-3">
@@ -1576,6 +1622,48 @@ function EditOrderModal({
         </table>
       </div>
 
+      <p className="mt-5 text-sm font-semibold">Gastos de esta orden</p>
+      {row.expenses.length ? (
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full min-w-[700px] text-left text-sm">
+            <thead className="bg-surface-2 text-xs text-muted">
+              <tr>
+                <th className="px-3 py-2 font-medium">Concepto</th>
+                <th className="px-3 py-2 font-medium">Monto</th>
+                <th className="px-3 py-2 font-medium">Lo paga</th>
+                <th className="px-3 py-2 font-medium">Estado</th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {row.expenses.map((e) => (
+                <tr key={e.id} className="border-b border-border">
+                  <td className="px-3 py-2">
+                    {e.category}
+                    <div className="text-xs text-subtle">{e.expense_number}</div>
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">{money(e.amount)}</td>
+                  <td className="px-3 py-2 text-xs">{e.charged_to === "grower" ? "Productor" : "Plein"}</td>
+                  <td className="px-3 py-2 text-xs">{e.payable ? "Por pagar" : "Pagado"}</td>
+                  <td className="px-3 py-2 text-right">
+                    <Link to="/gastos" search={{ tab: "expenses", expense: e.id }} className="text-xs text-link">
+                      Corregir
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {billed ? (
+            <p className="mt-2 text-xs text-warn">
+              Esta orden ya se liquidó — los montos de estos gastos quedaron congelados en la liquidación.
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm text-muted">Esta orden no tiene gastos capturados.</p>
+      )}
+
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>
           Cancel
@@ -1596,6 +1684,7 @@ function ExpenseModal({
   onClose,
   onSave,
   saving,
+  msg,
 }: {
   suppliers: { id: number; name: string }[];
   form: {
@@ -1612,9 +1701,11 @@ function ExpenseModal({
   onClose: () => void;
   onSave: () => void;
   saving: boolean;
+  msg?: string | null;
 }) {
   return (
     <Modal title="Create Expense and Connect to Order" onClose={onClose} wide>
+      {msg ? <p className="mb-3 text-sm text-danger">{msg}</p> : null}
       <div className="grid gap-3 sm:grid-cols-4">
         <Field label="Type *">
           <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} />

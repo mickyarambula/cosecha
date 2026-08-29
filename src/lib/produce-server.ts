@@ -1135,7 +1135,7 @@ async function loadSettlement(sql, purchase_order_id: number) {
 	if (!po) throw new Error("Purchase order not found");
 	const expenses = await sql.query(`select id, category, notes, amount::text, coalesce(alloc_by,'pallet') as alloc_by,
               coalesce(charged_to,'plein') as charged_to
-       from expenses where purchase_order_id = $1 order by id`, [purchase_order_id]);
+       from expenses where purchase_order_id = $1 and cancelled_at is null order by id`, [purchase_order_id]);
 	const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
 	const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
 	const lotsRaw = await loadPoLots(sql, purchase_order_id);
@@ -1221,7 +1221,7 @@ export const applySettlement = createServerFn({ method: "POST" }).validator(z.ob
 	if (data.target_profit_pct != null) await sql.query(`update purchase_orders set target_profit_pct = $1 where id = $2`, [data.target_profit_pct, data.purchase_order_id]);
 	const expenses = await sql.query(`select id, category, notes, amount::text, coalesce(alloc_by,'pallet') as alloc_by,
               coalesce(charged_to,'plein') as charged_to
-       from expenses where purchase_order_id = $1`, [data.purchase_order_id]);
+       from expenses where purchase_order_id = $1 and cancelled_at is null`, [data.purchase_order_id]);
 	const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
 	const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
 	const lotsRaw = await loadPoLots(sql, data.purchase_order_id);
@@ -1629,8 +1629,10 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
 	const bills = await sql.query(`select purchase_order_id, bill_number, status from supplier_bills where purchase_order_id is not null`);
 	const expenses = await sql.query(`
     select id, purchase_order_id, expense_number, category, quantity::text, unit_cost::text,
-           amount::text, invoice_number, status, notes
-    from expenses
+           amount::text, invoice_number, status, notes, payable,
+           coalesce(alloc_by,'pallet') as alloc_by, coalesce(charged_to,'plein') as charged_to,
+           supplier_id
+    from expenses where cancelled_at is null
   `);
 	return orders.map((o) => {
 		const poLines = lines.filter((l) => l.purchase_order_id === o.id).map((l) => ({
@@ -1854,7 +1856,8 @@ export const listExpenses = createServerFn({ method: "GET" }).middleware([module
     select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
            e.purchase_order_id, po.po_number, e.quantity::text, e.unit_cost::text,
            e.amount::text, e.invoice_number, e.payable, e.status, e.issue_date::text,
-           e.paid::text, e.notes, coalesce(e.charged_to,'plein') as charged_to
+           e.paid::text, e.notes, coalesce(e.charged_to,'plein') as charged_to,
+           coalesce(e.alloc_by,'pallet') as alloc_by, e.cancelled_at::text, e.cancel_reason
     from expenses e
     join suppliers s on s.id = e.supplier_id
     left join purchase_orders po on po.id = e.purchase_order_id
@@ -1891,26 +1894,146 @@ export const createExpense = createServerFn({ method: "POST" }).validator(z.obje
 	const amount = data.amount;
 	const paid = payable ? 0 : amount;
 	const status = payable ? "open" : "paid";
-	return {
-		id: (await sql.query(`insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to)
+	const id = (await sql.query(`insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`, [
-			expense_number,
-			data.category,
-			data.supplier_id,
-			data.purchase_order_id ?? null,
-			data.quantity ?? 1,
-			data.unit_cost ?? amount,
-			amount,
-			data.invoice_number || null,
-			payable,
-			status,
-			todayISO(),
-			paid,
-			data.notes || null,
-			data.alloc_by || "pallet",
-			data.charged_to || "plein"
-		]))[0].id,
+		expense_number,
+		data.category,
+		data.supplier_id,
+		data.purchase_order_id ?? null,
+		data.quantity ?? 1,
+		data.unit_cost ?? amount,
+		amount,
+		data.invoice_number || null,
+		payable,
+		status,
+		todayISO(),
+		paid,
+		data.notes || null,
+		data.alloc_by || "pallet",
+		data.charged_to || "plein"
+	]))[0].id;
+	// El detalle del gasto lee expense_po_links; sin esta fila el gasto se veía
+	// "sin ligar" aunque la columna purchase_order_id sí estuviera puesta.
+	if (data.purchase_order_id != null) {
+		await sql.query(`insert into expense_po_links (expense_id, purchase_order_id, amount_applied) values ($1,$2,$3)
+         on conflict (expense_id, purchase_order_id) do update set amount_applied = excluded.amount_applied`, [
+			id,
+			data.purchase_order_id,
+			amount
+		]);
+	}
+	return {
+		id,
 		expense_number
+	};
+});
+// Un gasto ya prorrateado en una liquidación facturada no se puede mover: la
+// bill del productor ya congeló ese número. Devuelve el folio que lo bloquea.
+async function settledBillFor(sql, purchase_order_id: number | null) {
+	if (purchase_order_id == null) return null;
+	const [bill] = await sql.query(`select bill_number from supplier_bills
+     where purchase_order_id = $1 and status <> 'cancelled' order by id desc limit 1`, [purchase_order_id]);
+	return bill ? String(bill.bill_number) : null;
+}
+export const updateExpense = createServerFn({ method: "POST" }).validator(z.object({
+	expense_id: z.number(),
+	category: z.string().min(1),
+	supplier_id: z.number(),
+	purchase_order_id: z.number().nullable().optional(),
+	amount: z.number().positive(),
+	invoice_number: z.string().optional(),
+	notes: z.string().optional(),
+	payable: z.boolean().optional(),
+	alloc_by: z.enum(["pallet", "unit"]).optional(),
+	charged_to: z.enum(["grower", "plein"]).optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [exp] = await sql.query(`select id, amount::text, paid::text, purchase_order_id, status, cancelled_at
+     from expenses where id = $1`, [data.expense_id]);
+	if (!exp) throw new Error("Gasto no encontrado");
+	if (exp.cancelled_at) throw new Error("Este gasto está cancelado — no se puede editar.");
+	const paid = n(exp.paid);
+	const oldPo = exp.purchase_order_id ?? null;
+	// Sin el campo, la orden se queda como está: solo se mueve cuando quien
+	// llama lo pide explícitamente (un null explícito sí la desliga).
+	const nextPo = data.purchase_order_id === undefined ? oldPo : data.purchase_order_id;
+	// El prorrateo al lote se recalcula solo desde los gastos de la OC, así que
+	// mover el monto o la orden cambiaría una liquidación ya facturada.
+	const movesMoney = Math.abs(n(exp.amount) - data.amount) > .009 || nextPo !== oldPo;
+	if (movesMoney) {
+		for (const poId of [oldPo, nextPo]) {
+			const bill = await settledBillFor(sql, poId);
+			if (bill) throw new Error(`La orden de este gasto ya se liquidó en ${bill} — solo puedes corregir datos que no muevan el monto.`);
+		}
+	}
+	if (data.amount < paid - .009) throw new Error(`Ya se pagaron ${paid.toFixed(2)} de este gasto — el monto no puede quedar por debajo.`);
+	const payable = data.payable !== false;
+	const status = payable ? moneyStatus(data.amount, paid) : "paid";
+	await sql.query(`update expenses set category = $1, supplier_id = $2, purchase_order_id = $3, amount = $4,
+       unit_cost = $4, invoice_number = $5, notes = $6, payable = $7, alloc_by = $8, charged_to = $9,
+       paid = $10, status = $11 where id = $12`, [
+		data.category,
+		data.supplier_id,
+		nextPo,
+		data.amount,
+		data.invoice_number || null,
+		data.notes || null,
+		payable,
+		data.alloc_by || "pallet",
+		data.charged_to || "plein",
+		payable ? paid : data.amount,
+		status,
+		data.expense_id
+	]);
+	if (nextPo !== oldPo && oldPo != null) {
+		await sql.query(`delete from expense_po_links where expense_id = $1 and purchase_order_id = $2`, [data.expense_id, oldPo]);
+	}
+	if (nextPo != null) {
+		await sql.query(`insert into expense_po_links (expense_id, purchase_order_id, amount_applied) values ($1,$2,$3)
+         on conflict (expense_id, purchase_order_id) do update set amount_applied = excluded.amount_applied`, [
+			data.expense_id,
+			nextPo,
+			data.amount
+		]);
+	}
+	return { ok: true };
+});
+export const cancelExpense = createServerFn({ method: "POST" }).validator(z.object({
+	expense_id: z.number(),
+	reason: z.string().min(1)
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [exp] = await sql.query(`select e.id, e.expense_number, e.amount::text, e.paid::text, e.purchase_order_id,
+            e.cancelled_at, s.name as supplier_name
+     from expenses e join suppliers s on s.id = e.supplier_id where e.id = $1`, [data.expense_id]);
+	if (!exp) throw new Error("Gasto no encontrado");
+	if (exp.cancelled_at) throw new Error("Este gasto ya está cancelado.");
+	const bill = await settledBillFor(sql, exp.purchase_order_id ?? null);
+	if (bill) throw new Error(`La orden de este gasto ya se liquidó en ${bill} — cancela primero esa liquidación.`);
+	const paid = n(exp.paid);
+	let reversal: string | null = null;
+	// Si ya salió dinero de caja, no se borra: entra un movimiento inverso para
+	// que la caja cuadre y quede el rastro de los dos lados.
+	if (paid > .009) {
+		reversal = await nextCode(sql, "cash_movements", "folio", "MOV-");
+		await sql.query(`insert into cash_movements (folio, mov_date, kind, counterparty, expense_id, amount, notes)
+         values ($1,$2,'pago',$3,$4,$5,$6)`, [
+			reversal,
+			todayISO(),
+			exp.supplier_name,
+			exp.id,
+			paid,
+			`Reverso por cancelación de ${exp.expense_number}: ${data.reason}`
+		]);
+	}
+	// Se suelta el prorrateo y la CxP; el gasto queda visible como cancelado.
+	await sql.query(`delete from expense_po_links where expense_id = $1`, [data.expense_id]);
+	await sql.query(`update expenses set status = 'cancelled', cancelled_at = now(), cancel_reason = $1,
+       payable = false, paid = 0, purchase_order_id = null where id = $2`, [data.reason, data.expense_id]);
+	return {
+		ok: true,
+		expense_number: String(exp.expense_number),
+		reversal
 	};
 });
 export const registerPagoGasto = createServerFn({ method: "POST" }).validator(z.object({
@@ -3117,6 +3240,7 @@ export const listPayables = createServerFn({ method: "GET" }).middleware([module
     from expenses e
     join suppliers s on s.id = e.supplier_id
     left join purchase_orders po on po.id = e.purchase_order_id
+    where e.cancelled_at is null
     order by e.issue_date desc, e.id desc
   `);
 	const pos = await sql.query(`
@@ -3180,8 +3304,10 @@ export const listPayables = createServerFn({ method: "GET" }).middleware([module
 });
 export const listExpenseLinks = createServerFn({ method: "GET" }).validator(z.object({ expense_id: z.number() })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
-	const [exp] = await sql.query(`select e.id, e.expense_number, e.category, s.name as supplier_name, e.invoice_number,
-              e.issue_date::text, e.amount::text, e.payable, e.notes
+	const [exp] = await sql.query(`select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name, e.invoice_number,
+              e.issue_date::text, e.amount::text, e.payable, e.notes, e.paid::text, e.status,
+              e.purchase_order_id, coalesce(e.alloc_by,'pallet') as alloc_by,
+              coalesce(e.charged_to,'plein') as charged_to, e.cancelled_at::text, e.cancel_reason
        from expenses e join suppliers s on s.id = e.supplier_id where e.id = $1`, [data.expense_id]);
 	if (!exp) throw new Error("Expense not found");
 	const links = await sql.query(`select x.purchase_order_id, po.po_number, s.name as supplier_name, po.order_date::text,
@@ -3199,6 +3325,7 @@ export const listExpenseLinks = createServerFn({ method: "GET" }).validator(z.ob
 	return {
 		...exp,
 		amount: n(exp.amount),
+		paid: n(exp.paid),
 		links: links.map((l) => ({
 			...l,
 			amount_applied: n(l.amount_applied),
@@ -3438,11 +3565,11 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([modul
     from sale_line_allocations a
     left join lots on lots.id = a.lot_id
   `);
-	const expenses = await sql.query(`select category, amount::text from expenses`);
+	const expenses = await sql.query(`select category, amount::text from expenses where cancelled_at is null`);
 	const cash = await sql.query(`select amount::text from cash_movements where cancelled_at is null`);
 	const invVal = await sql.query(`select coalesce(sum(current_qty * coalesce(unit_cost,0)),0)::text as v from lots where current_qty > 0`);
 	const billPayable = await sql.query(`select coalesce(sum(total - paid),0)::text as v from supplier_bills where status <> 'cancelled'`);
-	const expPayable = await sql.query(`select coalesce(sum(amount - paid),0)::text as v from expenses where payable = true`);
+	const expPayable = await sql.query(`select coalesce(sum(amount - paid),0)::text as v from expenses where payable = true and cancelled_at is null`);
 	// Adelantos vivos a productores: activo circulante (CxC al productor).
 	const advRows = await sql.query(`select coalesce(sum(amount - recovered),0)::text as v from grower_advances where cancelled_at is null`);
 	const accounts = await sql.query(`

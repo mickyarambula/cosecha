@@ -14,12 +14,16 @@ export function ProductPicker({
   onClose,
   extra,
   stock,
+  unassigned,
 }: {
   skus: SkuOption[];
   onAdd: (sku: SkuOption) => void;
   onClose: () => void;
   extra?: React.ReactNode;
+  /** Existencias por SKU (pack_style_id), no por producto. */
   stock?: Record<number, { ats: number; oh: number; price?: number }>;
+  /** Cajas en lotes viejos sin calibre: no se pueden atribuir a ningún SKU. */
+  unassigned?: number;
 }) {
   const t = useT();
   const [q, setQ] = useState("");
@@ -92,16 +96,17 @@ export function ProductPicker({
                   <td className="px-4 py-2 font-medium text-link">
                     {s.product_name}
                     {s.variety ? ` ${s.variety}` : ""}
+                    {s.sku_code ? <span className="block text-xs font-normal text-subtle">{s.sku_code}</span> : null}
                   </td>
                   <td className="px-4 py-2 text-muted">{s.empaque || s.unit || s.name}</td>
                   <td className="px-4 py-2 text-muted">{s.calibre || "—"}</td>
                   {stock ? (
                     <>
                       <td className="px-4 py-2">
-                        {stock[s.product_id]?.price != null ? `$${(stock[s.product_id]?.price ?? 0).toFixed(2)}` : "—"}
+                        {stock[s.id]?.price != null ? `$${(stock[s.id]?.price ?? 0).toFixed(2)}` : "—"}
                       </td>
-                      <td className="px-4 py-2 text-right font-semibold">{stock[s.product_id]?.ats ?? 0}</td>
-                      <td className="px-4 py-2 text-right">{stock[s.product_id]?.oh ?? 0}</td>
+                      <td className="px-4 py-2 text-right font-semibold">{stock[s.id]?.ats ?? 0}</td>
+                      <td className="px-4 py-2 text-right">{stock[s.id]?.oh ?? 0}</td>
                     </>
                   ) : null}
                   <td className="px-4 py-2 text-right">
@@ -115,6 +120,11 @@ export function ProductPicker({
           </table>
           {rows.length === 0 ? <p className="px-4 py-8 text-center text-sm text-muted">{t("No matching inventory items.")}</p> : null}
         </div>
+        {unassigned ? (
+          <p className="border-t border-warn/40 bg-warn/5 px-4 py-2 text-xs text-warn">
+            {unassigned} {t("cajas están en lotes sin calibre y no se cuentan en ningún SKU de arriba.")}
+          </p>
+        ) : null}
         <div className="flex items-center justify-between border-t border-border px-4 py-2 text-xs text-muted">
           <span>
             <kbd className="rounded border border-border bg-surface-2 px-1.5 py-0.5">Enter</kbd> {t("to add the highlighted row")}

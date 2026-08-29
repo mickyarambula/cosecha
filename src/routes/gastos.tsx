@@ -8,30 +8,34 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { poShort } from "@/lib/nav";
 import {
+  cancelExpense,
   connectExpensePo,
   createExpense,
   disconnectExpensePo,
   listExpenseLinks,
+  listExpenses,
   listPayables,
   listPurchaseOrders,
   listSuppliers,
   listVendorPayments,
   registerVendorPayment,
+  updateExpense,
   type PayableRow,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { aging30, agingBucket, fecha, money, PAY_METHODS, todayISO } from "@/lib/utils";
 
-type Search = { tab?: string };
+type Search = { tab?: string; expense?: number };
 export const Route = createFileRoute("/gastos")({
   validateSearch: (s: Record<string, unknown>): Search => ({
     tab: typeof s.tab === "string" ? s.tab : "overview",
+    expense: Number(s.expense) > 0 ? Number(s.expense) : undefined,
   }),
   component: Page,
 });
 
 function Page() {
-  const { tab } = Route.useSearch();
+  const { tab, expense } = Route.useSearch();
   const payables = useAsync(() => listPayables(), []);
   const suppliers = useAsync(() => listSuppliers(), []);
   const pos = useAsync(() => listPurchaseOrders(), []);
@@ -39,10 +43,15 @@ function Page() {
   const [vendor, setVendor] = useState("");
   const [status, setStatus] = useState("");
   const [open, setOpen] = useState(false);
-  const [detailId, setDetailId] = useState<number | null>(null);
+  // Permite llegar directo al gasto desde "Corregir" en el detalle de la OC.
+  const [detailId, setDetailId] = useState<number | null>(expense ?? null);
   const [payOpen, setPayOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [connectFor, setConnectFor] = useState<number | null>(null);
+  // Los cancelados salen de la CxP pero siguen consultables como rastro.
+  const allExpenses = useAsync(() => listExpenses(), []);
+  const [showCancelled, setShowCancelled] = useState(false);
+  const cancelled = (allExpenses.data ?? []).filter((e) => e.cancelled_at);
 
   const rows = (payables.data ?? []).filter((r) => {
     if (vendor && String(r.supplier_id) !== vendor) return false;
@@ -331,6 +340,11 @@ function Page() {
         <button type="button" className="rounded-md border border-border px-2 py-1 text-fg">
           Export expenses
         </button>
+        {cancelled.length ? (
+          <button type="button" className="ml-2 text-link" onClick={() => setShowCancelled((v) => !v)}>
+            {showCancelled ? "Ocultar" : "Ver"} {cancelled.length} cancelado{cancelled.length === 1 ? "" : "s"}
+          </button>
+        ) : null}
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1100px] text-left text-sm">
@@ -401,6 +415,37 @@ function Page() {
           </tbody>
         </table>
       </div>
+      {showCancelled && cancelled.length ? (
+        <div className="px-4 pb-4">
+          <p className="mb-2 mt-4 text-sm font-semibold text-muted">Gastos cancelados</p>
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[700px] text-left text-sm">
+              <thead className="bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
+                <tr>
+                  <th className="px-3 py-2">Exp #</th>
+                  <th className="px-3 py-2">Concepto</th>
+                  <th className="px-3 py-2">Proveedor</th>
+                  <th className="px-3 py-2 text-right">Monto</th>
+                  <th className="px-3 py-2">Cancelado</th>
+                  <th className="px-3 py-2">Motivo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cancelled.map((e) => (
+                  <tr key={e.id} className="border-t border-border text-muted">
+                    <td className="px-3 py-2">{String(e.expense_number).replace(/^EXP-/, "EXP #")}</td>
+                    <td className="px-3 py-2">{e.category}</td>
+                    <td className="px-3 py-2">{e.supplier_name}</td>
+                    <td className="px-3 py-2 text-right tabular-nums line-through">{money(e.amount)}</td>
+                    <td className="px-3 py-2">{e.cancelled_at ? fecha(e.cancelled_at) : "—"}</td>
+                    <td className="px-3 py-2">{e.cancel_reason || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
       {open ? (
         <CreateExpenseDrawer
           suppliers={suppliers.data ?? []}
@@ -427,9 +472,14 @@ function Page() {
         <ExpenseDetail
           id={detailId}
           pos={pos.data ?? []}
+          suppliers={suppliers.data ?? []}
           onClose={() => setDetailId(null)}
           onConnect={() => setConnectFor(detailId)}
-          onChanged={() => void payables.reload()}
+          onChanged={() => {
+            void payables.reload();
+            void pos.reload();
+            void allExpenses.reload();
+          }}
         />
       ) : null}
       {connectFor ? (
@@ -590,22 +640,99 @@ function CreateExpenseDrawer({
 function ExpenseDetail({
   id,
   pos,
+  suppliers,
   onClose,
   onConnect,
   onChanged,
 }: {
   id: number;
   pos: { id: number; po_number: string }[];
+  suppliers: { id: number; name: string }[];
   onClose: () => void;
   onConnect: () => void;
   onChanged: () => void;
 }) {
   const detail = useAsync(() => listExpenseLinks({ data: { expense_id: id } }), [id]);
   const d = detail.data;
+  const [editing, setEditing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [form, setForm] = useState<{
+    category: string;
+    supplier_id: string;
+    amount: string;
+    invoice: string;
+    notes: string;
+    payable: boolean;
+    charged_to: string;
+  } | null>(null);
+
+  function startEdit() {
+    if (!d) return;
+    setErr(null);
+    setForm({
+      category: d.category,
+      supplier_id: String(d.supplier_id),
+      amount: String(d.amount),
+      invoice: d.invoice_number || "",
+      notes: d.notes || "",
+      payable: !!d.payable,
+      charged_to: d.charged_to || "plein",
+    });
+    setEditing(true);
+  }
+
   async function disconnect(poId: number) {
     await disconnectExpensePo({ data: { expense_id: id, purchase_order_id: poId } });
     await detail.reload();
     onChanged();
+  }
+
+  async function saveEdit() {
+    if (!form) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateExpense({
+        data: {
+          expense_id: id,
+          category: form.category,
+          supplier_id: Number(form.supplier_id),
+          amount: Number(form.amount),
+          invoice_number: form.invoice || undefined,
+          notes: form.notes || undefined,
+          payable: form.payable,
+          charged_to: form.charged_to as "grower" | "plein",
+        },
+      });
+      setEditing(false);
+      await detail.reload();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "No se pudo guardar");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doCancel() {
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      setErr("Escribe el motivo de la cancelación.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await cancelExpense({ data: { expense_id: id, reason: trimmed } });
+      onChanged();
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "No se pudo cancelar");
+      setBusy(false);
+    }
   }
   return (
     <Modal title="Expense Details" onClose={onClose} wide>
@@ -668,12 +795,99 @@ function ExpenseDetail({
             ))}
             {d.links.length === 0 ? <p className="text-sm text-muted">Not connected to a PO.</p> : null}
           </div>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button variant="outline" onClick={onConnect}>
-              Connect additional POs
-            </Button>
-            <Button onClick={onClose}>Edit expense</Button>
-          </div>
+          {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
+
+          {editing && form ? (
+            <div className="mt-4 rounded-md border border-border p-3">
+              <p className="mb-3 text-sm font-semibold">Corregir gasto</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Concepto">
+                  <Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+                </Field>
+                <Field label="Proveedor">
+                  <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Monto">
+                  <Input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+                </Field>
+                <Field label="Invoice #">
+                  <Input value={form.invoice} onChange={(e) => setForm({ ...form, invoice: e.target.value })} />
+                </Field>
+                <Field label="¿Ya se pagó este gasto?">
+                  <div className="flex gap-4 text-sm">
+                    <label className="flex cursor-pointer items-center gap-1">
+                      <input type="radio" checked={form.payable} onChange={() => setForm({ ...form, payable: true })} /> Por pagar
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-1">
+                      <input type="radio" checked={!form.payable} onChange={() => setForm({ ...form, payable: false })} /> Ya pagado
+                    </label>
+                  </div>
+                </Field>
+                <Field label="Lo paga">
+                  <Select value={form.charged_to} onChange={(e) => setForm({ ...form, charged_to: e.target.value })}>
+                    <option value="plein">Plein</option>
+                    <option value="grower">Productor</option>
+                  </Select>
+                </Field>
+              </div>
+              <Field label="Notas" className="mt-3">
+                <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+              </Field>
+              <div className="mt-3 flex justify-end gap-2">
+                <Button variant="outline" disabled={busy} onClick={() => setEditing(false)}>
+                  Descartar
+                </Button>
+                <Button disabled={busy} onClick={() => void saveEdit()}>
+                  {busy ? "Guardando…" : "Guardar cambios"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {cancelling ? (
+            <div className="mt-4 rounded-md border border-danger/40 bg-danger/5 p-3">
+              <p className="text-sm font-semibold text-danger">Cancelar {d.expense_number}</p>
+              <p className="mt-1 text-xs text-muted">
+                Se suelta la CxP y el prorrateo a los lotes. Si ya se había pagado, entra un movimiento de caja inverso.
+                El gasto queda visible como cancelado con el motivo.
+              </p>
+              <Field label="Motivo *" className="mt-2">
+                <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej. capturado por error" />
+              </Field>
+              <div className="mt-3 flex justify-end gap-2">
+                <Button variant="outline" disabled={busy} onClick={() => setCancelling(false)}>
+                  No, regresar
+                </Button>
+                <Button disabled={busy} onClick={() => void doCancel()}>
+                  {busy ? "Cancelando…" : "Sí, cancelar gasto"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {d.cancelled_at ? (
+            <p className="mt-4 rounded-md border border-border bg-surface-2 p-2 text-xs text-muted">
+              Cancelado el {fecha(d.cancelled_at)} — {d.cancel_reason}
+            </p>
+          ) : (
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={onConnect}>
+                Connect additional POs
+              </Button>
+              {!cancelling ? (
+                <Button variant="outline" onClick={() => { setErr(null); setCancelling(true); }}>
+                  Cancelar gasto
+                </Button>
+              ) : null}
+              {!editing ? <Button onClick={startEdit}>Edit expense</Button> : null}
+            </div>
+          )}
         </div>
       ) : (
         <p className="text-sm text-muted">Loading…</p>

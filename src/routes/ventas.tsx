@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { MetaCard, Modal, TabOverride } from "@/components/app-shell";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
@@ -44,6 +44,8 @@ type DraftLine = {
   lot_id?: number;
   name: string;
   unit: string;
+  calibre: string | null;
+  skuCode: string | null;
   qty: string;
   price: string;
 };
@@ -101,7 +103,9 @@ function Page() {
   const allLots = lots.data ?? [];
 
   function addSku(sku: SkuOption) {
-    const lot = allLots.find((l) => l.product_id === sku.product_id && l.asignable);
+    // El lote tiene que ser del mismo calibre, no solo del mismo producto:
+    // si no, una línea de Jumbo/XL se surte de un lote Medium.
+    const lot = allLots.find((l) => l.pack_style_id === sku.id && l.asignable);
     setLines((p) => [
       ...p,
       {
@@ -111,6 +115,8 @@ function Page() {
         lot_id: lot?.id,
         name: sku.product_name,
         unit: sku.empaque || sku.unit,
+        calibre: sku.calibre || null,
+        skuCode: sku.sku_code || null,
         qty: lot ? String(lot.current_qty) : "1",
         price: "35",
       },
@@ -272,13 +278,22 @@ function Page() {
                   <th className="px-3 py-2">Qty</th>
                   <th className="px-3 py-2">Price</th>
                   <th className="px-3 py-2">Total</th>
+                  <th className="w-10 px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
-                {lines.map((l) => (
-                  <tr key={l.key} className="border-b border-border">
+                {lines.map((l) => {
+                  const stockHere = allLots
+                    .filter((x) => x.pack_style_id === l.pack_style_id && x.asignable)
+                    .reduce((n, x) => n + x.current_qty, 0);
+                  const over = l.pack_style_id != null && Number(l.qty || 0) > stockHere;
+                  return (
+                  <tr key={l.key} className="border-b border-border align-top">
                     <td className="px-3 py-2">
                       {l.name} · {l.unit}
+                      {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs">{l.calibre}</span> : null}
+                      {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
+                      {over ? <div className="text-xs text-danger">Solo hay {stockHere} disponibles de este calibre</div> : null}
                     </td>
                     <td className="px-3 py-2">
                       <Input className="w-20" value={l.qty} onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, qty: e.target.value } : x)))} />
@@ -287,8 +302,20 @@ function Page() {
                       <Input className="w-24" value={l.price} onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, price: e.target.value } : x)))} />
                     </td>
                     <td className="px-3 py-2">{money(Number(l.qty || 0) * Number(l.price || 0))}</td>
+                    <td className="px-3 py-2">
+                      <button
+                        type="button"
+                        title="Quitar línea"
+                        aria-label={`Quitar ${l.name}`}
+                        className="cursor-pointer rounded p-1 text-subtle hover:bg-danger/10 hover:text-danger"
+                        onClick={() => setLines((p) => p.filter((x) => x.key !== l.key))}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -308,9 +335,12 @@ function Page() {
             extra={<span>{t("{n} lots available to sell", { n: allLots.filter((l) => l.asignable).length })}</span>}
             stock={Object.fromEntries(
               skus.map((s) => {
-                const mine = allLots.filter((l) => l.product_id === s.product_id);
+                // Por SKU, no por producto: tres calibres del mismo producto son
+                // tres inventarios distintos y vender contra el total del
+                // producto compromete cajas que no existen en ese calibre.
+                const mine = allLots.filter((l) => l.pack_style_id === s.id);
                 return [
-                  s.product_id,
+                  s.id,
                   {
                     ats: mine.reduce((n, l) => n + (l.asignable ? l.current_qty : 0), 0),
                     oh: mine.reduce((n, l) => n + l.current_qty, 0),
@@ -319,6 +349,7 @@ function Page() {
                 ];
               }),
             )}
+            unassigned={allLots.filter((l) => l.pack_style_id == null && l.asignable).reduce((n, l) => n + l.current_qty, 0)}
           />
         ) : null}
         {placed ? (
