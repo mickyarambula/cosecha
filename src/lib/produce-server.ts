@@ -556,11 +556,14 @@ export const createSku = createServerFn({ method: "POST" }).validator(z.object({
 	};
 });
 export const listSuppliers = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
-	return (await getSql()).query(`select id, code, name, contact_name, phone, email, city, country, notes, is_active,
+	return (await (await getSql()).query(`select id, code, name, contact_name, phone, email, city, country, notes, is_active,
            coalesce(es_proveedor, true) as es_proveedor,
            coalesce(es_cliente, false) as es_cliente,
-           linked_customer_id
-    from suppliers order by name`);
+           linked_customer_id, commission_type, commission_rate::text
+    from suppliers order by name`)).map((s) => ({
+		...s,
+		commission_rate: s.commission_rate != null ? n(s.commission_rate) : null
+	}));
 });
 export const createSupplier = createServerFn({ method: "POST" }).validator(z.object({
 	name: z.string().min(1),
@@ -570,12 +573,14 @@ export const createSupplier = createServerFn({ method: "POST" }).validator(z.obj
 	city: z.string().optional(),
 	country: z.string().optional(),
 	notes: z.string().optional(),
-	tambien_cliente: z.boolean().optional()
+	tambien_cliente: z.boolean().optional(),
+	commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).nullable().optional(),
+	commission_rate: z.number().min(0).nullable().optional()
 })).middleware([authMiddleware]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const code = await nextCode(sql, "suppliers", "code", "PRO-");
-	const id = (await sql.query(`insert into suppliers (code, name, contact_name, phone, email, city, country, notes, es_proveedor, es_cliente)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9) returning id`, [
+	const id = (await sql.query(`insert into suppliers (code, name, contact_name, phone, email, city, country, notes, es_proveedor, es_cliente, commission_type, commission_rate)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11) returning id`, [
 		code,
 		data.name.trim(),
 		data.contact_name || null,
@@ -584,7 +589,9 @@ export const createSupplier = createServerFn({ method: "POST" }).validator(z.obj
 		data.city || null,
 		data.country || null,
 		data.notes || null,
-		Boolean(data.tambien_cliente)
+		Boolean(data.tambien_cliente),
+		data.commission_type ?? null,
+		data.commission_type != null ? data.commission_rate ?? null : null
 	]))[0].id;
 	let customer_code: string | null = null;
 	if (data.tambien_cliente) {
@@ -618,9 +625,14 @@ export const updateSupplier = createServerFn({ method: "POST" }).validator(z.obj
 	city: z.string().optional(),
 	country: z.string().optional(),
 	notes: z.string().optional(),
-	is_active: z.boolean().optional()
+	is_active: z.boolean().optional(),
+	commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).nullable().optional(),
+	commission_rate: z.number().min(0).nullable().optional()
 })).middleware([authMiddleware]).handler(async ({ data }) => {
-	await (await getSql()).query(`update suppliers set name=$1, contact_name=$2, phone=$3, email=$4, city=$5, country=$6, notes=$7, is_active=coalesce($8, is_active) where id=$9`, [
+	await (await getSql()).query(`update suppliers set name=$1, contact_name=$2, phone=$3, email=$4, city=$5, country=$6, notes=$7, is_active=coalesce($8, is_active),
+       commission_type = case when $10::boolean then $11 else commission_type end,
+       commission_rate = case when $10::boolean then $12 else commission_rate end
+     where id=$9`, [
 		data.name.trim(),
 		data.contact_name || null,
 		data.phone || null,
@@ -629,7 +641,10 @@ export const updateSupplier = createServerFn({ method: "POST" }).validator(z.obj
 		data.country || null,
 		data.notes || null,
 		data.is_active,
-		data.id
+		data.id,
+		data.commission_type !== undefined || data.commission_rate !== undefined,
+		data.commission_type ?? null,
+		data.commission_type != null ? data.commission_rate ?? null : null
 	]);
 	return { id: data.id };
 });
@@ -869,11 +884,11 @@ export const listLots = createServerFn({ method: "GET" }).middleware([authMiddle
     where i.quantity > 0
   `);
 	const sold = await sql.query(`
-    select sol.lot_id, coalesce(sum(sol.quantity_shipped),0)::text as qty,
-           coalesce(sum(sol.quantity_shipped * coalesce(sol.unit_price,0)),0)::text as revenue
-    from sales_order_lines sol
-    where sol.lot_id is not null
-    group by sol.lot_id
+    select a.lot_id, coalesce(sum(a.quantity),0)::text as qty,
+           coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as revenue
+    from sale_line_allocations a
+    join sales_order_lines sol on sol.id = a.sales_order_line_id
+    group by a.lot_id
   `);
 	const soldMap = new Map<number, { qty: number; revenue: number }>(sold.map((s) => [s.lot_id, {
 		qty: n(s.qty),
@@ -916,13 +931,15 @@ export const getLotTrace = createServerFn({ method: "GET" }).validator(z.object(
       order by m.id
     `, [data.lotId]);
 	const sales = await sql.query(`
-      select so.id as so_id, so.so_number, c.name as customer, sol.quantity_shipped::text as qty,
+      select so.id as so_id, so.so_number, c.name as customer, sum(a.quantity)::text as qty,
              sol.unit_price::text, i.invoice_number as invoice, so.order_date::text
-      from sales_order_lines sol
+      from sale_line_allocations a
+      join sales_order_lines sol on sol.id = a.sales_order_line_id
       join sales_orders so on so.id = sol.sales_order_id
       join customers c on c.id = so.customer_id
       left join invoices i on i.sales_order_id = so.id
-      where sol.lot_id = $1 and sol.quantity_shipped > 0
+      where a.lot_id = $1
+      group by so.id, so.so_number, c.name, sol.id, sol.unit_price, i.invoice_number, so.order_date
       order by so.id
     `, [data.lotId]);
 	const waste = await sql.query(`select id, quantity::text, reason, notes, created_at::text from waste_events where lot_id = $1 order by id`, [data.lotId]);
@@ -966,15 +983,22 @@ export const setLotQuality = createServerFn({ method: "POST" }).validator(z.obje
 		quality_state: data.quality_state
 	};
 });
-function computeSettlementLots(lots, expenseTotal, allocBy, targetPct) {
+function computeSettlementLots(lots, expenseTotal, allocBy, targetPct, netToGrower: number | null = null) {
 	const palletTotal = lots.reduce((s, l) => s + (l.pallets || 0), 0);
 	const qtyTotal = lots.reduce((s, l) => s + l.original_qty, 0) || 1;
+	const revenueTotal = lots.reduce((s, l) => s + l.revenue, 0);
 	const usePallets = allocBy === "pallet" && palletTotal > 0;
 	return lots.map((l) => {
 		const expenses = expenseTotal * (usePallets ? (l.pallets || 0) / palletTotal : l.original_qty / qtyTotal);
 		const pas = !(l.unit_cost > 0);
 		let t_cost = pas ? 0 : l.unit_cost * l.original_qty;
-		if (targetPct != null && l.revenue > 0) t_cost = Math.max(0, l.revenue * (1 - targetPct / 100) - expenses);
+		if (netToGrower != null) {
+			// Liquidación por comisión: el neto al productor se reparte a cada
+			// lote según el ingreso que ese lote realmente generó.
+			t_cost = revenueTotal > 0 ? Math.max(0, netToGrower) * (l.revenue / revenueTotal) : 0;
+		} else if (targetPct != null && l.revenue > 0) {
+			t_cost = Math.max(0, l.revenue * (1 - targetPct / 100) - expenses);
+		}
 		const profit = l.revenue - t_cost - expenses;
 		const profit_pct = l.revenue > 0 ? profit / l.revenue * 100 : 0;
 		const cost_unit = l.original_qty > 0 ? t_cost / l.original_qty : 0;
@@ -999,9 +1023,53 @@ function computeSettlementLots(lots, expenseTotal, allocBy, targetPct) {
 			pallets: l.pallets,
 			unit: l.unit,
 			unit_cost: l.unit_cost,
-			pas: pas && targetPct == null
+			pas: pas && targetPct == null && netToGrower == null
 		};
 	});
+}
+/**
+ * La secuencia real de Plein para liquidar una carga a consignación o
+ * comisión: ingreso de la venta − gastos que se le descuentan al productor
+ * − comisión de Plein = neto al productor. Devuelve el desglose completo
+ * para que la liquidación se pueda leer y defender (documento PACA).
+ */
+function computeCommissionBreakdown(po, lotsRaw, expenseRows) {
+	if (!po.commission_type || po.deal_type === "firme") return null;
+	const revenue = lotsRaw.reduce((s, l) => s + l.revenue, 0);
+	const soldUnits = lotsRaw.reduce((s, l) => s + l.sold, 0);
+	const growerRows = expenseRows.filter((e) => e.charged_to === "grower");
+	const grower_expenses = growerRows.reduce((s, e) => s + n(e.amount), 0);
+	const plein_expenses = expenseRows.filter((e) => e.charged_to !== "grower").reduce((s, e) => s + n(e.amount), 0);
+	const rate = n(po.commission_rate);
+	let commission = 0;
+	let commission_base = 0;
+	if (po.commission_type === "per_unit") {
+		commission_base = soldUnits;
+		commission = rate * soldUnits;
+	} else if (po.commission_type === "gross_pct") {
+		commission_base = revenue;
+		commission = revenue * rate / 100;
+	} else if (po.commission_type === "net_pct") {
+		commission_base = revenue - grower_expenses;
+		commission = Math.max(0, commission_base) * rate / 100;
+	}
+	return {
+		commission_type: po.commission_type,
+		commission_rate: rate,
+		revenue,
+		sold_units: soldUnits,
+		grower_expense_rows: growerRows.map((e) => ({
+			id: e.id,
+			category: e.category,
+			amount: n(e.amount),
+			notes: e.notes
+		})),
+		grower_expenses,
+		plein_expenses,
+		commission_base,
+		commission,
+		net_to_grower: revenue - grower_expenses - commission
+	};
 }
 async function loadPoLots(sql, poId) {
 	const lots = await sql.query(`select l.id, l.lot_number, l.status, p.name as product_name, ps.name as pack_name,
@@ -1013,12 +1081,13 @@ async function loadPoLots(sql, poId) {
      left join pack_styles ps on ps.id = l.pack_style_id
      where l.purchase_order_id = $1
      order by l.id`, [poId]);
-	const sold = await sql.query(`select sol.lot_id, coalesce(sum(sol.quantity_shipped),0)::text as qty,
-            coalesce(sum(sol.quantity_shipped * coalesce(sol.unit_price,0)),0)::text as revenue
-     from sales_order_lines sol
-     join lots l on l.id = sol.lot_id
+	const sold = await sql.query(`select a.lot_id, coalesce(sum(a.quantity),0)::text as qty,
+            coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as revenue
+     from sale_line_allocations a
+     join sales_order_lines sol on sol.id = a.sales_order_line_id
+     join lots l on l.id = a.lot_id
      where l.purchase_order_id = $1
-     group by sol.lot_id`, [poId]);
+     group by a.lot_id`, [poId]);
 	const soldMap = new Map<number, { qty: number; revenue: number }>(sold.map((s) => [s.lot_id, {
 		qty: n(s.qty),
 		revenue: n(s.revenue)
@@ -1056,16 +1125,23 @@ async function loadSettlement(sql, purchase_order_id: number) {
 	const [po] = await sql.query(`select po.id, po.po_number, s.name as supplier_name, po.status,
               coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
               coalesce(po.vendor_share_level,'po') as vendor_share_level,
-              coalesce(po.signed_off,false) as signed_off
+              coalesce(po.signed_off,false) as signed_off,
+              coalesce(po.deal_type,'firme') as deal_type,
+              po.commission_type, po.commission_rate::text
        from purchase_orders po join suppliers s on s.id = po.supplier_id
        where po.id = $1`, [purchase_order_id]);
 	if (!po) throw new Error("Purchase order not found");
-	const expenses = await sql.query(`select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`, [purchase_order_id]);
+	const expenses = await sql.query(`select id, category, notes, amount::text, coalesce(alloc_by,'pallet') as alloc_by,
+              coalesce(charged_to,'plein') as charged_to
+       from expenses where purchase_order_id = $1 order by id`, [purchase_order_id]);
 	const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
 	const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
 	const lotsRaw = await loadPoLots(sql, purchase_order_id);
-	const target = po.target_profit_pct != null ? n(po.target_profit_pct) : null;
-	const lots = computeSettlementLots(lotsRaw, expense_total, allocBy, target);
+	// La liquidación por comisión (la secuencia real de Plein) manda; el
+	// target % queda solo como camino legado cuando no hay comisión definida.
+	const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses);
+	const target = breakdown == null && po.target_profit_pct != null ? n(po.target_profit_pct) : null;
+	const lots = computeSettlementLots(lotsRaw, expense_total, allocBy, target, breakdown ? breakdown.net_to_grower : null);
 	const revenue = lots.reduce((s, l) => s + l.revenue, 0);
 	const t_cost = lots.reduce((s, l) => s + l.t_cost, 0);
 	const profit = lots.reduce((s, l) => s + l.profit, 0);
@@ -1079,6 +1155,17 @@ async function loadSettlement(sql, purchase_order_id: number) {
 		target_profit_pct: target,
 		vendor_share_level: po.vendor_share_level,
 		signed_off: po.signed_off,
+		deal_type: po.deal_type,
+		commission_type: po.commission_type,
+		commission_rate: po.commission_rate != null ? n(po.commission_rate) : null,
+		breakdown,
+		expense_rows: expenses.map((e) => ({
+			id: e.id,
+			category: e.category,
+			notes: e.notes,
+			amount: n(e.amount),
+			charged_to: e.charged_to
+		})),
 		revenue,
 		inventory_total: t_cost,
 		non_inventory_total: 0,
@@ -1103,11 +1190,20 @@ export const applySettlement = createServerFn({ method: "POST" }).validator(z.ob
 	})).optional()
 })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
+	const [po] = await sql.query(`select coalesce(deal_type,'firme') as deal_type, commission_type, commission_rate::text from purchase_orders where id = $1`, [data.purchase_order_id]);
+	if (!po) throw new Error("Orden de compra no encontrada");
+	if (po.deal_type === "comision") throw new Error("Comisión pura: el costo de estos lotes se queda en cero — no hay compra que liquidar.");
 	if (data.target_profit_pct != null) await sql.query(`update purchase_orders set target_profit_pct = $1 where id = $2`, [data.target_profit_pct, data.purchase_order_id]);
-	const expenses = await sql.query(`select amount::text, coalesce(alloc_by,'pallet') as alloc_by from expenses where purchase_order_id = $1`, [data.purchase_order_id]);
+	const expenses = await sql.query(`select id, category, notes, amount::text, coalesce(alloc_by,'pallet') as alloc_by,
+              coalesce(charged_to,'plein') as charged_to
+       from expenses where purchase_order_id = $1`, [data.purchase_order_id]);
 	const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
 	const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
-	const computed = computeSettlementLots(await loadPoLots(sql, data.purchase_order_id), expense_total, allocBy, data.target_profit_pct ?? null);
+	const lotsRaw = await loadPoLots(sql, data.purchase_order_id);
+	// Si la OC tiene comisión definida, esa es la liquidación que se escribe;
+	// el target % es solo el camino legado sin comisión.
+	const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses);
+	const computed = computeSettlementLots(lotsRaw, expense_total, allocBy, breakdown ? null : data.target_profit_pct ?? null, breakdown ? breakdown.net_to_grower : null);
 	const overrides = new Map((data.lot_costs ?? []).map((c) => [c.lot_id, c.unit_cost]));
 	for (const lot of computed) {
 		const cost = overrides.get(lot.id) ?? lot.cost_unit;
@@ -1124,6 +1220,33 @@ export const applySettlement = createServerFn({ method: "POST" }).validator(z.ob
 		ok: true,
 		lots: computed.length
 	};
+});
+export const setPoCommission = createServerFn({ method: "POST" }).validator(z.object({
+	purchase_order_id: z.number(),
+	commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).nullable(),
+	commission_rate: z.number().min(0).optional()
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [po] = await sql.query(`select coalesce(deal_type,'firme') as deal_type from purchase_orders where id = $1`, [data.purchase_order_id]);
+	if (!po) throw new Error("Orden de compra no encontrada");
+	if (po.deal_type === "firme") throw new Error("Trato en firme: el precio ya está cerrado, no lleva comisión de liquidación.");
+	if (data.commission_type != null && !(n(data.commission_rate) > 0)) throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
+	await sql.query(`update purchase_orders set commission_type = $1, commission_rate = $2 where id = $3`, [
+		data.commission_type,
+		data.commission_type != null ? data.commission_rate : null,
+		data.purchase_order_id
+	]);
+	return { ok: true };
+});
+export const setExpenseChargedTo = createServerFn({ method: "POST" }).validator(z.object({
+	expense_id: z.number(),
+	charged_to: z.enum(["grower", "plein"])
+})).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [exp] = await sql.query(`select id from expenses where id = $1`, [data.expense_id]);
+	if (!exp) throw new Error("Gasto no encontrado");
+	await sql.query(`update expenses set charged_to = $1 where id = $2`, [data.charged_to, data.expense_id]);
+	return { ok: true };
 });
 export const wasteLot = createServerFn({ method: "POST" }).validator(z.object({
 	lot_id: z.number(),
@@ -1211,15 +1334,16 @@ export const getVendorPortal = createServerFn({ method: "GET" }).validator(z.obj
        from purchase_orders po join suppliers s on s.id = po.supplier_id where po.share_token = $1`, [data.token]);
 	if (!po) throw new Error("Purchase order not found");
 	const settlement = await loadSettlement(sql, po.id);
-	const sales = await sql.query(`select so.order_date::text, p.name as item, l.lot_number, sol.quantity_shipped::text as qty,
-              sol.unit_price::text, (sol.quantity_shipped * coalesce(sol.unit_price,0))::text as total
-       from sales_order_lines sol
+	const sales = await sql.query(`select so.order_date::text, p.name as item, l.lot_number, sum(a.quantity)::text as qty,
+              sol.unit_price::text, (sum(a.quantity) * coalesce(sol.unit_price,0))::text as total
+       from sale_line_allocations a
+       join sales_order_lines sol on sol.id = a.sales_order_line_id
        join sales_orders so on so.id = sol.sales_order_id
-       join lots l on l.id = sol.lot_id
+       join lots l on l.id = a.lot_id
        join products p on p.id = sol.product_id
-       where l.purchase_order_id = $1 and sol.quantity_shipped > 0
+       where l.purchase_order_id = $1
+       group by so.order_date, p.name, l.lot_number, sol.id, sol.unit_price
        order by so.order_date, l.lot_number`, [po.id]);
-	const expenses = await sql.query(`select category, amount::text, notes from expenses where purchase_order_id = $1 order by id`, [po.id]);
 	return {
 		...settlement,
 		expected_date: po.expected_date,
@@ -1236,11 +1360,6 @@ export const getVendorPortal = createServerFn({ method: "GET" }).validator(z.obj
 			total: n(s.total),
 			status: "Unpaid",
 			type: "Sale"
-		})),
-		expense_rows: expenses.map((e) => ({
-			category: e.category,
-			amount: n(e.amount),
-			notes: e.notes
 		}))
 	};
 });
@@ -1301,6 +1420,8 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
            coalesce(po.order_type, 'entrega') as order_type, po.bol, po.vendor_invoice, po.shipping_ref,
            coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
            coalesce(po.vendor_share_level,'po') as vendor_share_level, coalesce(po.signed_off,false) as signed_off,
+           coalesce(po.deal_type, 'firme') as deal_type,
+           po.commission_type, po.commission_rate::text,
            po.cancelled_at::text, po.cancelled_by, po.cancel_reason
     from purchase_orders po join suppliers s on s.id = po.supplier_id
     left join sales_orders so on so.id = po.sales_order_id
@@ -1351,6 +1472,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
 		const expense_total = poExpenses.reduce((s, e) => s + e.amount, 0);
 		return {
 			...o,
+			commission_rate: o.commission_rate != null ? n(o.commission_rate) : null,
 			bill: bills.find((b) => b.purchase_order_id === o.id && b.status !== "cancelled") ?? null,
 			receptions: recs.filter((r) => r.purchase_order_id === o.id).map((r) => ({
 				...r,
@@ -1366,6 +1488,9 @@ export const listPurchaseOrders = createServerFn({ method: "GET" }).middleware([
 });
 export const createPurchaseOrder = createServerFn({ method: "POST" }).validator(z.object({
 	supplier_id: z.number(),
+	deal_type: z.enum(["firme", "consignacion", "comision"]),
+	commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).optional(),
+	commission_rate: z.number().min(0).optional(),
 	expected_date: z.string().optional(),
 	notes: z.string().optional(),
 	sales_order_id: z.number().optional(),
@@ -1384,19 +1509,30 @@ export const createPurchaseOrder = createServerFn({ method: "POST" }).validator(
 		origin_country: z.string().optional()
 	})).min(1)
 })).middleware([authMiddleware]).handler(async ({ data }) => {
+	if (data.deal_type === "firme") {
+		if (data.lines.some((l) => !(n(l.unit_cost) > 0))) throw new Error("Trato en firme: captura el costo de cada línea — es un precio cerrado.");
+	} else if (data.lines.some((l) => l.unit_cost != null)) {
+		throw new Error("En consignación o comisión no se captura costo — se define al liquidar, después de vender.");
+	}
+	if (data.commission_type != null && !(n(data.commission_rate) > 0)) throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
 	const sql = await getSql();
 	const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
-	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, status, expected_date, notes, sales_order_id, order_type, bol, vendor_invoice, shipping_ref)
-       values ($1,$2,'confirmed',$3,$4,$5,$6,$7,$8,$9) returning id`, [
+	// La comisión solo aplica a tratos donde Plein liquida al productor.
+	const withCommission = data.deal_type !== "firme" && data.commission_type != null;
+	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, deal_type, status, expected_date, notes, sales_order_id, order_type, bol, vendor_invoice, shipping_ref, commission_type, commission_rate)
+       values ($1,$2,$3,'confirmed',$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`, [
 		po_number,
 		data.supplier_id,
+		data.deal_type,
 		data.expected_date || null,
 		data.notes || null,
 		data.sales_order_id ?? null,
 		data.order_type || "entrega",
 		data.bol || null,
 		data.vendor_invoice || null,
-		data.shipping_ref || null
+		data.shipping_ref || null,
+		withCommission ? data.commission_type : null,
+		withCommission ? data.commission_rate : null
 	]))[0].id;
 	for (const line of data.lines) await sql.query(`insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, pallets, units_per_pallet, origin_country)
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [
@@ -1420,7 +1556,7 @@ export const listExpenses = createServerFn({ method: "GET" }).middleware([module
     select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
            e.purchase_order_id, po.po_number, e.quantity::text, e.unit_cost::text,
            e.amount::text, e.invoice_number, e.payable, e.status, e.issue_date::text,
-           e.paid::text, e.notes
+           e.paid::text, e.notes, coalesce(e.charged_to,'plein') as charged_to
     from expenses e
     join suppliers s on s.id = e.supplier_id
     left join purchase_orders po on po.id = e.purchase_order_id
@@ -1448,7 +1584,8 @@ export const createExpense = createServerFn({ method: "POST" }).validator(z.obje
 	invoice_number: z.string().optional(),
 	notes: z.string().optional(),
 	payable: z.boolean().optional(),
-	alloc_by: z.enum(["pallet", "unit"]).optional()
+	alloc_by: z.enum(["pallet", "unit"]).optional(),
+	charged_to: z.enum(["grower", "plein"]).optional()
 })).middleware([moduleMiddleware("finance")]).handler(async ({ data }) => {
 	const sql = await getSql();
 	const expense_number = await nextCode(sql, "expenses", "expense_number", "EXP-");
@@ -1457,8 +1594,8 @@ export const createExpense = createServerFn({ method: "POST" }).validator(z.obje
 	const paid = payable ? 0 : amount;
 	const status = payable ? "open" : "paid";
 	return {
-		id: (await sql.query(`insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`, [
+		id: (await sql.query(`insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`, [
 			expense_number,
 			data.category,
 			data.supplier_id,
@@ -1472,7 +1609,8 @@ export const createExpense = createServerFn({ method: "POST" }).validator(z.obje
 			todayISO(),
 			paid,
 			data.notes || null,
-			data.alloc_by || "pallet"
+			data.alloc_by || "pallet",
+			data.charged_to || "plein"
 		]))[0].id,
 		expense_number
 	};
@@ -1995,8 +2133,10 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" }).validator
 	}).filter((l) => l.remaining > 1e-4);
 	if (!toBuy.length) throw new Error("Esta venta ya tiene compra por todo lo pedido");
 	const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
-	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, status, notes, sales_order_id)
-       values ($1,$2,'confirmed',$3,$4) returning id`, [
+	// Cruce: siempre en firme — se compra a un costo conocido específicamente
+	// para surtir esta venta, nunca en consignación ni a comisión.
+	const id = (await sql.query(`insert into purchase_orders (po_number, supplier_id, deal_type, status, notes, sales_order_id)
+       values ($1,$2,'firme','confirmed',$3,$4) returning id`, [
 		po_number,
 		data.supplier_id,
 		data.notes || `Generada desde ${so.so_number}`,
@@ -2062,6 +2202,13 @@ export const shipSalesLine = createServerFn({ method: "POST" }).validator(z.obje
 		data.lot_id,
 		data.line_id
 	]);
+	// Atribución real: sol.lot_id solo guarda el último lote despachado; esta
+	// tabla es la fuente de verdad de qué lote surtió cuánto de cada línea.
+	await sql.query(`insert into sale_line_allocations (sales_order_line_id, lot_id, quantity) values ($1,$2,$3)`, [
+		data.line_id,
+		data.lot_id,
+		data.quantity
+	]);
 	const [so] = await sql.query(`select coalesce(sum(quantity_ordered - quantity_shipped),0)::text as pending from sales_order_lines where sales_order_id = $1`, [line.sales_order_id]);
 	const status = n(so?.pending) <= 0 ? "completed" : "partial";
 	await sql.query(`update sales_orders set status = $1, ship_date = coalesce(ship_date, $2) where id = $3`, [
@@ -2121,14 +2268,18 @@ export const createBillFromPO = createServerFn({ method: "POST" }).validator(z.o
 	const sql = await getSql();
 	const [existing] = await sql.query(`select bill_number from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`, [data.purchase_order_id]);
 	if (existing) throw new Error(`Esta compra ya tiene factura ${existing.bill_number}`);
-	const [po] = await sql.query(`select id, po_number, supplier_id, status from purchase_orders where id = $1`, [data.purchase_order_id]);
+	const [po] = await sql.query(`select id, po_number, supplier_id, status, coalesce(deal_type,'firme') as deal_type from purchase_orders where id = $1`, [data.purchase_order_id]);
 	if (!po) throw new Error("Orden de compra no encontrada");
 	if (po.status === "cancelled") throw new Error("Esta orden de compra está cancelada");
+	if (po.deal_type === "comision") throw new Error("Este trato es a comisión pura: Plein no compra la fruta — no se genera factura de proveedor por su valor.");
 	const lines = await sql.query(`select quantity_ordered::text, quantity_received::text, unit_cost::text
        from purchase_order_lines where purchase_order_id = $1`, [data.purchase_order_id]);
 	const ordered = lines.reduce((s, l) => s + n(l.quantity_ordered), 0);
 	const received = lines.reduce((s, l) => s + n(l.quantity_received), 0);
 	if (received <= 0) throw new Error("Todavía no hay mercancía recibida para facturar al proveedor");
+	if (po.deal_type === "consignacion" && !lines.some((l) => n(l.unit_cost) > 0)) {
+		throw new Error("Este trato es en consignación: el costo se define al liquidar, después de vender. Corre \"Calculate settlement\" primero.");
+	}
 	const total = lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0);
 	const issue = todayISO();
 	const bill_number = await nextCode(sql, "supplier_bills", "bill_number", "FAC-");
@@ -2197,6 +2348,7 @@ export const cancelSalesOrder = createServerFn({ method: "POST" }).validator(z.o
 		await sql.query(`insert into inventory_movements (lot_id, location_id, movement_type, quantity, unit, reference_type, reference_id, notes)
          values ($1,$2,'cancel_ship',$3,$4,'sales_order',$5,$6)`, [mv.lot_id, mv.location_id, qty, mv.unit, so.id, `Cancelación ${so.so_number}`]);
 	}
+	await sql.query(`delete from sale_line_allocations where sales_order_line_id in (select id from sales_order_lines where sales_order_id = $1)`, [so.id]);
 	await sql.query(`update sales_order_lines set quantity_shipped = 0, lot_id = null where sales_order_id = $1`, [so.id]);
 	const staffName = await staffNameFor(sql, context.userId);
 	await sql.query(`update sales_orders set status='cancelled', cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`, [staffName, data.reason || null, so.id]);
@@ -2917,10 +3069,10 @@ export const getFinancials = createServerFn({ method: "GET" }).middleware([modul
 	const sql = await getSql();
 	const invoices = await sql.query(`select coalesce(invoice_type,'sale') as invoice_type, total::text, paid::text, issue_date::text, status from invoices`);
 	const cogsRows = await sql.query(`
-    select coalesce(sum(sol.quantity_shipped * coalesce(lots.unit_cost,0)),0)::text as cogs,
-           coalesce(sum(sol.quantity_shipped * coalesce(sol.unit_price,0)),0)::text as sales
-    from sales_order_lines sol
-    left join lots on lots.id = sol.lot_id
+    select coalesce(sum(a.quantity * coalesce(lots.unit_cost,0)),0)::text as cogs,
+           coalesce((select sum(sol.quantity_shipped * coalesce(sol.unit_price,0)) from sales_order_lines sol),0)::text as sales
+    from sale_line_allocations a
+    left join lots on lots.id = a.lot_id
   `);
 	const expenses = await sql.query(`select category, amount::text from expenses`);
 	const cash = await sql.query(`select amount::text from cash_movements where cancelled_at is null`);
@@ -3538,6 +3690,7 @@ async function wipeLiveActivity(sql: any) {
 	await sql.query(`delete from waste_events`);
 	await sql.query(`delete from inventory_movements`);
 	await sql.query(`delete from inventory`);
+	await sql.query(`delete from sale_line_allocations`);
 	if (lotIds.length) {
 		await sql.query(`update sales_order_lines set lot_id = null where lot_id = any($1::int[])`, [lotIds]);
 		await sql.query(
@@ -3615,6 +3768,7 @@ export const listSettlements = createServerFn({ method: "GET" }).middleware([mod
 			supplier_name: po.supplier_name,
 			signed_off: po.signed_off,
 			costing_mode: po.costing_mode,
+			deal_type: settlement.deal_type,
 			status: po.status,
 			revenue: settlement.revenue,
 			expenses: settlement.expenses,

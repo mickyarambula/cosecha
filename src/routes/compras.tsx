@@ -24,6 +24,8 @@ import {
   listPurchaseOrders,
   listSuppliers,
   receiveMerchandise,
+  setExpenseChargedTo,
+  setPoCommission,
   setVendorShare,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
@@ -75,6 +77,19 @@ type DraftLine = {
   markup: string;
 };
 
+const DEAL_TYPE_LABEL: Record<string, string> = {
+  firme: "Firm",
+  consignacion: "Consignment",
+  comision: "Pure commission",
+};
+
+function commissionSummary(type: string | null | undefined, rate: number | null | undefined) {
+  if (!type || rate == null) return null;
+  if (type === "per_unit") return `${money(rate, 2)} / caja`;
+  if (type === "gross_pct") return `${rate}% venta bruta`;
+  return `${rate}% sobre neto`;
+}
+
 const GRUPOS: [keyof typeof DEFECTOS, string][] = [
   ["calidad", "Quality defect"],
   ["condicion", "Condition defect"],
@@ -103,6 +118,9 @@ function Page() {
   const [cancelPo, setCancelPo] = useState<{ id: number; po_number: string } | null>(null);
   const [draft, setDraft] = useState({
     supplier_id: "",
+    deal_type: "",
+    commission_type: "",
+    commission_rate: "",
     order_type: "Delivery by vendor",
     expected_date: todayISO(),
     notes: "",
@@ -121,6 +139,7 @@ function Page() {
     notes: "",
     payable: false,
     by: "pallet",
+    charged_to: "plein",
   });
   const [rec, setRec] = useState({
     received_date: todayISO(),
@@ -177,13 +196,22 @@ function Page() {
   }
 
   async function placeOrder() {
-    if (!draft.supplier_id || !lines.length) return;
+    if (!draft.supplier_id || !draft.deal_type || !lines.length) return;
+    const isFirme = draft.deal_type === "firme";
+    if (isFirme && lines.some((l) => !(Number(l.cost) > 0))) {
+      setMsg("Trato en firme: captura el costo de cada línea.");
+      return;
+    }
+    const withCommission = !isFirme && draft.commission_type && Number(draft.commission_rate) > 0;
     setSaving(true);
     setMsg(null);
     try {
       const r = await createPurchaseOrder({
         data: {
           supplier_id: Number(draft.supplier_id),
+          deal_type: draft.deal_type as "firme" | "consignacion" | "comision",
+          commission_type: withCommission ? (draft.commission_type as "per_unit" | "gross_pct" | "net_pct") : undefined,
+          commission_rate: withCommission ? Number(draft.commission_rate) : undefined,
           expected_date: draft.expected_date || undefined,
           notes: draft.notes || undefined,
           order_type: draft.order_type,
@@ -195,7 +223,7 @@ function Page() {
             pack_style_id: l.pack_style_id,
             quantity_ordered: Number(l.qty),
             unit: l.unit,
-            unit_cost: l.cost ? Number(l.cost) : undefined,
+            unit_cost: isFirme && l.cost ? Number(l.cost) : undefined,
             pallets: l.pallets ? Number(l.pallets) : undefined,
             units_per_pallet: l.unitsPerPallet ? Number(l.unitsPerPallet) : undefined,
             origin_country: l.origin,
@@ -227,6 +255,8 @@ function Page() {
           invoice_number: expDraft.invoice || undefined,
           notes: expDraft.notes || undefined,
           payable: expDraft.payable,
+          alloc_by: expDraft.by as "pallet" | "unit",
+          charged_to: expDraft.charged_to as "grower" | "plein",
         },
       });
       setExpenseFor(null);
@@ -343,7 +373,7 @@ function Page() {
     return (
       <div className="flex min-h-[calc(100dvh-7rem)] flex-col">
         {msg ? <p className="px-5 py-2 text-sm text-ok">{msg}</p> : null}
-        <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-6">
           <MetaCard
             label="Vendor"
             action={
@@ -352,7 +382,20 @@ function Page() {
               </Link>
             }
           >
-            <Select value={draft.supplier_id} onChange={(e) => setDraft({ ...draft, supplier_id: e.target.value })}>
+            <Select
+              value={draft.supplier_id}
+              onChange={(e) => {
+                const supplier_id = e.target.value;
+                const sup = (suppliers.data ?? []).find((s) => String(s.id) === supplier_id);
+                setDraft({
+                  ...draft,
+                  supplier_id,
+                  // Default del proveedor, editable por carga.
+                  commission_type: sup?.commission_type ?? "",
+                  commission_rate: sup?.commission_rate != null ? String(sup.commission_rate) : "",
+                });
+              }}
+            >
               <option value="">Search your vendors</option>
               {(suppliers.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
@@ -361,6 +404,42 @@ function Page() {
               ))}
             </Select>
           </MetaCard>
+          <MetaCard label="Deal type">
+            <Select
+              value={draft.deal_type}
+              onChange={(e) => {
+                const deal_type = e.target.value;
+                setDraft({ ...draft, deal_type });
+                if (deal_type !== "firme") setLines((p) => p.map((l) => ({ ...l, cost: "" })));
+              }}
+            >
+              <option value="">Select</option>
+              <option value="firme">Firme (precio cerrado)</option>
+              <option value="consignacion">Consignación (PAS)</option>
+              <option value="comision">Comisión pura</option>
+            </Select>
+          </MetaCard>
+          {draft.deal_type && draft.deal_type !== "firme" ? (
+            <MetaCard label="Plein commission">
+              <div className="flex gap-2">
+                <Select
+                  value={draft.commission_type}
+                  onChange={(e) => setDraft({ ...draft, commission_type: e.target.value })}
+                >
+                  <option value="">Select</option>
+                  <option value="per_unit">Por caja ($)</option>
+                  <option value="gross_pct">% venta bruta</option>
+                  <option value="net_pct">% sobre neto</option>
+                </Select>
+                <Input
+                  className="w-20"
+                  placeholder={draft.commission_type === "per_unit" ? "$" : "%"}
+                  value={draft.commission_rate}
+                  onChange={(e) => setDraft({ ...draft, commission_rate: e.target.value })}
+                />
+              </div>
+            </MetaCard>
+          ) : null}
           <MetaCard label="Order type">
             <Select value={draft.order_type} onChange={(e) => setDraft({ ...draft, order_type: e.target.value })}>
               <option>Delivery by vendor</option>
@@ -470,11 +549,14 @@ function Page() {
                         className="w-24"
                         placeholder="$"
                         value={l.cost}
+                        disabled={draft.deal_type !== "firme"}
                         onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, cost: e.target.value } : x)))}
                       />
-                      <div className="mt-1 text-[11px] text-danger">PAS</div>
+                      {draft.deal_type !== "firme" ? (
+                        <div className="mt-1 text-[11px] text-danger">{draft.deal_type === "comision" ? "Comisión — sin costo" : "PAS"}</div>
+                      ) : null}
                     </td>
-                    <td className="px-3 py-3 text-xs text-muted">Min: PAS</td>
+                    <td className="px-3 py-3 text-xs text-muted">{draft.deal_type === "firme" ? "" : "Min: PAS"}</td>
                     <td className="px-3 py-3">
                       <Input
                         className="w-20"
@@ -530,7 +612,7 @@ function Page() {
                 <span>
                   Expenses: $0.00 · Order total: <strong>{money(merch)}</strong>
                 </span>
-                <Button disabled={saving || !draft.supplier_id || !lines.length} onClick={() => void placeOrder()}>
+                <Button disabled={saving || !draft.supplier_id || !draft.deal_type || !lines.length} onClick={() => void placeOrder()}>
                   Place order
                 </Button>
               </div>
@@ -905,6 +987,14 @@ function PoDetail({
 
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
         <MetaCard label="Vendor">{row.supplier_name}</MetaCard>
+        <MetaCard label="Deal type">
+          <Badge tone={row.deal_type === "firme" ? "ok" : row.deal_type === "comision" ? "warn" : "mute"}>
+            {t(DEAL_TYPE_LABEL[row.deal_type] ?? row.deal_type)}
+          </Badge>
+          {row.commission_type ? (
+            <div className="mt-1 text-[11px] font-normal text-subtle">{commissionSummary(row.commission_type, row.commission_rate)}</div>
+          ) : null}
+        </MetaCard>
         <MetaCard label="Order type">{row.order_type === "entrega" ? "Delivery by vendor" : row.order_type}</MetaCard>
         <MetaCard label="Requested date">{fecha(row.expected_date || row.order_date)}</MetaCard>
         <MetaCard label="BOL #">{row.bol || ""}</MetaCard>
@@ -1064,7 +1154,7 @@ function PoDetail({
             {t("Receive merchandise")}
           </Button>
         ) : null}
-        {received && !row.bill && row.status !== "cancelled" ? (
+        {received && !row.bill && row.status !== "cancelled" && row.deal_type !== "comision" ? (
           <Button size="sm" variant="outline" disabled={saving} onClick={onBill}>
             {t("Capture vendor invoice")}
           </Button>
@@ -1108,6 +1198,7 @@ function ExpenseModal({
     notes: string;
     payable: boolean;
     by: string;
+    charged_to: string;
   };
   setForm: (v: typeof form) => void;
   onClose: () => void;
@@ -1169,6 +1260,33 @@ function ExpenseModal({
           </span>
         </label>
       </div>
+      <div className="mt-4">
+        <p className="mb-2 text-sm font-medium">¿Quién absorbe este gasto?</p>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="radio"
+            className="mt-1"
+            checked={form.charged_to !== "grower"}
+            onChange={() => setForm({ ...form, charged_to: "plein" })}
+          />
+          <span>
+            <strong>Plein</strong>
+            <span className="block text-xs text-muted">No se le descuenta al productor en la liquidación.</span>
+          </span>
+        </label>
+        <label className="mt-2 flex items-start gap-2 text-sm">
+          <input
+            type="radio"
+            className="mt-1"
+            checked={form.charged_to === "grower"}
+            onChange={() => setForm({ ...form, charged_to: "grower" })}
+          />
+          <span>
+            <strong>Productor</strong>
+            <span className="block text-xs text-muted">Se descuenta del ingreso antes de calcular la comisión y el neto al productor.</span>
+          </span>
+        </label>
+      </div>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>
           Cancel
@@ -1192,9 +1310,18 @@ function SettlementModal({
 }) {
   const data = useAsync(() => getSettlement({ data: { purchase_order_id: poId } }), [poId]);
   const [target, setTarget] = useState("");
+  const [ctype, setCtype] = useState("");
+  const [crate, setCrate] = useState("");
+  const [commissionInit, setCommissionInit] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const s = data.data;
+
+  if (s && !commissionInit) {
+    setCtype(s.commission_type ?? "");
+    setCrate(s.commission_rate != null ? String(s.commission_rate) : "");
+    setCommissionInit(true);
+  }
 
   async function apply(pctVal?: number) {
     setSaving(true);
@@ -1215,11 +1342,45 @@ function SettlementModal({
     }
   }
 
+  async function saveCommission() {
+    setSaving(true);
+    setMsg(null);
+    try {
+      await setPoCommission({
+        data: {
+          purchase_order_id: poId,
+          commission_type: ctype ? (ctype as "per_unit" | "gross_pct" | "net_pct") : null,
+          commission_rate: crate ? Number(crate) : undefined,
+        },
+      });
+      await data.reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not save commission");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleExpense(expenseId: number, current: string) {
+    setSaving(true);
+    setMsg(null);
+    try {
+      await setExpenseChargedTo({
+        data: { expense_id: expenseId, charged_to: current === "grower" ? "plein" : "grower" },
+      });
+      await data.reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not update expense");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <Modal
       wide
       title={`Settlement Calculator for PO #${s ? poShort(s.po_number) : poId}`}
-      subtitle={s ? `${s.supplier_name} · ${s.costing_mode === "pas" ? "PAS" : "Fixed"}` : undefined}
+      subtitle={s ? `${s.supplier_name} · ${DEAL_TYPE_LABEL[s.deal_type] ?? s.deal_type}` : undefined}
       onClose={onClose}
     >
       {data.loading ? <p className="text-sm text-muted">Loading…</p> : null}
@@ -1235,29 +1396,115 @@ function SettlementModal({
             <MiniKpi label="Total paid" value={money(s.paid)} tone={s.paid ? undefined : "danger"} />
             <MiniKpi label="Balance due" value={money(s.balance_due)} />
           </div>
-          <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
-            <Field label="Target profit %">
-              <Input
-                className="w-24"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                placeholder={s.target_profit_pct != null ? String(s.target_profit_pct) : ""}
-              />
-            </Field>
-            <Button
-              size="sm"
-              disabled={saving || !target}
-              onClick={() => void apply(Number(target))}
-            >
-              Apply
-            </Button>
-            <Button size="sm" variant="outline" disabled={saving} onClick={() => void apply(undefined)}>
-              Clear target
-            </Button>
-            <p className="ml-auto max-w-sm text-xs text-muted">
-              PAS: grower cost is $0 until you settle. A target % backs into cost/unit from sold revenue minus expenses.
-            </p>
-          </div>
+          {s.deal_type === "firme" ? (
+            <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
+              <Field label="Target profit %">
+                <Input
+                  className="w-24"
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  placeholder={s.target_profit_pct != null ? String(s.target_profit_pct) : ""}
+                />
+              </Field>
+              <Button
+                size="sm"
+                disabled={saving || !target}
+                onClick={() => void apply(Number(target))}
+              >
+                Apply
+              </Button>
+              <Button size="sm" variant="outline" disabled={saving} onClick={() => void apply(undefined)}>
+                Clear target
+              </Button>
+              <p className="ml-auto max-w-sm text-xs text-muted">
+                Trato en firme: el costo ya está cerrado. El target % es solo una herramienta de análisis.
+              </p>
+            </div>
+          ) : (
+            <>
+              {s.deal_type === "comision" ? (
+                <div className="mt-3 rounded-md border border-warn/40 bg-warn/5 p-3 text-xs text-warn">
+                  Comisión pura: Plein no compra la fruta ni toma título. El costo del lote se queda en $0 y no nace CxP por
+                  el valor de la fruta — la liquidación de abajo es el estado de cuenta para el productor.
+                </div>
+              ) : null}
+              <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
+                <Field label="Plein commission">
+                  <Select value={ctype} onChange={(e) => setCtype(e.target.value)} className="w-44">
+                    <option value="">Sin comisión</option>
+                    <option value="per_unit">Por caja ($)</option>
+                    <option value="gross_pct">% venta bruta</option>
+                    <option value="net_pct">% sobre neto</option>
+                  </Select>
+                </Field>
+                <Field label={ctype === "per_unit" ? "$ / caja" : "%"}>
+                  <Input className="w-24" value={crate} onChange={(e) => setCrate(e.target.value)} />
+                </Field>
+                <Button size="sm" disabled={saving || (!!ctype && !(Number(crate) > 0))} onClick={() => void saveCommission()}>
+                  Save
+                </Button>
+                <p className="ml-auto max-w-sm text-xs text-muted">
+                  Ingreso − gastos del productor − comisión de Plein = neto al productor.
+                </p>
+              </div>
+              {s.breakdown ? (
+                <div className="mt-3 rounded-md border border-border bg-surface p-4">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Liquidación al productor</p>
+                  <div className="max-w-xl text-sm">
+                    <div className="flex justify-between border-b border-border py-1.5">
+                      <span>
+                        Ingreso de la venta
+                        <span className="ml-2 text-xs text-muted">{s.breakdown.sold_units} cajas vendidas</span>
+                      </span>
+                      <span className="tabular-nums">{money(s.breakdown.revenue)}</span>
+                    </div>
+                    {s.expense_rows.map((e) => (
+                      <div key={e.id} className="flex items-center justify-between border-b border-border py-1.5">
+                        <span>
+                          {e.category}
+                          {e.notes ? <span className="ml-2 text-xs text-muted">{e.notes}</span> : null}
+                          <button
+                            type="button"
+                            disabled={saving}
+                            className="ml-2 cursor-pointer text-[11px] text-link underline-offset-2 hover:underline"
+                            onClick={() => void toggleExpense(e.id, e.charged_to)}
+                          >
+                            {e.charged_to === "grower" ? "se descuenta al productor" : "lo absorbe Plein"}
+                          </button>
+                        </span>
+                        <span className={`tabular-nums ${e.charged_to === "grower" ? "" : "text-subtle"}`}>
+                          {e.charged_to === "grower" ? `−${money(e.amount)}` : money(0)}
+                        </span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between border-b border-border py-1.5">
+                      <span>
+                        Comisión Plein
+                        <span className="ml-2 text-xs text-muted">
+                          {s.breakdown.commission_type === "per_unit"
+                            ? `${money(s.breakdown.commission_rate, 2)} × ${s.breakdown.sold_units} cajas`
+                            : s.breakdown.commission_type === "gross_pct"
+                              ? `${s.breakdown.commission_rate}% de ${money(s.breakdown.commission_base)} (venta bruta)`
+                              : `${s.breakdown.commission_rate}% de ${money(s.breakdown.commission_base)} (neto tras gastos)`}
+                        </span>
+                      </span>
+                      <span className="tabular-nums">−{money(s.breakdown.commission)}</span>
+                    </div>
+                    <div className="flex justify-between py-2 text-base font-semibold">
+                      <span>Neto al productor</span>
+                      <span className={`tabular-nums ${s.breakdown.net_to_grower < 0 ? "text-danger" : "text-ok"}`}>
+                        {money(s.breakdown.net_to_grower)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-muted">
+                  Define la comisión de Plein para calcular la liquidación al productor.
+                </p>
+              )}
+            </>
+          )}
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[980px] text-left text-sm">
               <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
@@ -1306,14 +1553,18 @@ function SettlementModal({
             <Button variant="outline" onClick={onClose}>
               Go back
             </Button>
-            <Button
-              disabled={saving}
-              onClick={() =>
-                void apply(target ? Number(target) : s.target_profit_pct ?? undefined).then(onSaved)
-              }
-            >
-              Update lot costs
-            </Button>
+            {s.deal_type !== "comision" ? (
+              <Button
+                disabled={saving || (s.deal_type !== "firme" && !s.breakdown)}
+                onClick={() =>
+                  void apply(
+                    s.breakdown ? undefined : target ? Number(target) : s.target_profit_pct ?? undefined,
+                  ).then(onSaved)
+                }
+              >
+                Update lot costs
+              </Button>
+            ) : null}
           </div>
         </>
       ) : null}

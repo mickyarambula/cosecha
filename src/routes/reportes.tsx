@@ -69,7 +69,7 @@ function Page() {
               <tr>
                 <th className="px-3 py-2">PO</th>
                 <th className="px-3 py-2">Vendor</th>
-                <th className="px-3 py-2">Mode</th>
+                <th className="px-3 py-2">Deal type</th>
                 <th className="px-3 py-2 text-right">Revenue</th>
                 <th className="px-3 py-2 text-right">Expenses</th>
                 <th className="px-3 py-2 text-right">Profit</th>
@@ -86,7 +86,7 @@ function Page() {
                     </Link>
                   </td>
                   <td className="px-3 py-2">{r.supplier_name}</td>
-                  <td className="px-3 py-2 uppercase text-xs text-muted">{r.costing_mode}</td>
+                  <td className="px-3 py-2 uppercase text-xs text-muted">{r.deal_type}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{money(r.revenue)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{money(r.expenses)}</td>
                   <td className={`px-3 py-2 text-right tabular-nums ${r.profit < 0 ? "text-danger" : ""}`}>{money(r.profit)}</td>
