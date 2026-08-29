@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { Modal } from "@/components/app-shell";
 import { PartySkuPanel } from "@/components/party-skus";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Textarea } from "@/components/ui/input";
+import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { createSupplier, listLots, listSuppliers, updateSupplier } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { cn, fecha, money, pct } from "@/lib/utils";
@@ -29,6 +29,8 @@ function Page() {
     enabled: true,
     goods: true,
     services: true,
+    commission_type: "",
+    commission_rate: "",
   });
   const [saving, setSaving] = useState(false);
 
@@ -61,6 +63,8 @@ function Page() {
       enabled: c.is_active,
       goods: true,
       services: true,
+      commission_type: c.commission_type ?? "",
+      commission_rate: c.commission_rate != null ? String(c.commission_rate) : "",
     });
   }
 
@@ -91,6 +95,10 @@ function Page() {
           country: edit.country || undefined,
           notes: edit.notes || undefined,
           is_active: edit.enabled,
+          commission_type: edit.commission_type
+            ? (edit.commission_type as "per_unit" | "gross_pct" | "net_pct")
+            : null,
+          commission_rate: edit.commission_rate ? Number(edit.commission_rate) : null,
         },
       });
       await reload();
@@ -157,6 +165,28 @@ function Page() {
                     <Input defaultValue={current.code} />
                   </Field>
                 </div>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <Field label="Comisión Plein (default)">
+                    <Select
+                      value={edit.commission_type}
+                      onChange={(e) => setEdit({ ...edit, commission_type: e.target.value })}
+                    >
+                      <option value="">Sin comisión</option>
+                      <option value="per_unit">Por caja ($)</option>
+                      <option value="gross_pct">% venta bruta</option>
+                      <option value="net_pct">% sobre neto</option>
+                    </Select>
+                  </Field>
+                  <Field label={edit.commission_type === "per_unit" ? "$ / caja" : "%"}>
+                    <Input
+                      value={edit.commission_rate}
+                      onChange={(e) => setEdit({ ...edit, commission_rate: e.target.value })}
+                    />
+                  </Field>
+                </div>
+                <p className="mt-1 text-[11px] text-muted">
+                  Se precarga en cada OC de consignación o comisión de este productor; editable por carga.
+                </p>
               </div>
               <div className="space-y-2 pt-5 text-sm">
                 <label className="flex items-center gap-2">
