@@ -4,9 +4,17 @@ import { Modal } from "@/components/app-shell";
 import { PartySkuPanel } from "@/components/party-skus";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
-import { createSupplier, listLots, listSuppliers, updateSupplier } from "@/lib/produce-server";
+import {
+  cancelGrowerAdvance,
+  createGrowerAdvance,
+  createSupplier,
+  getGrowerAccount,
+  listLots,
+  listSuppliers,
+  updateSupplier,
+} from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { cn, fecha, money, pct } from "@/lib/utils";
+import { cn, fecha, money, pct, todayISO } from "@/lib/utils";
 
 export const Route = createFileRoute("/proveedores")({ component: Page });
 
@@ -16,7 +24,10 @@ function Page() {
   const [sel, setSel] = useState<number | null>(null);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [vtab, setVtab] = useState<"skus" | "lots" | "expenses" | "returns">("skus");
+  const [vtab, setVtab] = useState<"skus" | "lots" | "account" | "expenses" | "returns">("skus");
+  const [advOpen, setAdvOpen] = useState(false);
+  const [cancelArm, setCancelArm] = useState<number | null>(null);
+  const [adv, setAdv] = useState({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "" });
   const [form, setForm] = useState({ name: "", contact_name: "", phone: "", email: "", city: "", country: "USA", notes: "", tambien_cliente: false });
   const [edit, setEdit] = useState({
     name: "",
@@ -33,6 +44,10 @@ function Page() {
     commission_rate: "",
   });
   const [saving, setSaving] = useState(false);
+  const account = useAsync(
+    () => (sel != null && vtab === "account" ? getGrowerAccount({ data: { supplier_id: sel } }) : Promise.resolve(null)),
+    [sel, vtab],
+  );
 
   const list = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -102,6 +117,39 @@ function Page() {
         },
       });
       await reload();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveAdvance() {
+    if (!current || !adv.concept.trim() || !(Number(adv.amount) > 0)) return;
+    setSaving(true);
+    try {
+      await createGrowerAdvance({
+        data: {
+          supplier_id: current.id,
+          concept: adv.concept,
+          amount: Number(adv.amount),
+          advance_date: adv.date || undefined,
+          purchase_order_id: adv.po_id ? Number(adv.po_id) : undefined,
+          notes: adv.notes || undefined,
+        },
+      });
+      setAdvOpen(false);
+      setAdv({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "" });
+      await account.reload();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function cancelAdvance(id: number) {
+    setSaving(true);
+    try {
+      await cancelGrowerAdvance({ data: { advance_id: id } });
+      setCancelArm(null);
+      await account.reload();
     } finally {
       setSaving(false);
     }
@@ -259,14 +307,22 @@ function Page() {
             </Field>
             <div className="mt-6 border-t border-border pt-4">
               <div className="flex gap-4 text-sm">
-                {(["skus", "lots", "expenses", "returns"] as const).map((tabId) => (
+                {(["skus", "lots", "account", "expenses", "returns"] as const).map((tabId) => (
                   <button
                     key={tabId}
                     type="button"
                     className={vtab === tabId ? "border-b-2 border-action pb-1 font-medium" : "pb-1 text-muted"}
                     onClick={() => setVtab(tabId)}
                   >
-                    {tabId === "skus" ? "Preferred SKUs" : tabId === "lots" ? "Lots" : tabId === "expenses" ? "Expenses" : "Returns"}
+                    {tabId === "skus"
+                      ? "Preferred SKUs"
+                      : tabId === "lots"
+                        ? "Lots"
+                        : tabId === "account"
+                          ? "Cuenta corriente"
+                          : tabId === "expenses"
+                            ? "Expenses"
+                            : "Returns"}
                   </button>
                 ))}
               </div>
@@ -315,6 +371,114 @@ function Page() {
                     </tbody>
                   </table>
                 </div>
+              ) : vtab === "account" ? (
+                <div className="mt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm">
+                      Saldo vivo de adelantos:{" "}
+                      <strong className={`tabular-nums ${(account.data?.balance ?? 0) > 0 ? "text-warn" : ""}`}>
+                        {money(account.data?.balance ?? 0)}
+                      </strong>
+                    </p>
+                    <div className="flex gap-2">
+                      {current.share_token ? (
+                        <a
+                          href={`/doc/cuenta/${current.share_token}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-8 cursor-pointer items-center rounded-md border border-border px-3 text-sm hover:bg-surface-2"
+                        >
+                          Estado de cuenta (PDF / enviar)
+                        </a>
+                      ) : null}
+                      <Button size="sm" onClick={() => setAdvOpen(true)}>
+                        + Nuevo adelanto
+                      </Button>
+                    </div>
+                  </div>
+                  {account.loading ? <p className="mt-3 text-sm text-muted">Loading…</p> : null}
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="w-full min-w-[720px] text-left text-sm">
+                      <thead className="text-[11px] uppercase text-muted">
+                        <tr>
+                          <th className="px-2 py-2">#</th>
+                          <th className="px-2 py-2">Fecha</th>
+                          <th className="px-2 py-2">Concepto</th>
+                          <th className="px-2 py-2">Carga</th>
+                          <th className="px-2 py-2 text-right">Monto</th>
+                          <th className="px-2 py-2 text-right">Recuperado</th>
+                          <th className="px-2 py-2 text-right">Saldo</th>
+                          <th className="px-2 py-2" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(account.data?.advances ?? []).map((a) => (
+                          <tr key={a.id} className={`border-t border-border ${a.cancelled_at ? "text-subtle line-through" : ""}`}>
+                            <td className="px-2 py-2 font-mono text-xs">{a.advance_number}</td>
+                            <td className="px-2 py-2">{fecha(a.advance_date)}</td>
+                            <td className="px-2 py-2">
+                              {a.concept}
+                              {a.notes ? <span className="ml-2 text-xs text-muted">{a.notes}</span> : null}
+                            </td>
+                            <td className="px-2 py-2">{a.po_number || "—"}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">{money(a.amount)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">{money(a.recovered)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-medium">{money(a.balance)}</td>
+                            <td className="px-2 py-2 text-right">
+                              {!a.cancelled_at && a.recovered < 0.009 ? (
+                                <button
+                                  type="button"
+                                  className="cursor-pointer text-xs text-danger"
+                                  disabled={saving}
+                                  onClick={() => (cancelArm === a.id ? void cancelAdvance(a.id) : setCancelArm(a.id))}
+                                >
+                                  {cancelArm === a.id ? "¿Seguro? Sí, cancelar" : "Cancelar"}
+                                </button>
+                              ) : null}
+                            </td>
+                          </tr>
+                        ))}
+                        {!account.loading && !(account.data?.advances ?? []).length ? (
+                          <tr>
+                            <td colSpan={8} className="px-2 py-4 text-muted">
+                              Sin adelantos registrados para este productor.
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                  {(account.data?.applications ?? []).length ? (
+                    <div className="mt-4">
+                      <p className="mb-1 text-sm font-semibold">Recuperaciones</p>
+                      <table className="w-full min-w-[560px] text-left text-sm">
+                        <thead className="text-[11px] uppercase text-muted">
+                          <tr>
+                            <th className="px-2 py-2">Fecha</th>
+                            <th className="px-2 py-2">Adelanto</th>
+                            <th className="px-2 py-2">Liquidación</th>
+                            <th className="px-2 py-2 text-right">Monto</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(account.data?.applications ?? []).map((ap) => (
+                            <tr key={ap.id} className="border-t border-border">
+                              <td className="px-2 py-2">{fecha(ap.created_at)}</td>
+                              <td className="px-2 py-2 font-mono text-xs">
+                                {ap.advance_number} <span className="font-sans text-muted">{ap.concept}</span>
+                              </td>
+                              <td className="px-2 py-2">
+                                {ap.bill_number}
+                                {ap.po_number ? <span className="ml-1 text-xs text-muted">· {ap.po_number}</span> : null}
+                              </td>
+                              <td className="px-2 py-2 text-right tabular-nums">−{money(ap.amount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </div>
               ) : (
                 <p className="mt-4 text-sm text-muted">
                   {vtab === "expenses" ? "Expenses for this vendor live in Finance → Expenses." : "No returns recorded for this vendor."}
@@ -337,6 +501,50 @@ function Page() {
           </div>
         )}
       </section>
+      {advOpen && current ? (
+        <Modal title={`Nuevo adelanto — ${current.name}`} onClose={() => setAdvOpen(false)}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Fecha">
+              <Input type="date" value={adv.date} onChange={(e) => setAdv({ ...adv, date: e.target.value })} />
+            </Field>
+            <Field label="Monto ($)">
+              <Input value={adv.amount} onChange={(e) => setAdv({ ...adv, amount: e.target.value })} />
+            </Field>
+            <Field label="Concepto">
+              <Input
+                placeholder="Flete / Pick and pack / Semilla / Efectivo…"
+                value={adv.concept}
+                onChange={(e) => setAdv({ ...adv, concept: e.target.value })}
+              />
+            </Field>
+            <Field label="Ligado a carga (opcional)">
+              <Select value={adv.po_id} onChange={(e) => setAdv({ ...adv, po_id: e.target.value })}>
+                <option value="">Sin carga — apoyo general</option>
+                {(account.data?.pos ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.po_number}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+          <Field label="Nota" className="mt-3">
+            <Textarea value={adv.notes} onChange={(e) => setAdv({ ...adv, notes: e.target.value })} />
+          </Field>
+          <p className="mt-3 text-xs text-muted">
+            El adelanto sale de caja y queda como cuenta por cobrar al productor — no es un gasto. Se recupera contra
+            liquidaciones futuras, cuando tú decidas.
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setAdvOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={saving || !adv.concept.trim() || !(Number(adv.amount) > 0)} onClick={() => void saveAdvance()}>
+              Registrar adelanto
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
       {open ? (
         <Modal title="Add vendor" onClose={() => setOpen(false)}>
           <form className="grid gap-3" onSubmit={submit}>

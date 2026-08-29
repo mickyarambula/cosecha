@@ -296,6 +296,7 @@ const ES: Record<string, string> = {
   Firm: "Firme",
   Consignment: "Consignación",
   "Pure commission": "Comisión pura",
+  "Grower Statement": "Estado de cuenta del productor",
   Paid: "Pagada",
   Overdue: "Vencida",
   Open: "Abierta",
