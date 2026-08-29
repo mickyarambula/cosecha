@@ -861,6 +861,260 @@ export const addValueList = createServerFn({ method: "POST" }).validator(z.objec
 	]);
 	return { value };
 });
+// ── Catálogos aduanales (Fase B) ────────────────────────────────────────────
+// Agencias, cruces y transportistas alimentan la captura de embarque en
+// OC/OV (Fase C). "Proveedor ligado" es opcional: no toda agencia o línea es
+// proveedor de Plein, y cuando sí lo es (Suárez Brokerage, Cornejos Trucking)
+// se liga al registro de suppliers que ya existe en vez de duplicar el dato.
+export const listCustomsBrokers = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+	return (await getSql()).query(`
+    select cb.id, cb.name, cb.country, cb.license_number, cb.contact_name, cb.phone, cb.email, cb.notes, cb.is_active,
+           cb.supplier_id, s.name as supplier_name
+    from customs_brokers cb
+    left join suppliers s on s.id = cb.supplier_id
+    order by cb.name
+  `);
+});
+export const createCustomsBroker = createServerFn({ method: "POST" }).validator(z.object({
+	name: z.string().min(1),
+	country: z.enum(["MX", "US"]).default("MX"),
+	license_number: z.string().optional(),
+	contact_name: z.string().optional(),
+	phone: z.string().optional(),
+	email: z.string().optional(),
+	supplier_id: z.number().nullable().optional(),
+	notes: z.string().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	return {
+		id: (await sql.query(`insert into customs_brokers (name, country, license_number, contact_name, phone, email, supplier_id, notes)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`, [
+			data.name.trim(),
+			data.country,
+			data.license_number?.trim() || null,
+			data.contact_name?.trim() || null,
+			data.phone?.trim() || null,
+			data.email?.trim() || null,
+			data.supplier_id ?? null,
+			data.notes?.trim() || null
+		]))[0].id
+	};
+});
+export const updateCustomsBroker = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	name: z.string().min(1),
+	country: z.enum(["MX", "US"]),
+	license_number: z.string().optional(),
+	contact_name: z.string().optional(),
+	phone: z.string().optional(),
+	email: z.string().optional(),
+	supplier_id: z.number().nullable().optional(),
+	notes: z.string().optional(),
+	is_active: z.boolean()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	await (await getSql()).query(`update customs_brokers set name=$1, country=$2, license_number=$3, contact_name=$4,
+       phone=$5, email=$6, supplier_id=$7, notes=$8, is_active=$9 where id=$10`, [
+		data.name.trim(),
+		data.country,
+		data.license_number?.trim() || null,
+		data.contact_name?.trim() || null,
+		data.phone?.trim() || null,
+		data.email?.trim() || null,
+		data.supplier_id ?? null,
+		data.notes?.trim() || null,
+		data.is_active,
+		data.id
+	]);
+	return { ok: true };
+});
+
+export const listBorderCrossings = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+	return (await getSql()).query(`select id, name, port_mx, port_us, state_mx, state_us, is_active from border_crossings order by name`);
+});
+export const createBorderCrossing = createServerFn({ method: "POST" }).validator(z.object({
+	name: z.string().min(1),
+	port_mx: z.string().optional(),
+	port_us: z.string().optional(),
+	state_mx: z.string().optional(),
+	state_us: z.string().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const name = data.name.trim();
+	const [dup] = await sql.query(`select id from border_crossings where lower(name) = lower($1)`, [name]);
+	if (dup) throw new Error(`«${name}» ya existe`);
+	return {
+		id: (await sql.query(`insert into border_crossings (name, port_mx, port_us, state_mx, state_us) values ($1,$2,$3,$4,$5) returning id`, [
+			name,
+			data.port_mx?.trim() || null,
+			data.port_us?.trim() || null,
+			data.state_mx?.trim() || null,
+			data.state_us?.trim() || null
+		]))[0].id
+	};
+});
+export const updateBorderCrossing = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	name: z.string().min(1),
+	port_mx: z.string().optional(),
+	port_us: z.string().optional(),
+	state_mx: z.string().optional(),
+	state_us: z.string().optional(),
+	is_active: z.boolean()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	await (await getSql()).query(`update border_crossings set name=$1, port_mx=$2, port_us=$3, state_mx=$4, state_us=$5, is_active=$6 where id=$7`, [
+		data.name.trim(),
+		data.port_mx?.trim() || null,
+		data.port_us?.trim() || null,
+		data.state_mx?.trim() || null,
+		data.state_us?.trim() || null,
+		data.is_active,
+		data.id
+	]);
+	return { ok: true };
+});
+
+export const listCarriers = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+	return (await getSql()).query(`
+    select c.id, c.name, c.country, c.scac, c.caat, c.contact_name, c.phone, c.is_active,
+           c.supplier_id, s.name as supplier_name
+    from carriers c
+    left join suppliers s on s.id = c.supplier_id
+    order by c.name
+  `);
+});
+export const createCarrier = createServerFn({ method: "POST" }).validator(z.object({
+	name: z.string().min(1),
+	country: z.string().optional(),
+	scac: z.string().optional(),
+	caat: z.string().optional(),
+	contact_name: z.string().optional(),
+	phone: z.string().optional(),
+	supplier_id: z.number().nullable().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	return {
+		id: (await sql.query(`insert into carriers (name, country, scac, caat, contact_name, phone, supplier_id)
+       values ($1,$2,$3,$4,$5,$6,$7) returning id`, [
+			data.name.trim(),
+			data.country?.trim() || null,
+			data.scac?.trim().toUpperCase() || null,
+			data.caat?.trim().toUpperCase() || null,
+			data.contact_name?.trim() || null,
+			data.phone?.trim() || null,
+			data.supplier_id ?? null
+		]))[0].id
+	};
+});
+export const updateCarrier = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	name: z.string().min(1),
+	country: z.string().optional(),
+	scac: z.string().optional(),
+	caat: z.string().optional(),
+	contact_name: z.string().optional(),
+	phone: z.string().optional(),
+	supplier_id: z.number().nullable().optional(),
+	is_active: z.boolean()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	await (await getSql()).query(`update carriers set name=$1, country=$2, scac=$3, caat=$4, contact_name=$5, phone=$6, supplier_id=$7, is_active=$8 where id=$9`, [
+		data.name.trim(),
+		data.country?.trim() || null,
+		data.scac?.trim().toUpperCase() || null,
+		data.caat?.trim().toUpperCase() || null,
+		data.contact_name?.trim() || null,
+		data.phone?.trim() || null,
+		data.supplier_id ?? null,
+		data.is_active,
+		data.id
+	]);
+	return { ok: true };
+});
+
+export const listCarrierUnits = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+	return (await getSql()).query(`select id, carrier_id, unit_type, plates, economic_number, make_model, model_year, is_active from carrier_units order by id`);
+});
+export const createCarrierUnit = createServerFn({ method: "POST" }).validator(z.object({
+	carrier_id: z.number(),
+	unit_type: z.enum(["camion", "remolque"]),
+	plates: z.string().min(1),
+	economic_number: z.string().optional(),
+	make_model: z.string().optional(),
+	model_year: z.number().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	return {
+		id: (await sql.query(`insert into carrier_units (carrier_id, unit_type, plates, economic_number, make_model, model_year)
+       values ($1,$2,$3,$4,$5,$6) returning id`, [
+			data.carrier_id,
+			data.unit_type,
+			data.plates.trim(),
+			data.economic_number?.trim() || null,
+			data.make_model?.trim() || null,
+			data.model_year ?? null
+		]))[0].id
+	};
+});
+export const updateCarrierUnit = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	unit_type: z.enum(["camion", "remolque"]),
+	plates: z.string().min(1),
+	economic_number: z.string().optional(),
+	make_model: z.string().optional(),
+	model_year: z.number().optional(),
+	is_active: z.boolean()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	await (await getSql()).query(`update carrier_units set unit_type=$1, plates=$2, economic_number=$3, make_model=$4, model_year=$5, is_active=$6 where id=$7`, [
+		data.unit_type,
+		data.plates.trim(),
+		data.economic_number?.trim() || null,
+		data.make_model?.trim() || null,
+		data.model_year ?? null,
+		data.is_active,
+		data.id
+	]);
+	return { ok: true };
+});
+
+export const listDrivers = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
+	return (await getSql()).query(`select id, carrier_id, name, license_number, license_state, phone, is_active from drivers order by id`);
+});
+export const createDriver = createServerFn({ method: "POST" }).validator(z.object({
+	carrier_id: z.number(),
+	name: z.string().min(1),
+	license_number: z.string().optional(),
+	license_state: z.string().optional(),
+	phone: z.string().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	return {
+		id: (await sql.query(`insert into drivers (carrier_id, name, license_number, license_state, phone)
+       values ($1,$2,$3,$4,$5) returning id`, [
+			data.carrier_id,
+			data.name.trim(),
+			data.license_number?.trim() || null,
+			data.license_state?.trim() || null,
+			data.phone?.trim() || null
+		]))[0].id
+	};
+});
+export const updateDriver = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	name: z.string().min(1),
+	license_number: z.string().optional(),
+	license_state: z.string().optional(),
+	phone: z.string().optional(),
+	is_active: z.boolean()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	await (await getSql()).query(`update drivers set name=$1, license_number=$2, license_state=$3, phone=$4, is_active=$5 where id=$6`, [
+		data.name.trim(),
+		data.license_number?.trim() || null,
+		data.license_state?.trim() || null,
+		data.phone?.trim() || null,
+		data.is_active,
+		data.id
+	]);
+	return { ok: true };
+});
 export const listLots = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	const sql = await getSql();
 	const lots = await sql.query(`

@@ -46,6 +46,9 @@ export const MODULES: ModuleDef[] = [
       { to: "/cpo", label: "Online Orders" },
       { to: "/listas", label: "Price Sheets" },
       { to: "/destinos", label: "Delivery Routes" },
+      { to: "/agencias", label: "Agencias aduanales" },
+      { to: "/cruces", label: "Puntos de cruce" },
+      { to: "/transportistas", label: "Transportistas" },
     ],
   },
   {

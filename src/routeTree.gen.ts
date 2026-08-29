@@ -10,9 +10,11 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AgenciasRouteImport } from './routes/agencias'
 import { Route as ClientesRouteImport } from './routes/clientes'
 import { Route as ComprasRouteImport } from './routes/compras'
 import { Route as CpoRouteImport } from './routes/cpo'
+import { Route as CrucesRouteImport } from './routes/cruces'
 import { Route as CuentasRouteImport } from './routes/cuentas'
 import { Route as CxcRouteImport } from './routes/cxc'
 import { Route as CxpRouteImport } from './routes/cxp'
@@ -26,6 +28,7 @@ import { Route as ProveedoresRouteImport } from './routes/proveedores'
 import { Route as ReportesRouteImport } from './routes/reportes'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as TesoreriaRouteImport } from './routes/tesoreria'
+import { Route as TransportistasRouteImport } from './routes/transportistas'
 import { Route as VentasRouteImport } from './routes/ventas'
 import { Route as PortalIdRouteImport } from './routes/portal.$id'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -35,6 +38,11 @@ import { Route as DocTipoIdRouteImport } from './routes/doc.$tipo.$id'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgenciasRoute = AgenciasRouteImport.update({
+  id: '/agencias',
+  path: '/agencias',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ClientesRoute = ClientesRouteImport.update({
@@ -50,6 +58,11 @@ const ComprasRoute = ComprasRouteImport.update({
 const CpoRoute = CpoRouteImport.update({
   id: '/cpo',
   path: '/cpo',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CrucesRoute = CrucesRouteImport.update({
+  id: '/cruces',
+  path: '/cruces',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CuentasRoute = CuentasRouteImport.update({
@@ -117,6 +130,11 @@ const TesoreriaRoute = TesoreriaRouteImport.update({
   path: '/tesoreria',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TransportistasRoute = TransportistasRouteImport.update({
+  id: '/transportistas',
+  path: '/transportistas',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const VentasRoute = VentasRouteImport.update({
   id: '/ventas',
   path: '/ventas',
@@ -145,9 +163,11 @@ const DocTipoIdRoute = DocTipoIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/agencias': typeof AgenciasRoute
   '/clientes': typeof ClientesRoute
   '/compras': typeof ComprasRoute
   '/cpo': typeof CpoRoute
+  '/cruces': typeof CrucesRoute
   '/cuentas': typeof CuentasRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
@@ -161,6 +181,7 @@ export interface FileRoutesByFullPath {
   '/reportes': typeof ReportesRoute
   '/settings': typeof SettingsRoute
   '/tesoreria': typeof TesoreriaRoute
+  '/transportistas': typeof TransportistasRoute
   '/ventas': typeof VentasRoute
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -169,9 +190,11 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/agencias': typeof AgenciasRoute
   '/clientes': typeof ClientesRoute
   '/compras': typeof ComprasRoute
   '/cpo': typeof CpoRoute
+  '/cruces': typeof CrucesRoute
   '/cuentas': typeof CuentasRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
@@ -185,6 +208,7 @@ export interface FileRoutesByTo {
   '/reportes': typeof ReportesRoute
   '/settings': typeof SettingsRoute
   '/tesoreria': typeof TesoreriaRoute
+  '/transportistas': typeof TransportistasRoute
   '/ventas': typeof VentasRoute
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -194,9 +218,11 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/agencias': typeof AgenciasRoute
   '/clientes': typeof ClientesRoute
   '/compras': typeof ComprasRoute
   '/cpo': typeof CpoRoute
+  '/cruces': typeof CrucesRoute
   '/cuentas': typeof CuentasRoute
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
@@ -210,6 +236,7 @@ export interface FileRoutesById {
   '/reportes': typeof ReportesRoute
   '/settings': typeof SettingsRoute
   '/tesoreria': typeof TesoreriaRoute
+  '/transportistas': typeof TransportistasRoute
   '/ventas': typeof VentasRoute
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -220,9 +247,11 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/agencias'
     | '/clientes'
     | '/compras'
     | '/cpo'
+    | '/cruces'
     | '/cuentas'
     | '/cxc'
     | '/cxp'
@@ -236,6 +265,7 @@ export interface FileRouteTypes {
     | '/reportes'
     | '/settings'
     | '/tesoreria'
+    | '/transportistas'
     | '/ventas'
     | '/portal/$id'
     | '/api/auth/$'
@@ -244,9 +274,11 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/agencias'
     | '/clientes'
     | '/compras'
     | '/cpo'
+    | '/cruces'
     | '/cuentas'
     | '/cxc'
     | '/cxp'
@@ -260,6 +292,7 @@ export interface FileRouteTypes {
     | '/reportes'
     | '/settings'
     | '/tesoreria'
+    | '/transportistas'
     | '/ventas'
     | '/portal/$id'
     | '/api/auth/$'
@@ -268,9 +301,11 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/agencias'
     | '/clientes'
     | '/compras'
     | '/cpo'
+    | '/cruces'
     | '/cuentas'
     | '/cxc'
     | '/cxp'
@@ -284,6 +319,7 @@ export interface FileRouteTypes {
     | '/reportes'
     | '/settings'
     | '/tesoreria'
+    | '/transportistas'
     | '/ventas'
     | '/portal/$id'
     | '/api/auth/$'
@@ -293,9 +329,11 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AgenciasRoute: typeof AgenciasRoute
   ClientesRoute: typeof ClientesRoute
   ComprasRoute: typeof ComprasRoute
   CpoRoute: typeof CpoRoute
+  CrucesRoute: typeof CrucesRoute
   CuentasRoute: typeof CuentasRoute
   CxcRoute: typeof CxcRoute
   CxpRoute: typeof CxpRoute
@@ -309,6 +347,7 @@ export interface RootRouteChildren {
   ReportesRoute: typeof ReportesRoute
   SettingsRoute: typeof SettingsRoute
   TesoreriaRoute: typeof TesoreriaRoute
+  TransportistasRoute: typeof TransportistasRoute
   VentasRoute: typeof VentasRoute
   PortalIdRoute: typeof PortalIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -323,6 +362,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agencias': {
+      id: '/agencias'
+      path: '/agencias'
+      fullPath: '/agencias'
+      preLoaderRoute: typeof AgenciasRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/clientes': {
@@ -344,6 +390,13 @@ declare module '@tanstack/react-router' {
       path: '/cpo'
       fullPath: '/cpo'
       preLoaderRoute: typeof CpoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cruces': {
+      id: '/cruces'
+      path: '/cruces'
+      fullPath: '/cruces'
+      preLoaderRoute: typeof CrucesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/cuentas': {
@@ -437,6 +490,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TesoreriaRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/transportistas': {
+      id: '/transportistas'
+      path: '/transportistas'
+      fullPath: '/transportistas'
+      preLoaderRoute: typeof TransportistasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/ventas': {
       id: '/ventas'
       path: '/ventas'
@@ -477,9 +537,11 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AgenciasRoute: AgenciasRoute,
   ClientesRoute: ClientesRoute,
   ComprasRoute: ComprasRoute,
   CpoRoute: CpoRoute,
+  CrucesRoute: CrucesRoute,
   CuentasRoute: CuentasRoute,
   CxcRoute: CxcRoute,
   CxpRoute: CxpRoute,
@@ -493,6 +555,7 @@ const rootRouteChildren: RootRouteChildren = {
   ReportesRoute: ReportesRoute,
   SettingsRoute: SettingsRoute,
   TesoreriaRoute: TesoreriaRoute,
+  TransportistasRoute: TransportistasRoute,
   VentasRoute: VentasRoute,
   PortalIdRoute: PortalIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
