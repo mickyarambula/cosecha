@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Kpi, Modal, PageHeader, Panel } from "@/components/app-shell";
 import { packsToSkus, SkuSelect } from "@/components/sku-select";
@@ -518,7 +519,18 @@ function Page() {
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Lines</p>
               <div className="space-y-3">
                 {lines.map((line, i) => (
-                  <div key={i} className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-4">
+                  <div key={i} className="relative grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-4">
+                    {lines.length > 1 ? (
+                      <button
+                        type="button"
+                        title="Quitar línea"
+                        aria-label={`Quitar línea ${i + 1}`}
+                        className="absolute right-2 top-2 cursor-pointer rounded p-1 text-subtle hover:bg-danger/10 hover:text-danger"
+                        onClick={() => setLines((prev) => prev.filter((_, idx) => idx !== i))}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    ) : null}
                     <div className="sm:col-span-2">
                       <SkuSelect
                         required
