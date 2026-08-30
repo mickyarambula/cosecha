@@ -19,6 +19,7 @@ import { Route as CuentasRouteImport } from './routes/cuentas'
 import { Route as CxcRouteImport } from './routes/cxc'
 import { Route as CxpRouteImport } from './routes/cxp'
 import { Route as DestinosRouteImport } from './routes/destinos'
+import { Route as EmbarquesRouteImport } from './routes/embarques'
 import { Route as GastosRouteImport } from './routes/gastos'
 import { Route as InventarioRouteImport } from './routes/inventario'
 import { Route as ListasRouteImport } from './routes/listas'
@@ -83,6 +84,11 @@ const CxpRoute = CxpRouteImport.update({
 const DestinosRoute = DestinosRouteImport.update({
   id: '/destinos',
   path: '/destinos',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EmbarquesRoute = EmbarquesRouteImport.update({
+  id: '/embarques',
+  path: '/embarques',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GastosRoute = GastosRouteImport.update({
@@ -172,6 +178,7 @@ export interface FileRoutesByFullPath {
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
   '/destinos': typeof DestinosRoute
+  '/embarques': typeof EmbarquesRoute
   '/gastos': typeof GastosRoute
   '/inventario': typeof InventarioRoute
   '/listas': typeof ListasRoute
@@ -199,6 +206,7 @@ export interface FileRoutesByTo {
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
   '/destinos': typeof DestinosRoute
+  '/embarques': typeof EmbarquesRoute
   '/gastos': typeof GastosRoute
   '/inventario': typeof InventarioRoute
   '/listas': typeof ListasRoute
@@ -227,6 +235,7 @@ export interface FileRoutesById {
   '/cxc': typeof CxcRoute
   '/cxp': typeof CxpRoute
   '/destinos': typeof DestinosRoute
+  '/embarques': typeof EmbarquesRoute
   '/gastos': typeof GastosRoute
   '/inventario': typeof InventarioRoute
   '/listas': typeof ListasRoute
@@ -256,6 +265,7 @@ export interface FileRouteTypes {
     | '/cxc'
     | '/cxp'
     | '/destinos'
+    | '/embarques'
     | '/gastos'
     | '/inventario'
     | '/listas'
@@ -283,6 +293,7 @@ export interface FileRouteTypes {
     | '/cxc'
     | '/cxp'
     | '/destinos'
+    | '/embarques'
     | '/gastos'
     | '/inventario'
     | '/listas'
@@ -310,6 +321,7 @@ export interface FileRouteTypes {
     | '/cxc'
     | '/cxp'
     | '/destinos'
+    | '/embarques'
     | '/gastos'
     | '/inventario'
     | '/listas'
@@ -338,6 +350,7 @@ export interface RootRouteChildren {
   CxcRoute: typeof CxcRoute
   CxpRoute: typeof CxpRoute
   DestinosRoute: typeof DestinosRoute
+  EmbarquesRoute: typeof EmbarquesRoute
   GastosRoute: typeof GastosRoute
   InventarioRoute: typeof InventarioRoute
   ListasRoute: typeof ListasRoute
@@ -425,6 +438,13 @@ declare module '@tanstack/react-router' {
       path: '/destinos'
       fullPath: '/destinos'
       preLoaderRoute: typeof DestinosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/embarques': {
+      id: '/embarques'
+      path: '/embarques'
+      fullPath: '/embarques'
+      preLoaderRoute: typeof EmbarquesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/gastos': {
@@ -546,6 +566,7 @@ const rootRouteChildren: RootRouteChildren = {
   CxcRoute: CxcRoute,
   CxpRoute: CxpRoute,
   DestinosRoute: DestinosRoute,
+  EmbarquesRoute: EmbarquesRoute,
   GastosRoute: GastosRoute,
   InventarioRoute: InventarioRoute,
   ListasRoute: ListasRoute,

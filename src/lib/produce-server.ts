@@ -3,7 +3,7 @@ import { authMiddleware, moduleMiddleware } from "@/lib/auth/middleware";
 import { z } from "zod";
 import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
-import { addDaysISO, num, skuCodeOf, termsDays, todayISO } from "@/lib/utils";
+import { addDaysISO, num, SHIPMENT_STATUSES, skuCodeOf, termsDays, todayISO } from "@/lib/utils";
 
 // Intentionally `Promise<any>`, not `Promise<Sql>` — every one of this file's
 // ~150 `sql.query(...)` calls would need an explicit row-shape generic before
@@ -838,7 +838,8 @@ export const listValueLists = createServerFn({ method: "GET" }).middleware([auth
 	return {
 		empaque: group("empaque"),
 		calibre: group("calibre"),
-		grado: group("grado")
+		grado: group("grado"),
+		incoterm: group("incoterm")
 	};
 });
 export const addValueList = createServerFn({ method: "POST" }).validator(z.object({
@@ -1113,6 +1114,182 @@ export const updateDriver = createServerFn({ method: "POST" }).validator(z.objec
 		data.is_active,
 		data.id
 	]);
+	return { ok: true };
+});
+
+// ── Embarques (Fase C aduanal) ──────────────────────────────────────────────
+// tipo 'entrada' cuelga de la OC, 'salida' de la OV. Sin candado único por
+// orden: una OC puede llegar en dos camiones. El estado se valida contra
+// SHIPMENT_STATUSES (utils) — la base lo guarda como texto libre, así que el
+// candado de que 'cruzado' no exista en salidas vive aquí y en la UI, que
+// leen el MISMO mapa.
+const shipmentFields = {
+	carrier_id: z.number().nullable().optional(),
+	truck_unit_id: z.number().nullable().optional(),
+	trailer_unit_id: z.number().nullable().optional(),
+	driver_id: z.number().nullable().optional(),
+	temp_min: z.number().nullable().optional(),
+	temp_max: z.number().nullable().optional(),
+	temp_unit: z.enum(["F", "C"]).nullable().optional(),
+	load_time: z.string().optional(),
+	ship_date: z.string().optional(),
+	seals: z.string().optional(),
+	notes: z.string().optional(),
+	// Solo entrada — la UI de salida ni los manda.
+	customs_broker_mx_id: z.number().nullable().optional(),
+	reference_mx: z.string().optional(),
+	customs_broker_us_id: z.number().nullable().optional(),
+	reference_us: z.string().optional(),
+	border_crossing_id: z.number().nullable().optional(),
+	crossing_date: z.string().optional(),
+	incoterm: z.string().optional(),
+	incoterm_place: z.string().optional(),
+	manifest_number: z.string().optional(),
+	status: z.string().default("pendiente")
+};
+function assertShipmentStatus(tipo: "entrada" | "salida", status: string) {
+	const allowed: readonly string[] = SHIPMENT_STATUSES[tipo];
+	if (!allowed.includes(status)) throw new Error(`Estado «${status}» no aplica a un embarque de ${tipo}.`);
+}
+export const listShipments = createServerFn({ method: "GET" }).validator(z.object({
+	purchase_order_id: z.number().optional(),
+	sales_order_id: z.number().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const where = data.purchase_order_id
+		? `where s.purchase_order_id = ${Number(data.purchase_order_id)}`
+		: data.sales_order_id
+			? `where s.sales_order_id = ${Number(data.sales_order_id)}`
+			: "";
+	const rows = await sql.query(`
+    select s.id, s.shipment_number, s.shipment_type, s.status,
+           s.purchase_order_id, po.po_number, sup.name as supplier_name,
+           s.sales_order_id, so.so_number, cust.name as customer_name,
+           s.carrier_id, c.name as carrier_name,
+           s.truck_unit_id, tu.plates as truck_plates, tu.economic_number as truck_economic,
+           s.trailer_unit_id, tr.plates as trailer_plates,
+           s.driver_id, d.name as driver_name, d.license_number as driver_license,
+           s.temp_min::text, s.temp_max::text, s.temp_unit,
+           s.load_time, s.ship_date::text, s.seals, s.notes,
+           s.customs_broker_mx_id, bmx.name as broker_mx_name, s.reference_mx,
+           s.customs_broker_us_id, bus.name as broker_us_name, s.reference_us,
+           s.border_crossing_id, bc.name as crossing_name, s.crossing_date::text,
+           s.incoterm, s.incoterm_place, s.manifest_number,
+           po.bol as po_bol, po.vendor_invoice as po_vendor_invoice
+    from shipments s
+    left join purchase_orders po on po.id = s.purchase_order_id
+    left join suppliers sup on sup.id = po.supplier_id
+    left join sales_orders so on so.id = s.sales_order_id
+    left join customers cust on cust.id = so.customer_id
+    left join carriers c on c.id = s.carrier_id
+    left join carrier_units tu on tu.id = s.truck_unit_id
+    left join carrier_units tr on tr.id = s.trailer_unit_id
+    left join drivers d on d.id = s.driver_id
+    left join customs_brokers bmx on bmx.id = s.customs_broker_mx_id
+    left join customs_brokers bus on bus.id = s.customs_broker_us_id
+    left join border_crossings bc on bc.id = s.border_crossing_id
+    ${where}
+    order by s.id desc
+  `);
+	return rows.map((r) => ({
+		...r,
+		temp_min: r.temp_min == null ? null : n(r.temp_min),
+		temp_max: r.temp_max == null ? null : n(r.temp_max)
+	}));
+});
+export const createShipment = createServerFn({ method: "POST" }).validator(z.object({
+	shipment_type: z.enum(["entrada", "salida"]),
+	purchase_order_id: z.number().optional(),
+	sales_order_id: z.number().optional(),
+	...shipmentFields
+})).middleware([authMiddleware]).handler(async ({ data, context }) => {
+	const sql = await getSql();
+	if (data.shipment_type === "entrada" && !data.purchase_order_id) throw new Error("Un embarque de entrada debe colgar de una orden de compra.");
+	if (data.shipment_type === "salida" && !data.sales_order_id) throw new Error("Un embarque de salida debe colgar de una orden de venta.");
+	assertShipmentStatus(data.shipment_type, data.status);
+	const shipment_number = await nextCode(sql, "shipments", "shipment_number", "EMB-");
+	const id = (await sql.query(`insert into shipments (shipment_number, shipment_type, purchase_order_id, sales_order_id,
+       carrier_id, truck_unit_id, trailer_unit_id, driver_id,
+       temp_min, temp_max, temp_unit, load_time, ship_date, seals, notes,
+       customs_broker_mx_id, reference_mx, customs_broker_us_id, reference_us,
+       border_crossing_id, crossing_date, incoterm, incoterm_place, manifest_number, status, created_by)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) returning id`, [
+		shipment_number,
+		data.shipment_type,
+		data.purchase_order_id ?? null,
+		data.sales_order_id ?? null,
+		data.carrier_id ?? null,
+		data.truck_unit_id ?? null,
+		data.trailer_unit_id ?? null,
+		data.driver_id ?? null,
+		data.temp_min ?? null,
+		data.temp_max ?? null,
+		data.temp_unit ?? null,
+		data.load_time?.trim() || null,
+		data.ship_date || null,
+		data.seals?.trim() || null,
+		data.notes?.trim() || null,
+		data.customs_broker_mx_id ?? null,
+		data.reference_mx?.trim() || null,
+		data.customs_broker_us_id ?? null,
+		data.reference_us?.trim() || null,
+		data.border_crossing_id ?? null,
+		data.crossing_date || null,
+		data.incoterm?.trim() || null,
+		data.incoterm_place?.trim() || null,
+		data.manifest_number?.trim() || null,
+		data.status,
+		context.userId ?? null
+	]))[0].id;
+	return { id, shipment_number };
+});
+export const updateShipment = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	...shipmentFields
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [existing] = await sql.query(`select shipment_type from shipments where id = $1`, [data.id]);
+	if (!existing) throw new Error("Embarque no encontrado");
+	assertShipmentStatus(existing.shipment_type, data.status);
+	await sql.query(`update shipments set carrier_id=$1, truck_unit_id=$2, trailer_unit_id=$3, driver_id=$4,
+       temp_min=$5, temp_max=$6, temp_unit=$7, load_time=$8, ship_date=$9, seals=$10, notes=$11,
+       customs_broker_mx_id=$12, reference_mx=$13, customs_broker_us_id=$14, reference_us=$15,
+       border_crossing_id=$16, crossing_date=$17, incoterm=$18, incoterm_place=$19, manifest_number=$20, status=$21
+     where id=$22`, [
+		data.carrier_id ?? null,
+		data.truck_unit_id ?? null,
+		data.trailer_unit_id ?? null,
+		data.driver_id ?? null,
+		data.temp_min ?? null,
+		data.temp_max ?? null,
+		data.temp_unit ?? null,
+		data.load_time?.trim() || null,
+		data.ship_date || null,
+		data.seals?.trim() || null,
+		data.notes?.trim() || null,
+		data.customs_broker_mx_id ?? null,
+		data.reference_mx?.trim() || null,
+		data.customs_broker_us_id ?? null,
+		data.reference_us?.trim() || null,
+		data.border_crossing_id ?? null,
+		data.crossing_date || null,
+		data.incoterm?.trim() || null,
+		data.incoterm_place?.trim() || null,
+		data.manifest_number?.trim() || null,
+		data.status,
+		data.id
+	]);
+	return { ok: true };
+});
+export const setShipmentStatus = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	status: z.string()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [existing] = await sql.query(`select shipment_type from shipments where id = $1`, [data.id]);
+	if (!existing) throw new Error("Embarque no encontrado");
+	assertShipmentStatus(existing.shipment_type, data.status);
+	await sql.query(`update shipments set status = $1 where id = $2`, [data.status, data.id]);
 	return { ok: true };
 });
 export const listLots = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {

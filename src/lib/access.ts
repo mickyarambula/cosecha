@@ -35,6 +35,7 @@ const PATH_MODULE: { prefix: string; module: ModuleId }[] = [
   { prefix: "/cpo", module: "orders" },
   { prefix: "/listas", module: "orders" },
   { prefix: "/destinos", module: "orders" },
+  { prefix: "/embarques", module: "orders" },
   { prefix: "/agencias", module: "orders" },
   { prefix: "/cruces", module: "orders" },
   { prefix: "/transportistas", module: "orders" },
