@@ -14,7 +14,7 @@ import {
   updateSupplier,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { cn, fecha, money, pct, todayISO } from "@/lib/utils";
+import { cn, errorMessage, fecha, money, pct, todayISO } from "@/lib/utils";
 
 export const Route = createFileRoute("/proveedores")({ component: Page });
 
@@ -44,6 +44,10 @@ function Page() {
     commission_rate: "",
   });
   const [saving, setSaving] = useState(false);
+  const [formErr, setFormErr] = useState<string | null>(null);
+  const [editErr, setEditErr] = useState<string | null>(null);
+  const [advErr, setAdvErr] = useState<string | null>(null);
+  const [cancelErr, setCancelErr] = useState<string | null>(null);
   const account = useAsync(
     () => (sel != null && vtab === "account" ? getGrowerAccount({ data: { supplier_id: sel } }) : Promise.resolve(null)),
     [sel, vtab],
@@ -81,15 +85,20 @@ function Page() {
       commission_type: c.commission_type ?? "",
       commission_rate: c.commission_rate != null ? String(c.commission_rate) : "",
     });
+    setEditErr(null);
+    setCancelErr(null);
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setFormErr(null);
     try {
       await createSupplier({ data: { ...form, contact_name: form.contact_name || undefined } });
       setOpen(false);
       await reload();
+    } catch (err) {
+      setFormErr(errorMessage(err, "No se pudo agregar el proveedor."));
     } finally {
       setSaving(false);
     }
@@ -98,6 +107,7 @@ function Page() {
   async function save() {
     if (!current) return;
     setSaving(true);
+    setEditErr(null);
     try {
       await updateSupplier({
         data: {
@@ -117,6 +127,8 @@ function Page() {
         },
       });
       await reload();
+    } catch (err) {
+      setEditErr(errorMessage(err, "No se pudo guardar el proveedor."));
     } finally {
       setSaving(false);
     }
@@ -125,6 +137,7 @@ function Page() {
   async function saveAdvance() {
     if (!current || !adv.concept.trim() || !(Number(adv.amount) > 0)) return;
     setSaving(true);
+    setAdvErr(null);
     try {
       await createGrowerAdvance({
         data: {
@@ -139,6 +152,8 @@ function Page() {
       setAdvOpen(false);
       setAdv({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "" });
       await account.reload();
+    } catch (err) {
+      setAdvErr(errorMessage(err, "No se pudo registrar el adelanto."));
     } finally {
       setSaving(false);
     }
@@ -146,10 +161,13 @@ function Page() {
 
   async function cancelAdvance(id: number) {
     setSaving(true);
+    setCancelErr(null);
     try {
       await cancelGrowerAdvance({ data: { advance_id: id } });
       setCancelArm(null);
       await account.reload();
+    } catch (err) {
+      setCancelErr(errorMessage(err, "No se pudo cancelar el adelanto."));
     } finally {
       setSaving(false);
     }
@@ -164,7 +182,7 @@ function Page() {
             <Button size="sm" variant="outline">
               Export all
             </Button>
-            <Button size="sm" onClick={() => setOpen(true)}>
+            <Button size="sm" onClick={() => { setOpen(true); setFormErr(null); }}>
               + Add
             </Button>
           </div>
@@ -391,12 +409,13 @@ function Page() {
                           Estado de cuenta (PDF / enviar)
                         </a>
                       ) : null}
-                      <Button size="sm" onClick={() => setAdvOpen(true)}>
+                      <Button size="sm" onClick={() => { setAdvOpen(true); setAdvErr(null); }}>
                         + Nuevo adelanto
                       </Button>
                     </div>
                   </div>
                   {account.loading ? <p className="mt-3 text-sm text-muted">Loading…</p> : null}
+                  {cancelErr ? <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{cancelErr}</p> : null}
                   <div className="mt-3 overflow-x-auto">
                     <table className="w-full min-w-[720px] text-left text-sm">
                       <thead className="text-[11px] uppercase text-muted">
@@ -485,6 +504,7 @@ function Page() {
                 </p>
               )}
             </div>
+            {editErr ? <p className="mt-4 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{editErr}</p> : null}
             <div className="mt-4 flex items-center justify-between">
               <button type="button" className="text-sm text-danger">
                 Delete vendor
@@ -535,6 +555,7 @@ function Page() {
             El adelanto sale de caja y queda como cuenta por cobrar al productor — no es un gasto. Se recupera contra
             liquidaciones futuras, cuando tú decidas.
           </p>
+          {advErr ? <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{advErr}</p> : null}
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="outline" onClick={() => setAdvOpen(false)}>
               Cancel
@@ -557,6 +578,7 @@ function Page() {
             <Field label="Email">
               <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
             </Field>
+            {formErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{formErr}</p> : null}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
