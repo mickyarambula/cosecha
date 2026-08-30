@@ -4555,6 +4555,7 @@ export type LiveWipeCounts = {
 	receptions: number;
 	customer_pos: number;
 	send_events: number;
+	shipments: number;
 };
 
 function wipeTotal(c: LiveWipeCounts) {
@@ -4569,7 +4570,8 @@ function wipeTotal(c: LiveWipeCounts) {
 		c.pack_outs +
 		c.receptions +
 		c.customer_pos +
-		c.send_events
+		c.send_events +
+		c.shipments
 	);
 }
 
@@ -4590,6 +4592,7 @@ async function countLiveActivity(sql: any): Promise<LiveWipeCounts> {
 		receptions: await n(`select count(*)::text as c from receptions`),
 		customer_pos: await n(`select count(*)::text as c from customer_pos`),
 		send_events: await n(`select count(*)::text as c from send_events`),
+		shipments: await n(`select count(*)::text as c from shipments`),
 	};
 }
 
@@ -4611,6 +4614,7 @@ async function wipeLiveActivity(sql: any) {
 	await sql.query(`delete from bank_lines`);
 	await sql.query(`delete from cash_movements where folio <> 'CORTE-CHASE'`);
 	await sql.query(`delete from send_events`);
+	await sql.query(`delete from shipments`);
 	await sql.query(`delete from expense_po_links`);
 	await sql.query(`delete from pack_out_lines`);
 	await sql.query(`delete from pack_outs`);
