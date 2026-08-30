@@ -196,3 +196,26 @@ export function skuCodeOf(productSku: string, empaque: string, calibre: string):
   const cal = calibre.replace(/[^a-zA-Z0-9]+/g, "").toUpperCase();
   return `${prefix}-${emp}-${cal}`;
 }
+
+/**
+ * Turns a thrown server-function error into a message the user can act on,
+ * and logs the real one to the console for whoever is debugging.
+ *
+ * "Unauthorized" is the literal message of `UnauthorizedError`
+ * (src/lib/auth/verify.server.ts) — a stable contract, so we can translate it
+ * instead of showing the English string to the user.
+ */
+export function errorMessage(e: unknown, fallback = "No se pudo guardar."): string {
+  console.error("[cosecha]", e);
+  const raw = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+  if (raw === "Unauthorized") {
+    return "Tu sesión no se reconoció en el servidor. Vuelve a entrar y reintenta.";
+  }
+  if (raw.toLowerCase().includes("cross-site")) {
+    return "La petición se bloqueó por seguridad. Recarga la página y reintenta.";
+  }
+  if (raw.toLowerCase().includes("failed to fetch") || raw.toLowerCase().includes("networkerror")) {
+    return "No se pudo contactar al servidor. Revisa la conexión y reintenta.";
+  }
+  return raw || fallback;
+}

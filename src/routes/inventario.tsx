@@ -21,7 +21,7 @@ import {
   type LotRow,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { CALIDAD_LABEL, WASTE_REASONS, fecha, money, pct } from "@/lib/utils";
+import { CALIDAD_LABEL, WASTE_REASONS, errorMessage, fecha, money, pct } from "@/lib/utils";
 
 type Search = { tab?: string };
 export const Route = createFileRoute("/inventario")({
@@ -49,6 +49,7 @@ function Page() {
   const [waste, setWaste] = useState<{ id: number; number: string; oh: number; qty: string; reason: string } | null>(null);
   const [price, setPrice] = useState<Record<number, string>>({});
   const [saving, setSaving] = useState(false);
+  const [calidadErr, setCalidadErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
   const data = lots.data ?? [];
@@ -79,6 +80,7 @@ function Page() {
     e.preventDefault();
     if (!calidad) return;
     setSaving(true);
+    setCalidadErr(null);
     try {
       await setLotQuality({
         data: {
@@ -89,6 +91,8 @@ function Page() {
       });
       setCalidad(null);
       await lots.reload();
+    } catch (e2) {
+      setCalidadErr(errorMessage(e2, "No se pudo guardar la calidad del lote."));
     } finally {
       setSaving(false);
     }
@@ -460,7 +464,7 @@ function Page() {
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => setCalidad({ id: l.id, state: l.quality_state, note: l.quality_note ?? "" })}
+                                    onClick={() => { setCalidad({ id: l.id, state: l.quality_state, note: l.quality_note ?? "" }); setCalidadErr(null); }}
                                   >
                                     {qualityLabel(l.quality_state)}
                                   </Button>
@@ -500,6 +504,7 @@ function Page() {
             <Field label="Note">
               <Input value={calidad.note} onChange={(e) => setCalidad({ ...calidad, note: e.target.value })} />
             </Field>
+            {calidadErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{calidadErr}</p> : null}
             <Button type="submit" disabled={saving}>
               Save
             </Button>

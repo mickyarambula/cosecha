@@ -26,7 +26,7 @@ import {
   wipeLiveTests,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { cn, fecha } from "@/lib/utils";
+import { cn, errorMessage, fecha } from "@/lib/utils";
 
 type Search = { tab?: string };
 export const Route = createFileRoute("/settings")({
@@ -287,15 +287,19 @@ function Departments() {
   const depts = useAsync(() => listDepartments(), []);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
     setSaving(true);
+    setErr(null);
     try {
       await addDepartment({ data: { name: name.trim() } });
       setName("");
       await depts.reload();
+    } catch (e2) {
+      setErr(errorMessage(e2, "No se pudo agregar el departamento."));
     } finally {
       setSaving(false);
     }
@@ -311,11 +315,12 @@ function Departments() {
             {d.name === "Uncategorized" ? <span className="text-xs text-muted">{t("Default")}</span> : null}
           </div>
         ))}
-        <form className="flex gap-2 border-t border-border px-4 py-3" onSubmit={add}>
+        <form className="flex flex-wrap items-start gap-2 border-t border-border px-4 py-3" onSubmit={add}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Department name" />
           <Button type="submit" size="sm" disabled={saving || !name.trim()}>
             + Add department
           </Button>
+          {err ? <p className="w-full rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{err}</p> : null}
         </form>
       </div>
     </div>
@@ -329,6 +334,7 @@ function Concepts() {
   const [partida, setPartida] = useState("Gasto Administrativo");
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const rows = concepts.data ?? [];
   const partidas =
     kind === "ingreso"
@@ -339,10 +345,13 @@ function Concepts() {
     e.preventDefault();
     if (!name.trim()) return;
     setSaving(true);
+    setErr(null);
     try {
       await addConcept({ data: { kind, partida, name: name.trim() } });
       setName("");
       await concepts.reload();
+    } catch (e2) {
+      setErr(errorMessage(e2, "No se pudo agregar el concepto."));
     } finally {
       setSaving(false);
     }
@@ -392,6 +401,9 @@ function Concepts() {
           <Button type="submit" size="sm" disabled={saving || !name.trim()}>
             + {t("Add")}
           </Button>
+          {err ? (
+            <p className="col-span-full rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{err}</p>
+          ) : null}
         </form>
       </div>
     </div>

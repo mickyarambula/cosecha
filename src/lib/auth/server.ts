@@ -141,6 +141,23 @@ const trustedOrigins: string[] = explicitBaseURL
 
 const databaseUrl = env("DATABASE_URL");
 
+// Same shape as verify.server.ts's DATABASE_URL/auth-disabled check: an
+// ephemeral per-process secret against a REAL database is never a legitimate
+// combination — every session dies the moment the instance recycles or a
+// second instance answers the next request (see the Fase B incident where a
+// preview branch's writes threw Unauthorized for exactly this reason).
+// Local dev with no database is the one case this fallback is meant for, so
+// it stays silent there.
+if (databaseUrl && !env("BETTER_AUTH_SECRET")) {
+  console.error(
+    "[auth] DATABASE_URL is set but BETTER_AUTH_SECRET is not — falling back " +
+      "to an ephemeral per-process secret. Every session will be invalidated " +
+      "the moment this instance recycles (and, with more than one instance " +
+      "live, sessions from one won't validate on another). Set " +
+      "BETTER_AUTH_SECRET for this environment.",
+  );
+}
+
 // Static broker OAuth endpoints (skip OIDC discovery on every sign-in / callback).
 // Discovery would cost an extra network hop to the broker before the popup can
 // even redirect to Google/X — the live-preview popup felt stuck on the app for
