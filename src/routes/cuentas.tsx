@@ -6,7 +6,7 @@ import { Field, Input, Select } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
 import { createGlAccount, getFinancials, listGlAccounts, listGlMappings, saveGlMappings } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { fechaLong, money } from "@/lib/utils";
+import { errorMessage, fechaLong, money } from "@/lib/utils";
 
 type Search = { tab?: string };
 export const Route = createFileRoute("/cuentas")({
@@ -44,6 +44,9 @@ function Page() {
   const [form, setForm] = useState({ number: "", name: "", description: "", subtype: "", starting_balance: "0" });
   const [saving, setSaving] = useState(false);
   const [localMaps, setLocalMaps] = useState<Record<string, string> | null>(null);
+  const [addErr, setAddErr] = useState<string | null>(null);
+  const [mapErr, setMapErr] = useState<string | null>(null);
+  const [mapSaved, setMapSaved] = useState(false);
 
   const grouped = useMemo(() => {
     const incomeRev = rows.filter((a) => a.kind === "revenue");
@@ -59,6 +62,7 @@ function Page() {
 
   async function addAccount(kind: string, statement: "income" | "balance") {
     setSaving(true);
+    setAddErr(null);
     try {
       await createGlAccount({
         data: {
@@ -74,6 +78,8 @@ function Page() {
       setAddKind(null);
       setForm({ number: "", name: "", description: "", subtype: "", starting_balance: "0" });
       await Promise.all([accounts.reload(), financials.reload()]);
+    } catch (e) {
+      setAddErr(errorMessage(e, "No se pudo crear la cuenta."));
     } finally {
       setSaving(false);
     }
@@ -81,11 +87,16 @@ function Page() {
 
   async function persistMaps() {
     setSaving(true);
+    setMapErr(null);
+    setMapSaved(false);
     try {
       await saveGlMappings({
         data: { mappings: Object.entries(mapObj).map(([map_key, account_number]) => ({ map_key, account_number })) },
       });
       await maps.reload();
+      setMapSaved(true);
+    } catch (e) {
+      setMapErr(errorMessage(e, "No se pudieron guardar los mapeos."));
     } finally {
       setSaving(false);
     }
@@ -172,6 +183,8 @@ function Page() {
           <Button className="mt-6" disabled={saving} onClick={() => void persistMaps()}>
             Save mappings
           </Button>
+          {mapSaved && !mapErr ? <p className="mt-2 text-sm text-ok">Guardado.</p> : null}
+          {mapErr ? <p className="mt-2 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{mapErr}</p> : null}
         </section>
         <section className="rounded-lg border border-border bg-surface p-5">
           <div className="mb-1 flex items-center gap-2">
@@ -213,7 +226,7 @@ function Page() {
         start={grouped.incomeRev.reduce((s, a) => s + a.starting_balance, 0)}
         rows={grouped.incomeRev}
         addLabel="Add new revenue account"
-        onAdd={() => setAddKind("revenue")}
+        onAdd={() => { setAddKind("revenue"); setAddErr(null); }}
       />
       <AccountGroup
         title=""
@@ -221,7 +234,7 @@ function Page() {
         start={grouped.incomeCogs.concat(grouped.incomeExp).reduce((s, a) => s + a.starting_balance, 0)}
         rows={[...grouped.incomeCogs, ...grouped.incomeExp]}
         addLabel="Add new expense account"
-        onAdd={() => setAddKind("expense")}
+        onAdd={() => { setAddKind("expense"); setAddErr(null); }}
       />
       <AccountGroup
         title="Balance Sheet Accounts"
@@ -229,7 +242,7 @@ function Page() {
         start={grouped.assets.reduce((s, a) => s + a.starting_balance, 0)}
         rows={grouped.assets}
         addLabel="Add new asset account"
-        onAdd={() => setAddKind("asset")}
+        onAdd={() => { setAddKind("asset"); setAddErr(null); }}
       />
       <AccountGroup
         title=""
@@ -237,7 +250,7 @@ function Page() {
         start={grouped.liab.reduce((s, a) => s + a.starting_balance, 0)}
         rows={grouped.liab}
         addLabel="Add new liability account"
-        onAdd={() => setAddKind("liability")}
+        onAdd={() => { setAddKind("liability"); setAddErr(null); }}
       />
       <AccountGroup
         title=""
@@ -245,12 +258,12 @@ function Page() {
         start={grouped.eq.reduce((s, a) => s + a.starting_balance, 0)}
         rows={grouped.eq}
         addLabel="Add new equity account"
-        onAdd={() => setAddKind("equity")}
+        onAdd={() => { setAddKind("equity"); setAddErr(null); }}
       />
       {addKind ? (
         <Drawer
           title={`New ${addKind} account`}
-          onClose={() => setAddKind(null)}
+          onClose={() => { setAddKind(null); setAddErr(null); }}
           footer={
             <>
               <Button variant="outline" onClick={() => setAddKind(null)}>
@@ -278,6 +291,7 @@ function Page() {
             <Field label="Starting balance">
               <Input value={form.starting_balance} onChange={(e) => setForm({ ...form, starting_balance: e.target.value })} />
             </Field>
+            {addErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{addErr}</p> : null}
           </div>
         </Drawer>
       ) : null}

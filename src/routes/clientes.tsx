@@ -8,7 +8,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { CustomerLocationModal } from "@/components/customer-location-form";
 import { createCustomer, listCustomerLocations, listCustomers, setDefaultCustomerLocation, updateCustomer } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { cn } from "@/lib/utils";
+import { cn, errorMessage } from "@/lib/utils";
 
 export const Route = createFileRoute("/clientes")({
   validateSearch: (s: Record<string, unknown>) => ({ tab: typeof s.tab === "string" ? s.tab : "list" }),
@@ -36,6 +36,8 @@ function Page() {
   });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [formErr, setFormErr] = useState<string | null>(null);
 
   const list = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -79,11 +81,14 @@ function Page() {
       contact_name: c.contact_name ?? "",
       city: c.city ?? "",
     });
+    setMsg(null);
+    setErr(null);
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setFormErr(null);
     try {
       await createCustomer({
         data: {
@@ -111,6 +116,8 @@ function Page() {
         notes: "",
       });
       await reload();
+    } catch (e) {
+      setFormErr(errorMessage(e, "No se pudo agregar el cliente."));
     } finally {
       setSaving(false);
     }
@@ -119,6 +126,8 @@ function Page() {
   async function save() {
     if (!current) return;
     setSaving(true);
+    setErr(null);
+    setMsg(null);
     try {
       await updateCustomer({
         data: {
@@ -134,6 +143,8 @@ function Page() {
       });
       setMsg("Saved");
       await reload();
+    } catch (e) {
+      setErr(errorMessage(e, "No se pudo guardar el cliente."));
     } finally {
       setSaving(false);
     }
@@ -145,7 +156,7 @@ function Page() {
         <Button size="sm" variant="outline">
           Export all
         </Button>
-        <Button size="sm" onClick={() => setOpen(true)}>
+        <Button size="sm" onClick={() => { setOpen(true); setFormErr(null); }}>
           + Add new
         </Button>
       </TabActions>
@@ -193,6 +204,7 @@ function Page() {
             <div className="mb-4 flex items-center justify-between">
               <h1 className="text-lg font-semibold">Edit Customer</h1>
               {msg ? <span className="text-sm text-ok">{msg}</span> : null}
+              {err ? <span className="text-sm text-danger">{err}</span> : null}
             </div>
             <div className="grid gap-3 lg:grid-cols-3">
               <Field label="Customer">
@@ -387,6 +399,7 @@ function Page() {
             <button type="button" className="text-left text-sm text-link">
               + New price sheet
             </button>
+            {formErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{formErr}</p> : null}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel

@@ -54,11 +54,7 @@ export function fecha(f: string | null | undefined): string {
   if (!f) return "—";
   const d = new Date(String(f).length <= 10 ? `${f}T12:00:00` : f);
   if (Number.isNaN(d.getTime())) return String(f);
-  return d.toLocaleDateString(dateLocaleTag(), {
-    month: "numeric",
-    day: "2-digit",
-    year: "numeric",
-  });
+  return d.toLocaleDateString(dateLocaleTag(), { month: "numeric", day: "2-digit", year: "numeric" });
 }
 
 export function fechaLong(f: string | null | undefined): string {
@@ -86,24 +82,12 @@ export function termsDays(terms: string | null | undefined): number {
   return m ? Number(m[1]) : 14;
 }
 
-export const INSPECCION_TIPOS = [
-  "Ninguna",
-  "Propia",
-  "USDA",
-  "Federal-Estatal",
-  "Privada",
-] as const;
+export const INSPECCION_TIPOS = ["Ninguna", "Propia", "USDA", "Federal-Estatal", "Privada"] as const;
 
 export const RESULTADOS_REC = ["Aceptada", "Aceptada con incidencia", "Rechazada"] as const;
 
 export const DEFECTOS = {
-  calidad: [
-    "Mancha",
-    "Madurez irregular",
-    "Daño mecánico",
-    "Calibre fuera de spec",
-    "Color desigual",
-  ],
+  calidad: ["Mancha", "Madurez irregular", "Daño mecánico", "Calibre fuera de spec", "Color desigual"],
   condicion: ["Deshidratación", "Pudrición", "Temperatura", "Daño por frío", "Ablandamiento"],
   otro: ["Producto equivocado", "Fuera de ventana", "Sin documentación", "Empaque dañado"],
 } as const;
@@ -150,15 +134,9 @@ export const GASTO_CATEGORIAS = [
 
 export const PAY_METHODS = ["ACH", "Check", "Cash", "Credit card", "Wire"] as const;
 
-export function agingBucket(
-  issueDate: string | null | undefined,
-  asOf = todayISO(),
-): "current" | "d1" | "d8" | "d15" | "d22" {
+export function agingBucket(issueDate: string | null | undefined, asOf = todayISO()): "current" | "d1" | "d8" | "d15" | "d22" {
   if (!issueDate) return "current";
-  const days = Math.round(
-    (new Date(`${asOf}T12:00:00`).getTime() - new Date(`${issueDate}T12:00:00`).getTime()) /
-      86400000,
-  );
+  const days = Math.round((new Date(`${asOf}T12:00:00`).getTime() - new Date(`${issueDate}T12:00:00`).getTime()) / 86400000);
   if (days <= 0) return "current";
   if (days <= 7) return "d1";
   if (days <= 14) return "d8";
@@ -166,15 +144,9 @@ export function agingBucket(
   return "d22";
 }
 
-export function aging30(
-  issueDate: string | null | undefined,
-  asOf = todayISO(),
-): "current" | "b30" | "b60" | "b90" | "b91" {
+export function aging30(issueDate: string | null | undefined, asOf = todayISO()): "current" | "b30" | "b60" | "b90" | "b91" {
   if (!issueDate) return "current";
-  const days = Math.round(
-    (new Date(`${asOf}T12:00:00`).getTime() - new Date(`${issueDate}T12:00:00`).getTime()) /
-      86400000,
-  );
+  const days = Math.round((new Date(`${asOf}T12:00:00`).getTime() - new Date(`${issueDate}T12:00:00`).getTime()) / 86400000);
   if (days <= 0) return "current";
   if (days <= 30) return "b30";
   if (days <= 60) return "b60";
@@ -207,12 +179,7 @@ export function skuLabel(s: {
 }
 
 export function skuCodeOf(productSku: string, empaque: string, calibre: string): string {
-  const prefix =
-    (productSku || "SKU")
-      .trim()
-      .replace(/[^a-zA-Z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .toUpperCase() || "SKU";
+  const prefix = (productSku || "SKU").trim().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toUpperCase() || "SKU";
   const empKey = empaque.trim().toLowerCase();
   const empMap: Record<string, string> = {
     carton: "CARTON",
@@ -225,19 +192,14 @@ export function skuCodeOf(productSku: string, empaque: string, calibre: string):
     bin: "BIN",
     manojo: "MANOJO",
   };
-  const emp =
-    empMap[empKey] ||
-    empaque
-      .replace(/[^a-zA-Z0-9]+/g, "")
-      .toUpperCase()
-      .slice(0, 10);
+  const emp = empMap[empKey] || empaque.replace(/[^a-zA-Z0-9]+/g, "").toUpperCase().slice(0, 10);
   const cal = calibre.replace(/[^a-zA-Z0-9]+/g, "").toUpperCase();
   return `${prefix}-${emp}-${cal}`;
 }
 
 /**
- * Turns a thrown server-function error into a message Miguel can act on, and
- * logs the real one to the console for whoever is debugging.
+ * Turns a thrown server-function error into a message the user can act on,
+ * and logs the real one to the console for whoever is debugging.
  *
  * "Unauthorized" is the literal message of `UnauthorizedError`
  * (src/lib/auth/verify.server.ts) — a stable contract, so we can translate it
