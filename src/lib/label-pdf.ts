@@ -129,13 +129,13 @@ function badge(
 // del bloque derecho antes de decidir el tamaño) — así el CALIBRE siempre
 // sale lo más grande posible, sin adivinar anchos de texto a mano.
 //
-// Invariante del motor: `min` es una preferencia estética, no un piso que
-// se pueda cruzar sin que quepa. Si ni el más pequeño de los tamaños
-// "cómodos" cabe (nombre de producto largo + cantidad, en una etiqueta
-// angosta), se sigue encogiendo hasta ABSOLUTE_FLOOR — nunca se entrega un
-// tamaño que dos textos en el mismo renglón no puedan compartir sin
-// encimarse.
-const ABSOLUTE_FLOOR = 6;
+// Invariante del motor: `min` SÍ es un piso duro — es el tamaño más chico
+// que Miguel aceptó como legible a un metro, no un simple valor estético.
+// Nunca se devuelve un tamaño menor. Si ni `min` alcanza para que quepan
+// los dos textos del renglón, el motor no lo sabe todavía: es
+// responsabilidad de quien dibuja truncar el texto más largo (ver
+// `truncateToWidth`) — jamás seguir encogiendo la letra hasta volverla
+// ilegible con tal de evitar el encimado.
 function fitFontSize(
   pdf: jsPDF,
   pairs: [string, string][],
@@ -150,9 +150,19 @@ function fitFontSize(
   };
   let size = start;
   while (size > min && !fits(size)) size -= 1;
-  while (size > ABSOLUTE_FLOOR && !fits(size)) size -= 1;
   pdf.setFontSize(size);
   return size;
+}
+
+// Corta `text` con "…" hasta que quepa en maxWidth al tamaño de fuente ya
+// puesto en `pdf`. Se usa solo sobre etiquetas de texto (calibre, nombre de
+// producto) — nunca sobre la cantidad: truncar un número lo vuelve
+// engañoso ("459" → "45…"), truncar una palabra solo lo vuelve menos claro.
+function truncateToWidth(pdf: jsPDF, text: string, maxWidth: number): string {
+  if (maxWidth <= 0 || pdf.getTextWidth(text) <= maxWidth) return text;
+  let t = text;
+  while (t.length > 1 && pdf.getTextWidth(`${t}…`) > maxWidth) t = t.slice(0, -1);
+  return `${t}…`;
 }
 
 type HeroRow = { left: string; right: string; note?: string | null };
@@ -274,7 +284,9 @@ function drawFillableLabel(
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(subtitleSize);
     pdf.setTextColor(...INK);
-    pdf.text(opts.heroSubtitle, x + s.pad, subtitleBaseline, { maxWidth: innerW });
+    // subtitleSize ya es el piso legible (heroSubtitleMin) en el peor caso;
+    // si ni así cabe, se trunca en vez de seguir encogiendo la letra.
+    pdf.text(truncateToWidth(pdf, opts.heroSubtitle, innerW), x + s.pad, subtitleBaseline);
     top += subtitleBlockH;
   }
   opts.heroRows.forEach((r, i) => {
@@ -282,7 +294,12 @@ function drawFillableLabel(
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(heroSize);
     pdf.setTextColor(...INK);
-    pdf.text(r.left, x + s.pad, baseline, { maxWidth: innerW - heroGap });
+    // heroSize ya es el piso legible (heroMin) en el peor caso; si ni así
+    // cabe el par completo, se trunca el texto de la izquierda (calibre)
+    // — nunca la cantidad de la derecha, que debe leerse exacta.
+    const rightW = r.right ? pdf.getTextWidth(r.right) : 0;
+    const leftText = truncateToWidth(pdf, r.left, innerW - heroGap - rightW);
+    pdf.text(leftText, x + s.pad, baseline);
     if (r.right) pdf.text(r.right, x + w - s.pad, baseline, { align: "right" });
     top += heroSize * 0.95;
     if (r.note) {
