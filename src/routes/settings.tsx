@@ -683,6 +683,7 @@ function WipeTests() {
         [t("Purchase Orders"), counts.purchase_orders],
         [t("Sales Orders"), counts.sales_orders],
         [t("Shipments"), counts.shipments],
+        [t("Pallets"), counts.pallets],
         [t("Live invoices"), counts.invoices],
         [t("Lots"), counts.lots],
         [t("Expenses"), counts.expenses],
