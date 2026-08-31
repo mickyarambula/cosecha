@@ -1,4 +1,11 @@
-export const MODULE_IDS = ["orders", "warehouse", "contacts", "finance", "reports", "settings"] as const;
+export const MODULE_IDS = [
+  "orders",
+  "warehouse",
+  "contacts",
+  "finance",
+  "reports",
+  "settings",
+] as const;
 export type ModuleId = (typeof MODULE_IDS)[number];
 
 export const MODULE_LABELS: Record<ModuleId, string> = {
@@ -36,6 +43,7 @@ const PATH_MODULE: { prefix: string; module: ModuleId }[] = [
   { prefix: "/listas", module: "orders" },
   { prefix: "/destinos", module: "orders" },
   { prefix: "/embarques", module: "orders" },
+  { prefix: "/etiquetas", module: "orders" },
   { prefix: "/agencias", module: "orders" },
   { prefix: "/cruces", module: "orders" },
   { prefix: "/transportistas", module: "orders" },

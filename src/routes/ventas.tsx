@@ -64,8 +64,15 @@ function Page() {
   const [openId, setOpenId] = useState<number | null>(null);
   const [q, setQ] = useState("");
   const [picker, setPicker] = useState(false);
-  const [ship, setShip] = useState<{ line_id: number; product_id: number; pending: number; unit: string } | null>(null);
-  const [buy, setBuy] = useState<{ so_id: number; so_number: string; openQty: number } | null>(null);
+  const [ship, setShip] = useState<{
+    line_id: number;
+    product_id: number;
+    pending: number;
+    unit: string;
+  } | null>(null);
+  const [buy, setBuy] = useState<{ so_id: number; so_number: string; openQty: number } | null>(
+    null,
+  );
   const [credit, setCredit] = useState<number | null>(null);
   const [cancelSo, setCancelSo] = useState<{ id: number; so_number: string } | null>(null);
   const [placed, setPlaced] = useState<{
@@ -79,8 +86,18 @@ function Page() {
     total: number;
   } | null>(null);
   const [printOpen, setPrintOpen] = useState(false);
-  const [printDocs, setPrintDocs] = useState({ bol: false, invoice: false, pick: true, confirm: false });
-  const [draft, setDraft] = useState({ customer_id: "", notes: "", requested: todayISO(), type: "Delivery to customer" });
+  const [printDocs, setPrintDocs] = useState({
+    bol: false,
+    invoice: false,
+    pick: true,
+    confirm: false,
+  });
+  const [draft, setDraft] = useState({
+    customer_id: "",
+    notes: "",
+    requested: todayISO(),
+    type: "Delivery to customer",
+  });
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [shipForm, setShipForm] = useState({ quantity: "", lot_id: "", location_id: "" });
   const [buyForm, setBuyForm] = useState({
@@ -97,7 +114,9 @@ function Page() {
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return list;
-    return list.filter((o) => o.so_number.toLowerCase().includes(s) || o.customer_name.toLowerCase().includes(s));
+    return list.filter(
+      (o) => o.so_number.toLowerCase().includes(s) || o.customer_name.toLowerCase().includes(s),
+    );
   }, [list, q]);
 
   const selected = list.find((o) => o.id === openId) ?? list.find((o) => o.id === credit) ?? null;
@@ -204,7 +223,8 @@ function Page() {
     e.preventDefault();
     if (!buy) return;
     const isFirme = buyForm.deal_type === "firme";
-    const withCommission = !isFirme && buyForm.commission_type && Number(buyForm.commission_rate) > 0;
+    const withCommission =
+      !isFirme && buyForm.commission_type && Number(buyForm.commission_rate) > 0;
     setSaving(true);
     try {
       const r = await createPurchaseFromSO({
@@ -213,7 +233,9 @@ function Page() {
           supplier_id: Number(buyForm.supplier_id),
           deal_type: buyForm.deal_type as "firme" | "consignacion" | "comision",
           unit_cost: isFirme ? Number(buyForm.unit_cost) : undefined,
-          commission_type: withCommission ? (buyForm.commission_type as "per_unit" | "gross_pct" | "net_pct") : undefined,
+          commission_type: withCommission
+            ? (buyForm.commission_type as "per_unit" | "gross_pct" | "net_pct")
+            : undefined,
           commission_rate: withCommission ? Number(buyForm.commission_rate) : undefined,
         },
       });
@@ -234,7 +256,10 @@ function Page() {
         {msg ? <p className="px-5 py-2 text-sm text-ok">{msg}</p> : null}
         <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
           <MetaCard label="Customer">
-            <Select value={draft.customer_id} onChange={(e) => setDraft({ ...draft, customer_id: e.target.value })}>
+            <Select
+              value={draft.customer_id}
+              onChange={(e) => setDraft({ ...draft, customer_id: e.target.value })}
+            >
               <option value="">Search customers</option>
               {(customers.data ?? []).map((c) => (
                 <option key={c.id} value={c.id}>
@@ -244,13 +269,20 @@ function Page() {
             </Select>
           </MetaCard>
           <MetaCard label="Requested date">
-            <Input type="date" value={draft.requested} onChange={(e) => setDraft({ ...draft, requested: e.target.value })} />
+            <Input
+              type="date"
+              value={draft.requested}
+              onChange={(e) => setDraft({ ...draft, requested: e.target.value })}
+            />
           </MetaCard>
           <MetaCard label="Pickup date">
             <Input type="date" />
           </MetaCard>
           <MetaCard label="Order type">
-            <Select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })}>
+            <Select
+              value={draft.type}
+              onChange={(e) => setDraft({ ...draft, type: e.target.value })}
+            >
               <option>Delivery to customer</option>
               <option>Pickup</option>
               <option>Will-call</option>
@@ -289,32 +321,58 @@ function Page() {
                     .reduce((n, x) => n + x.current_qty, 0);
                   const over = l.pack_style_id != null && Number(l.qty || 0) > stockHere;
                   return (
-                  <tr key={l.key} className="border-b border-border align-top">
-                    <td className="px-3 py-2">
-                      {l.name} · {l.unit}
-                      {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs">{l.calibre}</span> : null}
-                      {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
-                      {over ? <div className="text-xs text-danger">Solo hay {stockHere} disponibles de este calibre</div> : null}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Input className="w-20" value={l.qty} onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, qty: e.target.value } : x)))} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <Input className="w-24" value={l.price} onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, price: e.target.value } : x)))} />
-                    </td>
-                    <td className="px-3 py-2">{money(Number(l.qty || 0) * Number(l.price || 0))}</td>
-                    <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        title="Quitar línea"
-                        aria-label={`Quitar ${l.name}`}
-                        className="cursor-pointer rounded p-1 text-subtle hover:bg-danger/10 hover:text-danger"
-                        onClick={() => setLines((p) => p.filter((x) => x.key !== l.key))}
-                      >
-                        <Trash2 className="size-4" />
-                      </button>
-                    </td>
-                  </tr>
+                    <tr key={l.key} className="border-b border-border align-top">
+                      <td className="px-3 py-2">
+                        {l.name} · {l.unit}
+                        {l.calibre ? (
+                          <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs">
+                            {l.calibre}
+                          </span>
+                        ) : null}
+                        {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
+                        {over ? (
+                          <div className="text-xs text-danger">
+                            Solo hay {stockHere} disponibles de este calibre
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2">
+                        <Input
+                          className="w-20"
+                          value={l.qty}
+                          onChange={(e) =>
+                            setLines((p) =>
+                              p.map((x) => (x.key === l.key ? { ...x, qty: e.target.value } : x)),
+                            )
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <Input
+                          className="w-24"
+                          value={l.price}
+                          onChange={(e) =>
+                            setLines((p) =>
+                              p.map((x) => (x.key === l.key ? { ...x, price: e.target.value } : x)),
+                            )
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        {money(Number(l.qty || 0) * Number(l.price || 0))}
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          title="Quitar línea"
+                          aria-label={`Quitar ${l.name}`}
+                          className="cursor-pointer rounded p-1 text-subtle hover:bg-danger/10 hover:text-danger"
+                          onClick={() => setLines((p) => p.filter((x) => x.key !== l.key))}
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -324,7 +382,10 @@ function Page() {
           <div className="flex-1" />
         )}
         <div className="mt-auto flex justify-end gap-3 border-t border-border bg-surface p-4">
-          <Button disabled={saving || !draft.customer_id || !lines.length} onClick={() => void place()}>
+          <Button
+            disabled={saving || !draft.customer_id || !lines.length}
+            onClick={() => void place()}
+          >
             Place order
           </Button>
         </div>
@@ -333,7 +394,11 @@ function Page() {
             skus={skus}
             onAdd={addSku}
             onClose={() => setPicker(false)}
-            extra={<span>{t("{n} lots available to sell", { n: allLots.filter((l) => l.asignable).length })}</span>}
+            extra={
+              <span>
+                {t("{n} lots available to sell", { n: allLots.filter((l) => l.asignable).length })}
+              </span>
+            }
             stock={Object.fromEntries(
               skus.map((s) => {
                 // Por SKU, no por producto: tres calibres del mismo producto son
@@ -350,7 +415,9 @@ function Page() {
                 ];
               }),
             )}
-            unassigned={allLots.filter((l) => l.pack_style_id == null && l.asignable).reduce((n, l) => n + l.current_qty, 0)}
+            unassigned={allLots
+              .filter((l) => l.pack_style_id == null && l.asignable)
+              .reduce((n, l) => n + l.current_qty, 0)}
           />
         ) : null}
         {placed ? (
@@ -358,13 +425,23 @@ function Page() {
             <div className="flex items-center gap-3 bg-seller px-5 py-4 text-seller-fg">
               <div>
                 <p className="font-semibold">{t("Order placed!")}</p>
-                <p className="mt-1 inline-block rounded-full bg-white/15 px-3 py-0.5 text-xs">{placed.so_number}</p>
+                <p className="mt-1 inline-block rounded-full bg-white/15 px-3 py-0.5 text-xs">
+                  {placed.so_number}
+                </p>
               </div>
-              <button type="button" className="ml-2 text-lg leading-none" onClick={() => setPlaced(null)}>
+              <button
+                type="button"
+                className="ml-2 text-lg leading-none"
+                onClick={() => setPlaced(null)}
+              >
                 ×
               </button>
             </div>
-            <button type="button" className="w-28 bg-surface px-3 py-2 text-center text-sm hover:bg-surface-2" onClick={() => setPrintOpen(true)}>
+            <button
+              type="button"
+              className="w-28 bg-surface px-3 py-2 text-center text-sm hover:bg-surface-2"
+              onClick={() => setPrintOpen(true)}
+            >
               {t("Print documents")}
             </button>
             <SendButton
@@ -421,7 +498,13 @@ function Page() {
               </Button>
               <Button
                 onClick={() => {
-                  const tipo = printDocs.pick ? "pick" : printDocs.confirm ? "confirm" : printDocs.bol ? "bol" : "ov";
+                  const tipo = printDocs.pick
+                    ? "pick"
+                    : printDocs.confirm
+                      ? "confirm"
+                      : printDocs.bol
+                        ? "bol"
+                        : "ov";
                   window.open(`/doc/${tipo}/${placed.share_token}`, "_blank");
                   setPrintOpen(false);
                 }}
@@ -440,7 +523,11 @@ function Page() {
       {openId ? (
         <TabOverride>
           <div className="flex h-11 items-center gap-3 bg-seller px-3 text-sm text-seller-fg">
-            <button type="button" className="font-medium hover:underline" onClick={() => setOpenId(null)}>
+            <button
+              type="button"
+              className="font-medium hover:underline"
+              onClick={() => setOpenId(null)}
+            >
               ← {t("Go back to All Orders")}
             </button>
             <Button
@@ -470,7 +557,10 @@ function Page() {
       </FilterRow>
       {orders.loading ? <p className="p-6 text-sm text-muted">Loading…</p> : null}
       {!orders.loading && filtered.length === 0 ? (
-        <EmptyOrders kind="sales" onNew={() => navigate({ to: "/ventas", search: { tab: "new" } })} />
+        <EmptyOrders
+          kind="sales"
+          onNew={() => navigate({ to: "/ventas", search: { tab: "new" } })}
+        />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[900px] text-left text-sm">
@@ -493,13 +583,25 @@ function Page() {
                   <Fragment key={row.id}>
                     <tr className="border-b border-border bg-surface">
                       <td className="px-3 py-2">
-                        <button type="button" className="flex size-8 items-center justify-center" onClick={() => setOpenId(open ? null : row.id)}>
-                          {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                        <button
+                          type="button"
+                          className="flex size-8 items-center justify-center"
+                          onClick={() => setOpenId(open ? null : row.id)}
+                        >
+                          {open ? (
+                            <ChevronDown className="size-4" />
+                          ) : (
+                            <ChevronRight className="size-4" />
+                          )}
                         </button>
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-2">
-                          <button type="button" className="font-medium text-link" onClick={() => setOpenId(open ? null : row.id)}>
+                          <button
+                            type="button"
+                            className="font-medium text-link"
+                            onClick={() => setOpenId(open ? null : row.id)}
+                          >
                             {poShort(row.so_number)}
                           </button>
                           <SendButton
@@ -510,7 +612,9 @@ function Page() {
                             phone={row.customer_phone}
                             docs={[
                               { tipo: "ov", id: row.id, label: "Sales Order" },
-                              ...(row.invoice ? [{ tipo: "factura", id: row.invoice.id, label: "Invoice" }] : []),
+                              ...(row.invoice
+                                ? [{ tipo: "factura", id: row.invoice.id, label: "Invoice" }]
+                                : []),
                             ]}
                             lines={row.lines.map((l) => ({
                               qty: l.quantity_ordered,
@@ -543,12 +647,26 @@ function Page() {
                                 pending: line.open,
                                 unit: line.unit,
                               });
-                              setShipForm({ quantity: String(line.open), lot_id: "", location_id: "" });
+                              setShipForm({
+                                quantity: String(line.open),
+                                lot_id: "",
+                                location_id: "",
+                              });
                             }}
                             onInvoice={() => void facturar(row.id)}
                             onBuy={() => {
-                              setBuyForm({ supplier_id: "", deal_type: "firme", unit_cost: "", commission_type: "", commission_rate: "" });
-                              setBuy({ so_id: row.id, so_number: row.so_number, openQty: row.lines.reduce((s, l) => s + l.open, 0) });
+                              setBuyForm({
+                                supplier_id: "",
+                                deal_type: "firme",
+                                unit_cost: "",
+                                commission_type: "",
+                                commission_rate: "",
+                              });
+                              setBuy({
+                                so_id: row.id,
+                                so_number: row.so_number,
+                                openQty: row.lines.reduce((s, l) => s + l.open, 0),
+                              });
                             }}
                             onCredit={() => setCredit(row.id)}
                             onCancel={() => setCancelSo({ id: row.id, so_number: row.so_number })}
@@ -569,10 +687,16 @@ function Page() {
         <Modal title="Fulfill line" onClose={() => setShip(null)}>
           <form className="grid gap-3" onSubmit={doShip}>
             <Field label="Quantity">
-              <Input value={shipForm.quantity} onChange={(e) => setShipForm({ ...shipForm, quantity: e.target.value })} />
+              <Input
+                value={shipForm.quantity}
+                onChange={(e) => setShipForm({ ...shipForm, quantity: e.target.value })}
+              />
             </Field>
             <Field label="Lot">
-              <Select value={shipForm.lot_id} onChange={(e) => setShipForm({ ...shipForm, lot_id: e.target.value })}>
+              <Select
+                value={shipForm.lot_id}
+                onChange={(e) => setShipForm({ ...shipForm, lot_id: e.target.value })}
+              >
                 <option value="">Select lot</option>
                 {allLots
                   .filter((l) => l.product_id === ship.product_id && l.asignable)
@@ -584,7 +708,10 @@ function Page() {
               </Select>
             </Field>
             <Field label="Location">
-              <Select value={shipForm.location_id} onChange={(e) => setShipForm({ ...shipForm, location_id: e.target.value })}>
+              <Select
+                value={shipForm.location_id}
+                onChange={(e) => setShipForm({ ...shipForm, location_id: e.target.value })}
+              >
                 <option value="">Select</option>
                 {allLots
                   .find((l) => String(l.id) === shipForm.lot_id)
@@ -594,7 +721,9 @@ function Page() {
                     </option>
                   ))}
               </Select>
-              <p className="mt-1 text-xs text-muted">{t("Cold room in the warehouse this fruit leaves from.")}</p>
+              <p className="mt-1 text-xs text-muted">
+                {t("Cold room in the warehouse this fruit leaves from.")}
+              </p>
             </Field>
             <Button type="submit" disabled={saving}>
               Fulfill
@@ -604,7 +733,11 @@ function Page() {
       ) : null}
 
       {buy ? (
-        <Modal title="Generate purchase from SO" subtitle={buy.so_number} onClose={() => setBuy(null)}>
+        <Modal
+          title="Generate purchase from SO"
+          subtitle={buy.so_number}
+          onClose={() => setBuy(null)}
+        >
           <form className="grid gap-3" onSubmit={generarCompra}>
             <Field label="Vendor">
               <Select
@@ -617,7 +750,8 @@ function Page() {
                     ...buyForm,
                     supplier_id,
                     commission_type: sup?.commission_type ?? "",
-                    commission_rate: sup?.commission_rate != null ? String(sup.commission_rate) : "",
+                    commission_rate:
+                      sup?.commission_rate != null ? String(sup.commission_rate) : "",
                   });
                 }}
               >
@@ -633,7 +767,9 @@ function Page() {
               <Select
                 required
                 value={buyForm.deal_type}
-                onChange={(e) => setBuyForm({ ...buyForm, deal_type: e.target.value, unit_cost: "" })}
+                onChange={(e) =>
+                  setBuyForm({ ...buyForm, deal_type: e.target.value, unit_cost: "" })
+                }
               >
                 <option value="firme">Firme (precio cerrado)</option>
                 <option value="consignacion">Consignación (PAS)</option>
@@ -642,7 +778,11 @@ function Page() {
             </Field>
             {buyForm.deal_type === "firme" ? (
               <Field label="Unit cost">
-                <Input required value={buyForm.unit_cost} onChange={(e) => setBuyForm({ ...buyForm, unit_cost: e.target.value })} />
+                <Input
+                  required
+                  value={buyForm.unit_cost}
+                  onChange={(e) => setBuyForm({ ...buyForm, unit_cost: e.target.value })}
+                />
               </Field>
             ) : (
               <Field label="Plein commission">
@@ -682,10 +822,14 @@ function Page() {
           <div className="grid gap-3 sm:grid-cols-4">
             <MetaCard label="Customer">{selected.customer_name}</MetaCard>
             <MetaCard label="SO #">{poShort(selected.so_number)}</MetaCard>
-            <MetaCard label="Order total">{money(selected.lines.reduce((s, l) => s + l.quantity_ordered * l.unit_price, 0))}</MetaCard>
+            <MetaCard label="Order total">
+              {money(selected.lines.reduce((s, l) => s + l.quantity_ordered * l.unit_price, 0))}
+            </MetaCard>
             <MetaCard label="Customer PO #">{selected.customer_po_number || ""}</MetaCard>
           </div>
-          <p className="mt-4 text-sm text-muted">Select the items to credit, the credit type, and the amount to credit per unit.</p>
+          <p className="mt-4 text-sm text-muted">
+            Select the items to credit, the credit type, and the amount to credit per unit.
+          </p>
           <div className="mt-3 overflow-x-auto rounded-md border border-border">
             <table className="w-full text-left text-sm">
               <thead className="bg-surface-2 text-xs text-muted">
@@ -714,7 +858,9 @@ function Page() {
                       <Input defaultValue={String(-l.quantity_ordered)} />
                     </td>
                     <td className="px-3 py-2">{money(l.unit_price)}</td>
-                    <td className="px-3 py-2 text-danger">{money(-l.quantity_ordered * l.unit_price)}</td>
+                    <td className="px-3 py-2 text-danger">
+                      {money(-l.quantity_ordered * l.unit_price)}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -769,7 +915,9 @@ function Page() {
           subtitle="If anything was shipped from a lot, it returns to inventory. Blocked if this order already has an invoice."
           onClose={() => setCancelSo(null)}
           onConfirm={async (reason) => {
-            await cancelSalesOrder({ data: { sales_order_id: cancelSo.id, reason: reason || undefined } });
+            await cancelSalesOrder({
+              data: { sales_order_id: cancelSo.id, reason: reason || undefined },
+            });
             setCancelSo(null);
             await Promise.all([orders.reload(), lots.reload()]);
           }}
@@ -858,21 +1006,28 @@ function SoDetail({
             "—"
           )}
         </MetaCard>
-        <MetaCard label="Payment terms">{row.payment_terms || row.customer_payment_terms || "—"}</MetaCard>
+        <MetaCard label="Payment terms">
+          {row.payment_terms || row.customer_payment_terms || "—"}
+        </MetaCard>
         <MetaCard label="SO invoice #">{row.invoice?.invoice_number || "—"}</MetaCard>
         <MetaCard label="Customer PO #">{row.customer_po_number || "—"}</MetaCard>
         <MetaCard label="Order total">
           {money(total)}
           <div className="text-[11px] font-normal text-subtle">
-            Items: {row.lines.length} · Units: {row.lines.reduce((s, l) => s + l.quantity_ordered, 0)}
+            Items: {row.lines.length} · Units:{" "}
+            {row.lines.reduce((s, l) => s + l.quantity_ordered, 0)}
           </div>
         </MetaCard>
         <MetaCard label="Sales rep">{COMPANY.userName}</MetaCard>
-        <MetaCard label="Fulfilled by">{row.status === "completed" ? `Auto-fulfilled ${fecha(row.order_date)}` : "—"}</MetaCard>
+        <MetaCard label="Fulfilled by">
+          {row.status === "completed" ? `Auto-fulfilled ${fecha(row.order_date)}` : "—"}
+        </MetaCard>
       </div>
       {row.ship_to_instructions ? (
         <div className="mt-3 rounded-md border border-warn/40 bg-warn/5 p-3 text-xs">
-          <p className="mb-1 font-semibold uppercase tracking-wide text-warn">Instrucciones de recibo en este destino</p>
+          <p className="mb-1 font-semibold uppercase tracking-wide text-warn">
+            Instrucciones de recibo en este destino
+          </p>
           <p className="whitespace-pre-wrap">{row.ship_to_instructions}</p>
         </div>
       ) : null}
@@ -893,7 +1048,8 @@ function SoDetail({
               <tr key={l.id} className="border-t border-border">
                 <td className="px-3 py-3">
                   <div className="font-medium">
-                    {i + 1}. {l.product_name} {l.empaque ? `· ${l.empaque}` : ""} {l.calibre ? `· ${l.calibre}` : ""}
+                    {i + 1}. {l.product_name} {l.empaque ? `· ${l.empaque}` : ""}{" "}
+                    {l.calibre ? `· ${l.calibre}` : ""}
                   </div>
                   {l.lot_number ? (
                     <div className="text-xs text-muted">
@@ -920,7 +1076,11 @@ function SoDetail({
 
       <div className="mt-4 grid gap-2 lg:grid-cols-4">
         <div className="rounded-md border border-border p-3 text-sm">
-          <Link className="text-link" to="/doc/$tipo/$id" params={{ tipo: "ov", id: row.share_token }}>
+          <Link
+            className="text-link"
+            to="/doc/$tipo/$id"
+            params={{ tipo: "ov", id: row.share_token }}
+          >
             Print documents
           </Link>
           <div className="mt-2">
@@ -945,7 +1105,6 @@ function SoDetail({
             />
           </div>
           <p className="mt-2 text-link">Print SO label</p>
-          <p className="mt-2 text-link">Print pallet labels</p>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <p className="text-link">Audit log</p>

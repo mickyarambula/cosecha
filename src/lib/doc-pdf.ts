@@ -42,10 +42,11 @@ export type DocPdfInput = {
   } | null;
 };
 
-const GREEN: [number, number, number] = [27, 107, 76];
-const INK: [number, number, number] = [28, 36, 48];
-const MUTED: [number, number, number] = [91, 101, 115];
-const RULE: [number, number, number] = [210, 216, 224];
+export const GREEN: [number, number, number] = [27, 107, 76];
+export const INK: [number, number, number] = [28, 36, 48];
+export const MUTED: [number, number, number] = [91, 101, 115];
+export const RULE: [number, number, number] = [210, 216, 224];
+export const WARN: [number, number, number] = [180, 83, 9];
 const PAGE_W = 612;
 const PAGE_H = 792;
 const M = 48;
@@ -112,12 +113,28 @@ function pdfDate(raw: string | null | undefined): string {
   if (!raw) return "-";
   const d = new Date(String(raw).length <= 10 ? `${raw}T12:00:00` : raw);
   if (Number.isNaN(d.getTime())) return String(raw);
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
   return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
-function safeFilename(raw: string): string {
-  const cleaned = raw.replace(/[^\w.\-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+export function safeFilename(raw: string): string {
+  const cleaned = raw
+    .replace(/[^\w.\-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
   return cleaned || "documento";
 }
 
@@ -133,7 +150,14 @@ export function fromPrintDoc(doc: {
   party: { name: string; lines: string[] };
   shipTitle: string | null;
   ship: { name: string; lines: string[] } | null;
-  lines: Array<{ sku: string; description: string; qty: number; unit: string; unit_price: number; amount: number }>;
+  lines: Array<{
+    sku: string;
+    description: string;
+    qty: number;
+    unit: string;
+    unit_price: number;
+    amount: number;
+  }>;
   subtotal: number;
   total: number;
   notes: string | null;
@@ -169,7 +193,7 @@ function inIframe() {
   }
 }
 
-function triggerDownload(blob: Blob, filename: string) {
+export function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const framed = inIframe();
   const a = document.createElement("a");
@@ -257,7 +281,12 @@ function buildPdf(
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(8);
   pdf.setTextColor(...MUTED);
-  const meta = [tagline, loc, [email, phone].filter(Boolean).join(" · "), pacaLicense ? `PACA ${pacaLicense}` : ""]
+  const meta = [
+    tagline,
+    loc,
+    [email, phone].filter(Boolean).join(" · "),
+    pacaLicense ? `PACA ${pacaLicense}` : "",
+  ]
     .filter((s) => s && s.trim())
     .join("\n");
   const metaLines = pdf.splitTextToSize(meta, 280) as string[];
@@ -301,7 +330,8 @@ function buildPdf(
     y += 28;
   }
 
-  const hasPrice = input.lines.some((l) => l.unit_price != null || l.amount != null) || input.total != null;
+  const hasPrice =
+    input.lines.some((l) => l.unit_price != null || l.amount != null) || input.total != null;
   const skuW = 78;
   const qtyW = 64;
   const priceW = hasPrice ? 72 : 0;
@@ -349,10 +379,17 @@ function buildPdf(
     pdf.text(descLines, M + skuW, y);
     pdf.text(pdfQty(line.qty, line.unit), M + skuW + descW + qtyW, y, { align: "right" });
     if (hasPrice) {
-      pdf.text(line.unit_price != null ? pdfMoney(line.unit_price) : "-", M + skuW + descW + qtyW + priceW, y, {
+      pdf.text(
+        line.unit_price != null ? pdfMoney(line.unit_price) : "-",
+        M + skuW + descW + qtyW + priceW,
+        y,
+        {
+          align: "right",
+        },
+      );
+      pdf.text(line.amount != null ? pdfMoney(line.amount) : "-", PAGE_W - M, y, {
         align: "right",
       });
-      pdf.text(line.amount != null ? pdfMoney(line.amount) : "-", PAGE_W - M, y, { align: "right" });
     }
     y += rowH;
     pdf.setDrawColor(...RULE);

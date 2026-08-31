@@ -254,7 +254,9 @@ function Page() {
         data: {
           supplier_id: Number(draft.supplier_id),
           deal_type: draft.deal_type as "firme" | "consignacion" | "comision",
-          commission_type: withCommission ? (draft.commission_type as "per_unit" | "gross_pct" | "net_pct") : undefined,
+          commission_type: withCommission
+            ? (draft.commission_type as "per_unit" | "gross_pct" | "net_pct")
+            : undefined,
           commission_rate: withCommission ? Number(draft.commission_rate) : undefined,
           expected_date: draft.expected_date || undefined,
           notes: draft.notes || undefined,
@@ -286,7 +288,7 @@ function Page() {
   }
 
   async function saveExpense() {
-    const poId = expenseFor === "draft" ? undefined : expenseFor ?? undefined;
+    const poId = expenseFor === "draft" ? undefined : (expenseFor ?? undefined);
     if (!expDraft.supplier_id && !draft.supplier_id) {
       setExpMsg("Escoge a quién se le paga este gasto.");
       return;
@@ -392,7 +394,8 @@ function Page() {
               line_id: l.line_id,
               result: l.resultado as (typeof RESULTADOS_REC)[number],
               quantity: l.resultado === "Rechazada" ? l.pendiente : Number(l.cantidad),
-              affected_qty: l.resultado === "Aceptada con incidencia" ? Number(l.afectada) : undefined,
+              affected_qty:
+                l.resultado === "Aceptada con incidencia" ? Number(l.afectada) : undefined,
               defect_type: tieneDefecto ? tipo || undefined : undefined,
               defect_reason: tieneDefecto ? resto.join("::") || undefined : undefined,
               notes: l.nota || undefined,
@@ -496,19 +499,30 @@ function Page() {
             </MetaCard>
           ) : null}
           <MetaCard label="Order type">
-            <Select value={draft.order_type} onChange={(e) => setDraft({ ...draft, order_type: e.target.value })}>
+            <Select
+              value={draft.order_type}
+              onChange={(e) => setDraft({ ...draft, order_type: e.target.value })}
+            >
               <option>Delivery by vendor</option>
               <option>Pickup</option>
               <option>Will-call</option>
             </Select>
           </MetaCard>
           <MetaCard label="Requested date">
-            <Input type="date" value={draft.expected_date} onChange={(e) => setDraft({ ...draft, expected_date: e.target.value })} />
+            <Input
+              type="date"
+              value={draft.expected_date}
+              onChange={(e) => setDraft({ ...draft, expected_date: e.target.value })}
+            />
           </MetaCard>
           <MetaCard
             label="Expenses"
             action={
-              <button type="button" className="text-xs text-link" onClick={() => setExpenseFor("draft")}>
+              <button
+                type="button"
+                className="text-xs text-link"
+                onClick={() => setExpenseFor("draft")}
+              >
                 Add new
               </button>
             }
@@ -539,13 +553,25 @@ function Page() {
           </Button>
           <div className="ml-auto flex flex-wrap gap-2">
             <Field label="Vendor invoice #">
-              <Input value={draft.vendor_invoice} onChange={(e) => setDraft({ ...draft, vendor_invoice: e.target.value })} className="w-36" />
+              <Input
+                value={draft.vendor_invoice}
+                onChange={(e) => setDraft({ ...draft, vendor_invoice: e.target.value })}
+                className="w-36"
+              />
             </Field>
             <Field label="BOL #">
-              <Input value={draft.bol} onChange={(e) => setDraft({ ...draft, bol: e.target.value })} className="w-28" />
+              <Input
+                value={draft.bol}
+                onChange={(e) => setDraft({ ...draft, bol: e.target.value })}
+                className="w-28"
+              />
             </Field>
             <Field label="Shipping reference #">
-              <Input value={draft.shipping_ref} onChange={(e) => setDraft({ ...draft, shipping_ref: e.target.value })} className="w-40" />
+              <Input
+                value={draft.shipping_ref}
+                onChange={(e) => setDraft({ ...draft, shipping_ref: e.target.value })}
+                className="w-40"
+              />
             </Field>
           </div>
         </div>
@@ -562,110 +588,152 @@ function Page() {
                   <th className="px-3 py-2 font-medium">Quantity</th>
                   <th className="px-3 py-2 font-medium">Cost</th>
                   <th className="px-3 py-2 font-medium">B/E</th>
-                  {draft.deal_type === "firme" ? <th className="px-3 py-2 font-medium">$ Markup</th> : null}
+                  {draft.deal_type === "firme" ? (
+                    <th className="px-3 py-2 font-medium">$ Markup</th>
+                  ) : null}
                   <th className="w-10 px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
                 {lines.map((l, i) => {
-                  const weight = l.netWeight != null && Number(l.qty) > 0 ? Number(l.qty) * l.netWeight : null;
+                  const weight =
+                    l.netWeight != null && Number(l.qty) > 0 ? Number(l.qty) * l.netWeight : null;
                   return (
-                  <tr key={l.key} className="border-b border-border align-top">
-                    <td className="px-3 py-3">
-                      <div className="font-medium">
-                        {i + 1}. {l.name}
-                        {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">{l.calibre}</span> : null}
-                      </div>
-                      {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
-                        <span>{l.unit}</span>
+                    <tr key={l.key} className="border-b border-border align-top">
+                      <td className="px-3 py-3">
+                        <div className="font-medium">
+                          {i + 1}. {l.name}
+                          {l.calibre ? (
+                            <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">
+                              {l.calibre}
+                            </span>
+                          ) : null}
+                        </div>
+                        {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+                          <span>{l.unit}</span>
+                          <Input
+                            className="h-8 w-14"
+                            value={l.origin}
+                            onChange={(e) =>
+                              setLines((p) =>
+                                p.map((x) =>
+                                  x.key === l.key ? { ...x, origin: e.target.value } : x,
+                                ),
+                              )
+                            }
+                          />
+                          <label className="flex items-center gap-1">
+                            <input type="checkbox" className="size-3.5 accent-action" /> Organic
+                          </label>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-xs text-muted">Auto-generated</td>
+                      <td className="px-3 py-3">
+                        <div className="grid w-40 grid-cols-2 gap-1">
+                          <Input
+                            title="Pallets"
+                            placeholder="Pallets"
+                            value={l.pallets}
+                            onChange={(e) =>
+                              setLines((p) =>
+                                p.map((x) =>
+                                  x.key === l.key ? { ...x, pallets: e.target.value } : x,
+                                ),
+                              )
+                            }
+                          />
+                          <Input
+                            title="Cases per pallet"
+                            placeholder="Cases/plt"
+                            value={l.unitsPerPallet}
+                            onChange={(e) =>
+                              setLines((p) =>
+                                p.map((x) =>
+                                  x.key === l.key
+                                    ? {
+                                        ...x,
+                                        unitsPerPallet: e.target.value,
+                                        pallets: ceilPallets(x.qty, e.target.value) || x.pallets,
+                                      }
+                                    : x,
+                                ),
+                              )
+                            }
+                          />
+                        </div>
+                        <div className="mt-1 text-[11px] text-muted">
+                          Weight {weight != null ? qty(weight, l.weightUnit) : "—"}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3">
                         <Input
-                          className="h-8 w-14"
-                          value={l.origin}
-                          onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, origin: e.target.value } : x)))}
-                        />
-                        <label className="flex items-center gap-1">
-                          <input type="checkbox" className="size-3.5 accent-action" /> Organic
-                        </label>
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-xs text-muted">Auto-generated</td>
-                    <td className="px-3 py-3">
-                      <div className="grid w-40 grid-cols-2 gap-1">
-                        <Input
-                          title="Pallets"
-                          placeholder="Pallets"
-                          value={l.pallets}
-                          onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, pallets: e.target.value } : x)))}
-                        />
-                        <Input
-                          title="Cases per pallet"
-                          placeholder="Cases/plt"
-                          value={l.unitsPerPallet}
+                          className="w-20"
+                          value={l.qty}
                           onChange={(e) =>
                             setLines((p) =>
                               p.map((x) =>
                                 x.key === l.key
-                                  ? { ...x, unitsPerPallet: e.target.value, pallets: ceilPallets(x.qty, e.target.value) || x.pallets }
+                                  ? {
+                                      ...x,
+                                      qty: e.target.value,
+                                      pallets:
+                                        ceilPallets(e.target.value, x.unitsPerPallet) || x.pallets,
+                                    }
                                   : x,
                               ),
                             )
                           }
                         />
-                      </div>
-                      <div className="mt-1 text-[11px] text-muted">
-                        Weight {weight != null ? qty(weight, l.weightUnit) : "—"}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3">
-                      <Input
-                        className="w-20"
-                        value={l.qty}
-                        onChange={(e) =>
-                          setLines((p) =>
-                            p.map((x) =>
-                              x.key === l.key
-                                ? { ...x, qty: e.target.value, pallets: ceilPallets(e.target.value, x.unitsPerPallet) || x.pallets }
-                                : x,
-                            ),
-                          )
-                        }
-                      />
-                    </td>
-                    <td className="px-3 py-3">
-                      <Input
-                        className="w-24"
-                        placeholder="$"
-                        value={l.cost}
-                        disabled={draft.deal_type !== "firme"}
-                        onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, cost: e.target.value } : x)))}
-                      />
-                      {draft.deal_type !== "firme" ? (
-                        <div className="mt-1 text-[11px] text-danger">{draft.deal_type === "comision" ? "Comisión — sin costo" : "PAS"}</div>
-                      ) : null}
-                    </td>
-                    <td className="px-3 py-3 text-xs text-muted">{draft.deal_type === "firme" ? "" : "Min: PAS"}</td>
-                    {draft.deal_type === "firme" ? (
+                      </td>
                       <td className="px-3 py-3">
                         <Input
-                          className="w-20"
-                          value={l.markup}
-                          onChange={(e) => setLines((p) => p.map((x) => (x.key === l.key ? { ...x, markup: e.target.value } : x)))}
+                          className="w-24"
+                          placeholder="$"
+                          value={l.cost}
+                          disabled={draft.deal_type !== "firme"}
+                          onChange={(e) =>
+                            setLines((p) =>
+                              p.map((x) => (x.key === l.key ? { ...x, cost: e.target.value } : x)),
+                            )
+                          }
                         />
+                        {draft.deal_type !== "firme" ? (
+                          <div className="mt-1 text-[11px] text-danger">
+                            {draft.deal_type === "comision" ? "Comisión — sin costo" : "PAS"}
+                          </div>
+                        ) : null}
                       </td>
-                    ) : null}
-                    <td className="px-3 py-3">
-                      <button
-                        type="button"
-                        title="Quitar línea"
-                        aria-label={`Quitar ${l.name}`}
-                        className="cursor-pointer rounded p-1 text-subtle hover:bg-danger/10 hover:text-danger"
-                        onClick={() => setLines((p) => p.filter((x) => x.key !== l.key))}
-                      >
-                        <Trash2 className="size-4" />
-                      </button>
-                    </td>
-                  </tr>
+                      <td className="px-3 py-3 text-xs text-muted">
+                        {draft.deal_type === "firme" ? "" : "Min: PAS"}
+                      </td>
+                      {draft.deal_type === "firme" ? (
+                        <td className="px-3 py-3">
+                          <Input
+                            className="w-20"
+                            value={l.markup}
+                            onChange={(e) =>
+                              setLines((p) =>
+                                p.map((x) =>
+                                  x.key === l.key ? { ...x, markup: e.target.value } : x,
+                                ),
+                              )
+                            }
+                          />
+                        </td>
+                      ) : null}
+                      <td className="px-3 py-3">
+                        <button
+                          type="button"
+                          title="Quitar línea"
+                          aria-label={`Quitar ${l.name}`}
+                          className="cursor-pointer rounded p-1 text-subtle hover:bg-danger/10 hover:text-danger"
+                          onClick={() => setLines((p) => p.filter((x) => x.key !== l.key))}
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -676,7 +744,11 @@ function Page() {
         )}
 
         <div className="mt-auto border-t border-border bg-surface">
-          <button type="button" className="mx-4 mt-3 h-9 rounded-md border border-border px-3 text-sm" onClick={() => setPicker(true)}>
+          <button
+            type="button"
+            className="mx-4 mt-3 h-9 rounded-md border border-border px-3 text-sm"
+            onClick={() => setPicker(true)}
+          >
             + Add non-inventory item
           </button>
           <div className="grid gap-3 p-4 lg:grid-cols-3">
@@ -689,12 +761,17 @@ function Page() {
               />
               <span>
                 <span className="text-link">Add note to vendor</span>
-                <Textarea className="mt-2" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} />
+                <Textarea
+                  className="mt-2"
+                  value={draft.notes}
+                  onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
+                />
               </span>
             </label>
             <div className="space-y-2 text-sm text-muted">
               <label className="flex items-center gap-2">
-                <input type="checkbox" className="size-4 accent-action" /> Share vendor portal to {vendorName ? "contacts" : "0 contacts"}
+                <input type="checkbox" className="size-4 accent-action" /> Share vendor portal to{" "}
+                {vendorName ? "contacts" : "0 contacts"}
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -714,7 +791,10 @@ function Page() {
                 <span>
                   Expenses: $0.00 · Order total: <strong>{money(merch)}</strong>
                 </span>
-                <Button disabled={saving || !draft.supplier_id || !draft.deal_type || !lines.length} onClick={() => void placeOrder()}>
+                <Button
+                  disabled={saving || !draft.supplier_id || !draft.deal_type || !lines.length}
+                  onClick={() => void placeOrder()}
+                >
                   Place order
                 </Button>
               </div>
@@ -722,13 +802,18 @@ function Page() {
           </div>
         </div>
 
-        {picker ? <ProductPicker skus={skus} onAdd={addSku} onClose={() => setPicker(false)} /> : null}
+        {picker ? (
+          <ProductPicker skus={skus} onAdd={addSku} onClose={() => setPicker(false)} />
+        ) : null}
         {expenseFor ? (
           <ExpenseModal
             suppliers={suppliers.data ?? []}
             form={expDraft}
             setForm={setExpDraft}
-            onClose={() => { setExpenseFor(null); setExpMsg(null); }}
+            onClose={() => {
+              setExpenseFor(null);
+              setExpMsg(null);
+            }}
             onSave={() => void saveExpense()}
             saving={saving}
             msg={expMsg}
@@ -819,30 +904,53 @@ function Page() {
                 const recv = row.receptions[0]?.received_date;
                 return (
                   <Fragment key={row.id}>
-                    <tr key={row.id} className="border-b border-border bg-surface hover:bg-surface-2/60">
+                    <tr
+                      key={row.id}
+                      className="border-b border-border bg-surface hover:bg-surface-2/60"
+                    >
                       <td className="px-3 py-2">
-                        <button type="button" className="flex size-8 items-center justify-center rounded hover:bg-surface-2" onClick={() => setOpenId(open ? null : row.id)}>
-                          {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                        <button
+                          type="button"
+                          className="flex size-8 items-center justify-center rounded hover:bg-surface-2"
+                          onClick={() => setOpenId(open ? null : row.id)}
+                        >
+                          {open ? (
+                            <ChevronDown className="size-4" />
+                          ) : (
+                            <ChevronRight className="size-4" />
+                          )}
                         </button>
                       </td>
                       <td className="px-3 py-2">
-                        <button type="button" className="font-medium text-link" onClick={() => setOpenId(open ? null : row.id)}>
+                        <button
+                          type="button"
+                          className="font-medium text-link"
+                          onClick={() => setOpenId(open ? null : row.id)}
+                        >
                           {poShort(row.po_number)}
                         </button>
                       </td>
                       <td className="px-3 py-2">
-                        <Badge tone={orderTone(row.status === "completed" ? "received" : row.status)}>
+                        <Badge
+                          tone={orderTone(row.status === "completed" ? "received" : row.status)}
+                        >
                           {row.status === "completed" ? "Received" : orderLabel(row.status)}
                         </Badge>
                       </td>
                       <td className="px-3 py-2">{row.supplier_name}</td>
                       <td className="px-3 py-2">{fecha(row.expected_date || row.order_date)}</td>
                       <td className="px-3 py-2">{recv ? fecha(recv) : "—"}</td>
-                      <td className="px-3 py-2">{row.vendor_invoice || row.bill?.bill_number || "—"}</td>
+                      <td className="px-3 py-2">
+                        {row.vendor_invoice || row.bill?.bill_number || "—"}
+                      </td>
                       <td className="px-3 py-2">{row.bol || "—"}</td>
-                      <td className="px-3 py-2">{row.order_type === "entrega" ? "Delivery" : row.order_type}</td>
+                      <td className="px-3 py-2">
+                        {row.order_type === "entrega" ? "Delivery" : row.order_type}
+                      </td>
                       <td className="px-3 py-2 text-right tabular-nums">{unitsN}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{money(row.order_total)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {money(row.order_total)}
+                      </td>
                       <td className="px-3 py-2 text-muted">—</td>
                     </tr>
                     {open ? (
@@ -855,7 +963,9 @@ function Page() {
                             onBill={() => void facturarProv(row.id)}
                             onExpense={() => setExpenseFor(row.id)}
                             onShare={() => {
-                              setShareLevel((row.vendor_share_level as "po" | "basic" | "detailed") || "po");
+                              setShareLevel(
+                                (row.vendor_share_level as "po" | "basic" | "detailed") || "po",
+                              );
                               setShareId(row.id);
                             }}
                             onSettle={() => setSettleId(row.id)}
@@ -874,15 +984,28 @@ function Page() {
       )}
 
       {po ? (
-        <Modal wide title="Receive merchandise" subtitle={`${po.po_number} · ${po.supplier_name}`} onClose={() => setRecvPo(null)}>
+        <Modal
+          wide
+          title="Receive merchandise"
+          subtitle={`${po.po_number} · ${po.supplier_name}`}
+          onClose={() => setRecvPo(null)}
+        >
           <form className="grid gap-4" onSubmit={doReceive}>
             {warn ? <p className="text-sm text-danger">{warn}</p> : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Received date">
-                <Input type="date" value={rec.received_date} onChange={(e) => setRec({ ...rec, received_date: e.target.value })} />
+                <Input
+                  type="date"
+                  value={rec.received_date}
+                  onChange={(e) => setRec({ ...rec, received_date: e.target.value })}
+                />
               </Field>
               <Field label="Destination">
-                <Select required value={rec.location_id} onChange={(e) => setRec({ ...rec, location_id: e.target.value })}>
+                <Select
+                  required
+                  value={rec.location_id}
+                  onChange={(e) => setRec({ ...rec, location_id: e.target.value })}
+                >
                   <option value="">Select</option>
                   {(locations.data ?? []).map((l) => (
                     <option key={l.id} value={l.id}>
@@ -899,7 +1022,13 @@ function Page() {
               const mismatches = (po?.lines ?? [])
                 .map((l) => ({
                   name: l.product_name,
-                  issue: tempMismatch(loc.set_point_temp, loc.set_point_unit, l.storage_temp_min, l.storage_temp_max, l.storage_temp_unit),
+                  issue: tempMismatch(
+                    loc.set_point_temp,
+                    loc.set_point_unit,
+                    l.storage_temp_min,
+                    l.storage_temp_max,
+                    l.storage_temp_unit,
+                  ),
                 }))
                 .filter((x) => {
                   if (!x.issue) return false;
@@ -916,7 +1045,10 @@ function Page() {
               );
             })()}
             <Field label="Inspection type">
-              <Select value={rec.inspection_type} onChange={(e) => setRec({ ...rec, inspection_type: e.target.value })}>
+              <Select
+                value={rec.inspection_type}
+                onChange={(e) => setRec({ ...rec, inspection_type: e.target.value })}
+              >
                 {INSPECCION_TIPOS.map((t) => (
                   <option key={t} value={t}>
                     {t}
@@ -933,7 +1065,16 @@ function Page() {
                   {l.sku_code ? <p className="text-xs text-subtle">{l.sku_code}</p> : null}
                   <div className="mt-2 grid gap-2 sm:grid-cols-2">
                     <Field label="Result">
-                      <Select value={l.resultado} onChange={(e) => setRecLines((p) => p.map((x, idx) => (idx === i ? { ...x, resultado: e.target.value } : x)))}>
+                      <Select
+                        value={l.resultado}
+                        onChange={(e) =>
+                          setRecLines((p) =>
+                            p.map((x, idx) =>
+                              idx === i ? { ...x, resultado: e.target.value } : x,
+                            ),
+                          )
+                        }
+                      >
                         <option value="">Select</option>
                         {RESULTADOS_REC.map((r) => (
                           <option key={r} value={r}>
@@ -943,12 +1084,26 @@ function Page() {
                       </Select>
                     </Field>
                     <Field label="Quantity">
-                      <Input value={l.cantidad} onChange={(e) => setRecLines((p) => p.map((x, idx) => (idx === i ? { ...x, cantidad: e.target.value } : x)))} />
+                      <Input
+                        value={l.cantidad}
+                        onChange={(e) =>
+                          setRecLines((p) =>
+                            p.map((x, idx) => (idx === i ? { ...x, cantidad: e.target.value } : x)),
+                          )
+                        }
+                      />
                     </Field>
                   </div>
                   {l.resultado && l.resultado !== "Aceptada" ? (
                     <Field label="Reason" className="mt-2">
-                      <Select value={l.defecto} onChange={(e) => setRecLines((p) => p.map((x, idx) => (idx === i ? { ...x, defecto: e.target.value } : x)))}>
+                      <Select
+                        value={l.defecto}
+                        onChange={(e) =>
+                          setRecLines((p) =>
+                            p.map((x, idx) => (idx === i ? { ...x, defecto: e.target.value } : x)),
+                          )
+                        }
+                      >
                         <option value="">Select</option>
                         {GRUPOS.map(([k, lab]) => (
                           <optgroup key={k} label={lab}>
@@ -977,7 +1132,10 @@ function Page() {
           suppliers={suppliers.data ?? []}
           form={expDraft}
           setForm={setExpDraft}
-          onClose={() => { setExpenseFor(null); setExpMsg(null); }}
+          onClose={() => {
+            setExpenseFor(null);
+            setExpMsg(null);
+          }}
           onSave={() => void saveExpense()}
           saving={saving}
           msg={expMsg}
@@ -992,13 +1150,19 @@ function Page() {
             <span>Order total {money(sharePo.order_total)}</span>
           </div>
           <div className="mt-4 rounded-lg bg-action px-3 py-3 text-action-fg">
-            <p className="text-[11px] uppercase tracking-wide text-white/80">Share info with selected contacts using link</p>
+            <p className="text-[11px] uppercase tracking-wide text-white/80">
+              Share info with selected contacts using link
+            </p>
             <div className="mt-2 flex items-center gap-2 rounded-md bg-white/15 px-2 py-1.5">
               <code className="flex-1 truncate text-xs">{`/portal/${sharePo.share_token}`}</code>
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void navigator.clipboard?.writeText(`${window.location.origin}/portal/${sharePo.share_token}`)}
+                onClick={() =>
+                  void navigator.clipboard?.writeText(
+                    `${window.location.origin}/portal/${sharePo.share_token}`,
+                  )
+                }
               >
                 <Copy className="size-3.5" /> Copy link
               </Button>
@@ -1009,8 +1173,16 @@ function Page() {
             {(
               [
                 ["po", "PO", "PO level information with items, prices, and PO total."],
-                ["basic", "PO + Basic sales data", "Includes PO data and adds lot-level total sales, break even, average selling price per unit, incurred expenses, and a P/L summary."],
-                ["detailed", "PO + Detailed sales data", "Includes the same information as PO + Basic sales data and adds in a full sales and price list (without customer information)."],
+                [
+                  "basic",
+                  "PO + Basic sales data",
+                  "Includes PO data and adds lot-level total sales, break even, average selling price per unit, incurred expenses, and a P/L summary.",
+                ],
+                [
+                  "detailed",
+                  "PO + Detailed sales data",
+                  "Includes the same information as PO + Basic sales data and adds in a full sales and price list (without customer information).",
+                ],
               ] as const
             ).map(([val, title, body]) => (
               <label key={val} className="mt-2 flex items-start gap-2">
@@ -1032,7 +1204,9 @@ function Page() {
               </Button>
               <Button
                 onClick={() => {
-                  void setVendorShare({ data: { purchase_order_id: sharePo.id, level: shareLevel } }).then(() => {
+                  void setVendorShare({
+                    data: { purchase_order_id: sharePo.id, level: shareLevel },
+                  }).then(() => {
                     setShareId(null);
                     void orders.reload();
                     window.location.href = `/portal/${sharePo.share_token}`;
@@ -1075,7 +1249,9 @@ function Page() {
           subtitle="Blocked if it already has a vendor invoice, or if a received lot was already sold, wasted or repacked."
           onClose={() => setCancelPo(null)}
           onConfirm={async (reason) => {
-            await cancelPurchaseOrder({ data: { purchase_order_id: cancelPo.id, reason: reason || undefined } });
+            await cancelPurchaseOrder({
+              data: { purchase_order_id: cancelPo.id, reason: reason || undefined },
+            });
             setCancelPo(null);
             await orders.reload();
           }}
@@ -1110,7 +1286,10 @@ function PoDetail({
   const received = row.lines.some((l) => l.quantity_received > 0);
   const units = row.lines.reduce((s, l) => s + l.quantity_ordered, 0);
   const pallets = row.lines.reduce((s, l) => s + (l.pallets || 0), 0);
-  const totalWeight = row.lines.reduce((s, l) => s + (l.net_weight != null ? l.quantity_ordered * l.net_weight : 0), 0);
+  const totalWeight = row.lines.reduce(
+    (s, l) => s + (l.net_weight != null ? l.quantity_ordered * l.net_weight : 0),
+    0,
+  );
   const weightUnit = row.lines.find((l) => l.net_weight != null)?.weight_unit || "kg";
   const hasWeight = row.lines.some((l) => l.net_weight != null);
   const pendingCost = row.deal_type !== "firme" && row.lines.some((l) => !(l.unit_cost > 0));
@@ -1136,14 +1315,20 @@ function PoDetail({
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
         <MetaCard label="Vendor">{row.supplier_name}</MetaCard>
         <MetaCard label="Deal type">
-          <Badge tone={row.deal_type === "firme" ? "ok" : row.deal_type === "comision" ? "warn" : "mute"}>
+          <Badge
+            tone={row.deal_type === "firme" ? "ok" : row.deal_type === "comision" ? "warn" : "mute"}
+          >
             {t(DEAL_TYPE_LABEL[row.deal_type] ?? row.deal_type)}
           </Badge>
           {row.commission_type ? (
-            <div className="mt-1 text-[11px] font-normal text-subtle">{commissionSummary(row.commission_type, row.commission_rate)}</div>
+            <div className="mt-1 text-[11px] font-normal text-subtle">
+              {commissionSummary(row.commission_type, row.commission_rate)}
+            </div>
           ) : null}
         </MetaCard>
-        <MetaCard label="Order type">{row.order_type === "entrega" ? "Delivery by vendor" : row.order_type}</MetaCard>
+        <MetaCard label="Order type">
+          {row.order_type === "entrega" ? "Delivery by vendor" : row.order_type}
+        </MetaCard>
         <MetaCard label="Requested date">{fecha(row.expected_date || row.order_date)}</MetaCard>
         <MetaCard label="BOL #">{row.bol || ""}</MetaCard>
         <MetaCard label="Vendor invoice #">{row.vendor_invoice || ""}</MetaCard>
@@ -1162,7 +1347,9 @@ function PoDetail({
           <div>
             {money(row.order_total)}
             {pendingCost ? (
-              <div className="text-[11px] font-normal text-warn">Costo de la fruta pendiente (PAS) — solo gastos</div>
+              <div className="text-[11px] font-normal text-warn">
+                Costo de la fruta pendiente (PAS) — solo gastos
+              </div>
             ) : (
               <div className="text-[11px] font-normal text-subtle">
                 Items: {row.lines.length} · Units: {units}
@@ -1186,49 +1373,64 @@ function PoDetail({
               <th className="px-3 py-2 font-medium">Quantity</th>
               <th className="px-3 py-2 font-medium">Cost</th>
               <th className="px-3 py-2 font-medium">B/E</th>
-              {row.deal_type === "firme" ? <th className="px-3 py-2 font-medium">$ Markup</th> : null}
+              {row.deal_type === "firme" ? (
+                <th className="px-3 py-2 font-medium">$ Markup</th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
             {row.lines.map((l, i) => {
               const lineWeight = l.net_weight != null ? l.quantity_ordered * l.net_weight : null;
               return (
-              <tr key={l.id} className="border-t border-border">
-                <td className="px-3 py-3">
-                  <div className="font-medium">
-                    {i + 1}. {l.product_name}
-                    {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">{l.calibre}</span> : null}
-                  </div>
-                  {l.sku_code ? <div className="text-xs text-subtle">{l.sku_code}</div> : null}
-                  <div className="text-xs text-muted">
-                    {l.unit} · {l.origin_country || "MX"}
-                  </div>
-                </td>
-                <td className="px-3 py-3 text-xs text-link">
-                  {row.receptions.find((r) => r.purchase_order_line_id === l.id && r.lot_sano)?.lot_sano || "—"}
-                </td>
-                <td className="px-3 py-3 text-xs text-muted">
-                  Pallets {l.pallets || 1}
-                  <br />
-                  Weight {lineWeight != null ? qty(lineWeight, l.weight_unit) : "—"}
-                </td>
-                <td className="px-3 py-3 tabular-nums">{l.quantity_ordered}</td>
-                <td className="px-3 py-3">
-                  {l.unit_cost > 0 ? (
-                    <div>
-                      {money(l.unit_cost)}
-                      <div className="text-xs text-muted">Total {money(l.quantity_ordered * l.unit_cost)}</div>
+                <tr key={l.id} className="border-t border-border">
+                  <td className="px-3 py-3">
+                    <div className="font-medium">
+                      {i + 1}. {l.product_name}
+                      {l.calibre ? (
+                        <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">
+                          {l.calibre}
+                        </span>
+                      ) : null}
                     </div>
-                  ) : (
-                    <div>
-                      <div className="text-xs font-medium text-danger">PAS</div>
-                      <div className="text-xs text-muted">Total {money(0)}</div>
+                    {l.sku_code ? <div className="text-xs text-subtle">{l.sku_code}</div> : null}
+                    <div className="text-xs text-muted">
+                      {l.unit} · {l.origin_country || "MX"}
                     </div>
-                  )}
-                </td>
-                <td className="px-3 py-3 text-xs">{l.unit_cost ? money(l.unit_cost + row.expense_total / Math.max(units, 1), 4) : "—"}</td>
-                {row.deal_type === "firme" ? <td className="px-3 py-3 text-sm text-muted">—</td> : null}
-              </tr>
+                  </td>
+                  <td className="px-3 py-3 text-xs text-link">
+                    {row.receptions.find((r) => r.purchase_order_line_id === l.id && r.lot_sano)
+                      ?.lot_sano || "—"}
+                  </td>
+                  <td className="px-3 py-3 text-xs text-muted">
+                    Pallets {l.pallets || 1}
+                    <br />
+                    Weight {lineWeight != null ? qty(lineWeight, l.weight_unit) : "—"}
+                  </td>
+                  <td className="px-3 py-3 tabular-nums">{l.quantity_ordered}</td>
+                  <td className="px-3 py-3">
+                    {l.unit_cost > 0 ? (
+                      <div>
+                        {money(l.unit_cost)}
+                        <div className="text-xs text-muted">
+                          Total {money(l.quantity_ordered * l.unit_cost)}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="text-xs font-medium text-danger">PAS</div>
+                        <div className="text-xs text-muted">Total {money(0)}</div>
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 text-xs">
+                    {l.unit_cost
+                      ? money(l.unit_cost + row.expense_total / Math.max(units, 1), 4)
+                      : "—"}
+                  </td>
+                  {row.deal_type === "firme" ? (
+                    <td className="px-3 py-3 text-sm text-muted">—</td>
+                  ) : null}
+                </tr>
               );
             })}
           </tbody>
@@ -1265,16 +1467,36 @@ function PoDetail({
 
       <PalletsPanel purchaseOrderId={row.id} lines={row.lines} />
 
-      <ShipmentsPanel tipo="entrada" purchaseOrderId={row.id} bol={row.bol} vendorInvoice={row.vendor_invoice} />
+      <ShipmentsPanel
+        tipo="entrada"
+        purchaseOrderId={row.id}
+        bol={row.bol}
+        vendorInvoice={row.vendor_invoice}
+      />
 
       <div className="mt-4 grid gap-2 lg:grid-cols-4">
         <div className="rounded-md border border-border p-3 text-sm">
-          <Link to="/doc/$tipo/$id" params={{ tipo: "oc", id: row.share_token }} className="flex items-center gap-2 text-link">
+          <Link
+            to="/doc/$tipo/$id"
+            params={{ tipo: "oc", id: row.share_token }}
+            className="flex items-center gap-2 text-link"
+          >
             <Printer className="size-3.5" /> Print purchase order
           </Link>
-          <p className="mt-2 text-link">Print lot labels</p>
-          <p className="mt-2 text-link">Print pallet labels</p>
-          <p className="mt-2 text-link">Print PO label</p>
+          <Link
+            to="/etiquetas/lotes/$poId"
+            params={{ poId: String(row.id) }}
+            className="mt-2 block text-link"
+          >
+            Print lot labels
+          </Link>
+          <Link
+            to="/etiquetas/pallets/$poId"
+            params={{ poId: String(row.id) }}
+            className="mt-2 block text-link"
+          >
+            Print pallet labels
+          </Link>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <p className="text-link">Audit log</p>
@@ -1350,7 +1572,12 @@ function EditOrderModal({
   onSaved,
 }: {
   row: Awaited<ReturnType<typeof listPurchaseOrders>>[number];
-  suppliers: { id: number; name: string; commission_type?: string | null; commission_rate?: number | null }[];
+  suppliers: {
+    id: number;
+    name: string;
+    commission_type?: string | null;
+    commission_rate?: number | null;
+  }[];
   skus: SkuOption[];
   onClose: () => void;
   onSaved: () => void;
@@ -1424,8 +1651,12 @@ function EditOrderModal({
           purchase_order_id: row.id,
           supplier_id: Number(form.supplier_id),
           deal_type: form.deal_type as "firme" | "consignacion" | "comision",
-          commission_type: !isFirme && form.commission_type ? (form.commission_type as "per_unit" | "gross_pct" | "net_pct") : undefined,
-          commission_rate: !isFirme && form.commission_type ? Number(form.commission_rate) : undefined,
+          commission_type:
+            !isFirme && form.commission_type
+              ? (form.commission_type as "per_unit" | "gross_pct" | "net_pct")
+              : undefined,
+          commission_rate:
+            !isFirme && form.commission_type ? Number(form.commission_rate) : undefined,
           expected_date: form.expected_date || undefined,
           order_type: form.order_type,
           bol: form.bol || undefined,
@@ -1454,15 +1685,21 @@ function EditOrderModal({
   }
 
   return (
-    <Modal title={`Edit PO #${poShort(row.po_number)}`} subtitle={row.supplier_name} onClose={onClose} wide>
+    <Modal
+      title={`Edit PO #${poShort(row.po_number)}`}
+      subtitle={row.supplier_name}
+      onClose={onClose}
+      wide
+    >
       {locked ? (
         <p className="mb-3 rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
           Esta orden ya tiene factura de proveedor — solo puedes corregir referencia y notas.
         </p>
       ) : received ? (
         <p className="mb-3 rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
-          Esta orden ya tiene mercancía recibida — proveedor, modalidad y líneas quedan fijos. Puedes corregir costo,
-          pallets, cajas/pallet, origen y subir cantidades (nunca bajarlas de lo ya recibido).
+          Esta orden ya tiene mercancía recibida — proveedor, modalidad y líneas quedan fijos.
+          Puedes corregir costo, pallets, cajas/pallet, origen y subir cantidades (nunca bajarlas de
+          lo ya recibido).
         </p>
       ) : null}
       {msg ? <p className="mb-3 text-sm text-danger">{msg}</p> : null}
@@ -1503,7 +1740,11 @@ function EditOrderModal({
         {!isFirme ? (
           <Field label="Plein commission">
             <div className="flex gap-2">
-              <Select disabled={locked} value={form.commission_type} onChange={(e) => setForm({ ...form, commission_type: e.target.value })}>
+              <Select
+                disabled={locked}
+                value={form.commission_type}
+                onChange={(e) => setForm({ ...form, commission_type: e.target.value })}
+              >
                 <option value="">Sin comisión</option>
                 <option value="per_unit">Por caja ($)</option>
                 <option value="gross_pct">% venta bruta</option>
@@ -1520,20 +1761,33 @@ function EditOrderModal({
           </Field>
         ) : null}
         <Field label="Requested date">
-          <Input type="date" value={form.expected_date} onChange={(e) => setForm({ ...form, expected_date: e.target.value })} />
+          <Input
+            type="date"
+            value={form.expected_date}
+            onChange={(e) => setForm({ ...form, expected_date: e.target.value })}
+          />
         </Field>
         <Field label="BOL #">
           <Input value={form.bol} onChange={(e) => setForm({ ...form, bol: e.target.value })} />
         </Field>
         <Field label="Vendor invoice #">
-          <Input value={form.vendor_invoice} onChange={(e) => setForm({ ...form, vendor_invoice: e.target.value })} />
+          <Input
+            value={form.vendor_invoice}
+            onChange={(e) => setForm({ ...form, vendor_invoice: e.target.value })}
+          />
         </Field>
         <Field label="Shipping reference #">
-          <Input value={form.shipping_ref} onChange={(e) => setForm({ ...form, shipping_ref: e.target.value })} />
+          <Input
+            value={form.shipping_ref}
+            onChange={(e) => setForm({ ...form, shipping_ref: e.target.value })}
+          />
         </Field>
       </div>
       <Field label="Notes" className="mt-3">
-        <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+        <Textarea
+          value={form.notes}
+          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+        />
       </Field>
 
       <div className="mt-4 flex items-center justify-between">
@@ -1562,17 +1816,28 @@ function EditOrderModal({
                 <td className="px-3 py-3">
                   <div className="font-medium">
                     {i + 1}. {l.name}
-                    {l.calibre ? <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">{l.calibre}</span> : null}
+                    {l.calibre ? (
+                      <span className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 text-xs font-normal">
+                        {l.calibre}
+                      </span>
+                    ) : null}
                   </div>
                   {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
-                  <div className="text-xs text-muted">{l.unit}{l.received > 0 ? ` · ${l.received} recibidas` : ""}</div>
+                  <div className="text-xs text-muted">
+                    {l.unit}
+                    {l.received > 0 ? ` · ${l.received} recibidas` : ""}
+                  </div>
                 </td>
                 <td className="px-3 py-3">
                   <Input
                     disabled={locked}
                     className="h-8 w-16"
                     value={l.origin}
-                    onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, origin: e.target.value } : x)))}
+                    onChange={(e) =>
+                      setLines((p) =>
+                        p.map((x, j) => (j === i ? { ...x, origin: e.target.value } : x)),
+                      )
+                    }
                   />
                 </td>
                 <td className="px-3 py-3">
@@ -1581,13 +1846,21 @@ function EditOrderModal({
                       disabled={locked}
                       placeholder="Pallets"
                       value={l.pallets}
-                      onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, pallets: e.target.value } : x)))}
+                      onChange={(e) =>
+                        setLines((p) =>
+                          p.map((x, j) => (j === i ? { ...x, pallets: e.target.value } : x)),
+                        )
+                      }
                     />
                     <Input
                       disabled={locked}
                       placeholder="Cases/plt"
                       value={l.unitsPerPallet}
-                      onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, unitsPerPallet: e.target.value } : x)))}
+                      onChange={(e) =>
+                        setLines((p) =>
+                          p.map((x, j) => (j === i ? { ...x, unitsPerPallet: e.target.value } : x)),
+                        )
+                      }
                     />
                   </div>
                 </td>
@@ -1596,7 +1869,11 @@ function EditOrderModal({
                     disabled={locked}
                     className="w-20"
                     value={l.qty}
-                    onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
+                    onChange={(e) =>
+                      setLines((p) =>
+                        p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)),
+                      )
+                    }
                   />
                 </td>
                 <td className="px-3 py-3">
@@ -1605,7 +1882,11 @@ function EditOrderModal({
                     className="w-24"
                     placeholder="$"
                     value={l.cost}
-                    onChange={(e) => setLines((p) => p.map((x, j) => (j === i ? { ...x, cost: e.target.value } : x)))}
+                    onChange={(e) =>
+                      setLines((p) =>
+                        p.map((x, j) => (j === i ? { ...x, cost: e.target.value } : x)),
+                      )
+                    }
                   />
                 </td>
                 {canEditStructure ? (
@@ -1646,10 +1927,16 @@ function EditOrderModal({
                     <div className="text-xs text-subtle">{e.expense_number}</div>
                   </td>
                   <td className="px-3 py-2 tabular-nums">{money(e.amount)}</td>
-                  <td className="px-3 py-2 text-xs">{e.charged_to === "grower" ? "Productor" : "Plein"}</td>
+                  <td className="px-3 py-2 text-xs">
+                    {e.charged_to === "grower" ? "Productor" : "Plein"}
+                  </td>
                   <td className="px-3 py-2 text-xs">{e.payable ? "Por pagar" : "Pagado"}</td>
                   <td className="px-3 py-2 text-right">
-                    <Link to="/gastos" search={{ tab: "expenses", expense: e.id }} className="text-xs text-link">
+                    <Link
+                      to="/gastos"
+                      search={{ tab: "expenses", expense: e.id }}
+                      className="text-xs text-link"
+                    >
                       Corregir
                     </Link>
                   </td>
@@ -1659,7 +1946,8 @@ function EditOrderModal({
           </table>
           {billed ? (
             <p className="mt-2 text-xs text-warn">
-              Esta orden ya se liquidó — los montos de estos gastos quedaron congelados en la liquidación.
+              Esta orden ya se liquidó — los montos de estos gastos quedaron congelados en la
+              liquidación.
             </p>
           ) : null}
         </div>
@@ -1675,7 +1963,9 @@ function EditOrderModal({
           Save changes
         </Button>
       </div>
-      {picker ? <ProductPicker skus={skus} onAdd={addLine} onClose={() => setPicker(false)} /> : null}
+      {picker ? (
+        <ProductPicker skus={skus} onAdd={addLine} onClose={() => setPicker(false)} />
+      ) : null}
     </Modal>
   );
 }
@@ -1711,16 +2001,26 @@ function ExpenseModal({
       {msg ? <p className="mb-3 text-sm text-danger">{msg}</p> : null}
       <div className="grid gap-3 sm:grid-cols-4">
         <Field label="Type *">
-          <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} />
+          <ConceptSelect
+            kind="gasto"
+            value={form.category}
+            onChange={(category) => setForm({ ...form, category })}
+          />
         </Field>
         <Field label="Requested date">
           <Input type="date" defaultValue={todayISO()} />
         </Field>
         <Field label="Amount">
-          <Input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+          <Input
+            value={form.amount}
+            onChange={(e) => setForm({ ...form, amount: e.target.value })}
+          />
         </Field>
         <Field label="Vendor">
-          <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
+          <Select
+            value={form.supplier_id}
+            onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
+          >
             <option value="">Search vendors</option>
             {suppliers.map((s) => (
               <option key={s.id} value={s.id}>
@@ -1730,43 +2030,79 @@ function ExpenseModal({
           </Select>
         </Field>
         <Field label="Invoice #">
-          <Input value={form.invoice} onChange={(e) => setForm({ ...form, invoice: e.target.value })} />
+          <Input
+            value={form.invoice}
+            onChange={(e) => setForm({ ...form, invoice: e.target.value })}
+          />
         </Field>
       </div>
       <div className="mt-4">
         <p className="mb-2 text-sm font-medium">¿Ya se pagó este gasto?</p>
         <label className="flex items-start gap-2 text-sm">
-          <input type="radio" className="mt-1" checked={form.payable} onChange={() => setForm({ ...form, payable: true })} />
+          <input
+            type="radio"
+            className="mt-1"
+            checked={form.payable}
+            onChange={() => setForm({ ...form, payable: true })}
+          />
           <span>
             <strong>Por pagar</strong>
-            <span className="block text-xs text-muted">Todavía se le debe al proveedor — aparece en Cuentas por pagar.</span>
+            <span className="block text-xs text-muted">
+              Todavía se le debe al proveedor — aparece en Cuentas por pagar.
+            </span>
           </span>
         </label>
         <label className="mt-2 flex items-start gap-2 text-sm">
-          <input type="radio" className="mt-1" checked={!form.payable} onChange={() => setForm({ ...form, payable: false })} />
+          <input
+            type="radio"
+            className="mt-1"
+            checked={!form.payable}
+            onChange={() => setForm({ ...form, payable: false })}
+          />
           <span>
             <strong>Ya pagado</strong>
-            <span className="block text-xs text-muted">Se pagó en el momento (efectivo/tarjeta) — no genera CxP.</span>
+            <span className="block text-xs text-muted">
+              Se pagó en el momento (efectivo/tarjeta) — no genera CxP.
+            </span>
           </span>
         </label>
       </div>
       <Field label="Note" className="mt-3">
-        <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+        <Textarea
+          value={form.notes}
+          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+        />
       </Field>
       <div className="mt-4">
         <p className="mb-2 text-sm font-medium">Distribute expense by:</p>
         <label className="flex items-start gap-2 text-sm">
-          <input type="radio" className="mt-1" checked={form.by === "pallet"} onChange={() => setForm({ ...form, by: "pallet" })} />
+          <input
+            type="radio"
+            className="mt-1"
+            checked={form.by === "pallet"}
+            onChange={() => setForm({ ...form, by: "pallet" })}
+          />
           <span>
             <strong>Pallet</strong>
-            <span className="block text-xs text-muted">Distributes the expense proportionally among order items based on each item's number of pallets.</span>
+            <span className="block text-xs text-muted">
+              Distributes the expense proportionally among order items based on each item's number
+              of pallets.
+            </span>
           </span>
         </label>
         <label className="mt-2 flex items-start gap-2 text-sm">
-          <input type="radio" className="mt-1" checked={form.by === "unit"} onChange={() => setForm({ ...form, by: "unit" })} />
+          <input
+            type="radio"
+            className="mt-1"
+            checked={form.by === "unit"}
+            onChange={() => setForm({ ...form, by: "unit" })}
+          />
           <span>
             <strong>Unit</strong>
-            <span className="block text-xs text-muted">Distributes the expense proportionally among order items based on each item's quantity.</span>
+            <span className="block text-xs text-muted">
+              Distributes the expense proportionally among order items based on each item's
+              quantity.
+            </span>
           </span>
         </label>
       </div>
@@ -1781,7 +2117,9 @@ function ExpenseModal({
           />
           <span>
             <strong>Plein</strong>
-            <span className="block text-xs text-muted">No se le descuenta al productor en la liquidación.</span>
+            <span className="block text-xs text-muted">
+              No se le descuenta al productor en la liquidación.
+            </span>
           </span>
         </label>
         <label className="mt-2 flex items-start gap-2 text-sm">
@@ -1793,7 +2131,9 @@ function ExpenseModal({
           />
           <span>
             <strong>Productor</strong>
-            <span className="block text-xs text-muted">Se descuenta del ingreso antes de calcular la comisión y el neto al productor.</span>
+            <span className="block text-xs text-muted">
+              Se descuenta del ingreso antes de calcular la comisión y el neto al productor.
+            </span>
           </span>
         </label>
       </div>
@@ -1914,7 +2254,9 @@ function SettlementModal({
     <Modal
       wide
       title={`Settlement Calculator for PO #${s ? poShort(s.po_number) : poId}`}
-      subtitle={s ? `${s.supplier_name} · ${DEAL_TYPE_LABEL[s.deal_type] ?? s.deal_type}` : undefined}
+      subtitle={
+        s ? `${s.supplier_name} · ${DEAL_TYPE_LABEL[s.deal_type] ?? s.deal_type}` : undefined
+      }
       onClose={onClose}
     >
       {data.loading ? <p className="text-sm text-muted">Loading…</p> : null}
@@ -1927,7 +2269,11 @@ function SettlementModal({
             <MiniKpi label="Inventory total" value={money(s.inventory_total)} hint={money(0)} />
             <MiniKpi label="Expenses" value={money(s.expenses)} />
             <MiniKpi label="Profit $" value={money(s.profit)} tone="ok" hint={pct(s.profit_pct)} />
-            <MiniKpi label="Total paid" value={money(s.paid)} tone={s.paid ? undefined : "danger"} />
+            <MiniKpi
+              label="Total paid"
+              value={money(s.paid)}
+              tone={s.paid ? undefined : "danger"}
+            />
             <MiniKpi label="Balance due" value={money(s.balance_due)} />
           </div>
           {s.deal_type === "firme" ? (
@@ -1947,19 +2293,26 @@ function SettlementModal({
               >
                 Apply
               </Button>
-              <Button size="sm" variant="outline" disabled={saving} onClick={() => void apply(undefined)}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={saving}
+                onClick={() => void apply(undefined)}
+              >
                 Clear target
               </Button>
               <p className="ml-auto max-w-sm text-xs text-muted">
-                Trato en firme: el costo ya está cerrado. El target % es solo una herramienta de análisis.
+                Trato en firme: el costo ya está cerrado. El target % es solo una herramienta de
+                análisis.
               </p>
             </div>
           ) : (
             <>
               {s.deal_type === "comision" ? (
                 <div className="mt-3 rounded-md border border-warn/40 bg-warn/5 p-3 text-xs text-warn">
-                  Comisión pura: Plein no compra la fruta ni toma título. El costo del lote se queda en $0 y no nace CxP por
-                  el valor de la fruta — la liquidación de abajo es el estado de cuenta para el productor.
+                  Comisión pura: Plein no compra la fruta ni toma título. El costo del lote se queda
+                  en $0 y no nace CxP por el valor de la fruta — la liquidación de abajo es el
+                  estado de cuenta para el productor.
                 </div>
               ) : null}
               <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
@@ -1972,9 +2325,17 @@ function SettlementModal({
                   </Select>
                 </Field>
                 <Field label={ctype === "per_unit" ? "$ / caja" : "%"}>
-                  <Input className="w-24" value={crate} onChange={(e) => setCrate(e.target.value)} />
+                  <Input
+                    className="w-24"
+                    value={crate}
+                    onChange={(e) => setCrate(e.target.value)}
+                  />
                 </Field>
-                <Button size="sm" disabled={saving || (!!ctype && !(Number(crate) > 0))} onClick={() => void saveCommission()}>
+                <Button
+                  size="sm"
+                  disabled={saving || (!!ctype && !(Number(crate) > 0))}
+                  onClick={() => void saveCommission()}
+                >
                   Save
                 </Button>
                 <p className="ml-auto max-w-sm text-xs text-muted">
@@ -1983,30 +2344,43 @@ function SettlementModal({
               </div>
               {s.breakdown ? (
                 <div className="mt-3 rounded-md border border-border bg-surface p-4">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Liquidación al productor</p>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                    Liquidación al productor
+                  </p>
                   <div className="max-w-xl text-sm">
                     <div className="flex justify-between border-b border-border py-1.5">
                       <span>
                         Ingreso de la venta
-                        <span className="ml-2 text-xs text-muted">{s.breakdown.sold_units} cajas vendidas</span>
+                        <span className="ml-2 text-xs text-muted">
+                          {s.breakdown.sold_units} cajas vendidas
+                        </span>
                       </span>
                       <span className="tabular-nums">{money(s.breakdown.revenue)}</span>
                     </div>
                     {s.expense_rows.map((e) => (
-                      <div key={e.id} className="flex items-center justify-between border-b border-border py-1.5">
+                      <div
+                        key={e.id}
+                        className="flex items-center justify-between border-b border-border py-1.5"
+                      >
                         <span>
                           {e.category}
-                          {e.notes ? <span className="ml-2 text-xs text-muted">{e.notes}</span> : null}
+                          {e.notes ? (
+                            <span className="ml-2 text-xs text-muted">{e.notes}</span>
+                          ) : null}
                           <button
                             type="button"
                             disabled={saving}
                             className="ml-2 cursor-pointer text-[11px] text-link underline-offset-2 hover:underline"
                             onClick={() => void toggleExpense(e.id, e.charged_to)}
                           >
-                            {e.charged_to === "grower" ? "se descuenta al productor" : "lo absorbe Plein"}
+                            {e.charged_to === "grower"
+                              ? "se descuenta al productor"
+                              : "lo absorbe Plein"}
                           </button>
                         </span>
-                        <span className={`tabular-nums ${e.charged_to === "grower" ? "" : "text-subtle"}`}>
+                        <span
+                          className={`tabular-nums ${e.charged_to === "grower" ? "" : "text-subtle"}`}
+                        >
                           {e.charged_to === "grower" ? `−${money(e.amount)}` : money(0)}
                         </span>
                       </div>
@@ -2024,9 +2398,13 @@ function SettlementModal({
                       </span>
                       <span className="tabular-nums">−{money(s.breakdown.commission)}</span>
                     </div>
-                    <div className={`flex justify-between py-2 font-semibold ${s.recovered_total > 0 ? "border-b border-border text-sm" : "text-base"}`}>
+                    <div
+                      className={`flex justify-between py-2 font-semibold ${s.recovered_total > 0 ? "border-b border-border text-sm" : "text-base"}`}
+                    >
                       <span>Neto al productor</span>
-                      <span className={`tabular-nums ${s.breakdown.net_to_grower < 0 ? "text-danger" : "text-ok"}`}>
+                      <span
+                        className={`tabular-nums ${s.breakdown.net_to_grower < 0 ? "text-danger" : "text-ok"}`}
+                      >
                         {money(s.breakdown.net_to_grower)}
                       </span>
                     </div>
@@ -2036,7 +2414,8 @@ function SettlementModal({
                           <span>
                             Recuperación de adelantos
                             <span className="ml-2 text-xs text-muted">
-                              saldo de adelantos: {money(s.grower_balance + s.recovered_total)} antes → {money(s.grower_balance)} después
+                              saldo de adelantos: {money(s.grower_balance + s.recovered_total)}{" "}
+                              antes → {money(s.grower_balance)} después
                             </span>
                           </span>
                           <span className="tabular-nums">−{money(s.recovered_total)}</span>
@@ -2070,25 +2449,35 @@ function SettlementModal({
             s.bill && s.bill.remaining > 0.009 ? (
               <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
                 <Field label="Recuperar adelantos ($)">
-                  <Input className="w-28" value={recover} onChange={(e) => setRecover(e.target.value)} />
+                  <Input
+                    className="w-28"
+                    value={recover}
+                    onChange={(e) => setRecover(e.target.value)}
+                  />
                 </Field>
-                <Button size="sm" disabled={saving || !(Number(recover) > 0)} onClick={() => void applyRecovery()}>
+                <Button
+                  size="sm"
+                  disabled={saving || !(Number(recover) > 0)}
+                  onClick={() => void applyRecovery()}
+                >
                   Aplicar
                 </Button>
                 <p className="ml-auto max-w-md text-xs text-muted">
-                  El productor tiene {money(s.grower_balance)} en adelantos vivos. Tú decides cuánto se recupera en esta
-                  carga — puede ser cero. Máximo: lo pendiente de {s.bill.bill_number} ({money(s.bill.remaining)}).
+                  El productor tiene {money(s.grower_balance)} en adelantos vivos. Tú decides cuánto
+                  se recupera en esta carga — puede ser cero. Máximo: lo pendiente de{" "}
+                  {s.bill.bill_number} ({money(s.bill.remaining)}).
                 </p>
               </div>
             ) : s.deal_type === "comision" ? (
               <p className="mt-3 text-xs text-muted">
-                El productor tiene {money(s.grower_balance)} en adelantos vivos. En comisión pura no nace CxP por la
-                fruta, así que no hay liquidación contra la cual recuperar en esta carga.
+                El productor tiene {money(s.grower_balance)} en adelantos vivos. En comisión pura no
+                nace CxP por la fruta, así que no hay liquidación contra la cual recuperar en esta
+                carga.
               </p>
             ) : !s.bill ? (
               <p className="mt-3 text-xs text-warn">
-                El productor tiene {money(s.grower_balance)} en adelantos vivos. Captura la factura de la liquidación
-                para poder recuperar contra esta carga.
+                El productor tiene {money(s.grower_balance)} en adelantos vivos. Captura la factura
+                de la liquidación para poder recuperar contra esta carga.
               </p>
             ) : null
           ) : null}
@@ -2096,13 +2485,27 @@ function SettlementModal({
             <table className="w-full min-w-[980px] text-left text-sm">
               <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
                 <tr>
-                  {["Lot #", "Status", "Rev. status", "Inventory item", "Total", "RTS", "Sold", "Waste", "Remaining", "Revenue", "T. cost", "Expenses", "Profit $", "Cost/unit", "Profit %"].map(
-                    (h) => (
-                      <th key={h} className="px-2 py-2 font-medium">
-                        {h}
-                      </th>
-                    ),
-                  )}
+                  {[
+                    "Lot #",
+                    "Status",
+                    "Rev. status",
+                    "Inventory item",
+                    "Total",
+                    "RTS",
+                    "Sold",
+                    "Waste",
+                    "Remaining",
+                    "Revenue",
+                    "T. cost",
+                    "Expenses",
+                    "Profit $",
+                    "Cost/unit",
+                    "Profit %",
+                  ].map((h) => (
+                    <th key={h} className="px-2 py-2 font-medium">
+                      {h}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -2110,7 +2513,11 @@ function SettlementModal({
                   <tr key={l.id} className="border-b border-border">
                     <td className="px-2 py-2 font-medium text-link">{l.lot_number}</td>
                     <td className="px-2 py-2">
-                      <Badge>{l.status === "depleted" || l.remaining <= 0 ? "OPEN" : l.status.toUpperCase()}</Badge>
+                      <Badge>
+                        {l.status === "depleted" || l.remaining <= 0
+                          ? "OPEN"
+                          : l.status.toUpperCase()}
+                      </Badge>
                     </td>
                     <td className="px-2 py-2 text-xs text-danger">Unpaid</td>
                     <td className="px-2 py-2">
@@ -2128,7 +2535,11 @@ function SettlementModal({
                     <td className="px-2 py-2 tabular-nums">{money(l.expenses)}</td>
                     <td className="px-2 py-2 tabular-nums">{money(l.profit)}</td>
                     <td className="px-2 py-2">
-                      {l.pas ? <span className="text-xs font-medium text-danger">PAS</span> : money(l.cost_unit, 2)}
+                      {l.pas ? (
+                        <span className="text-xs font-medium text-danger">PAS</span>
+                      ) : (
+                        money(l.cost_unit, 2)
+                      )}
                     </td>
                     <td className="px-2 py-2 tabular-nums">{pct(l.profit_pct)}</td>
                   </tr>
@@ -2145,7 +2556,11 @@ function SettlementModal({
                 disabled={saving || (s.deal_type !== "firme" && !s.breakdown)}
                 onClick={() =>
                   void apply(
-                    s.breakdown ? undefined : target ? Number(target) : s.target_profit_pct ?? undefined,
+                    s.breakdown
+                      ? undefined
+                      : target
+                        ? Number(target)
+                        : (s.target_profit_pct ?? undefined),
                   ).then(onSaved)
                 }
               >
@@ -2173,7 +2588,9 @@ function MiniKpi({
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2">
       <p className="text-[10px] uppercase tracking-wide text-muted">{label}</p>
-      <p className={`text-lg font-semibold tabular-nums ${tone === "ok" ? "text-ok" : tone === "danger" ? "text-danger" : ""}`}>
+      <p
+        className={`text-lg font-semibold tabular-nums ${tone === "ok" ? "text-ok" : tone === "danger" ? "text-danger" : ""}`}
+      >
         {value}
       </p>
       {hint ? <p className="text-[11px] text-subtle">{hint}</p> : null}
