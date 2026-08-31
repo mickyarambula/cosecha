@@ -93,6 +93,16 @@ export function preloadDocPdf(): Promise<void> {
   return preloadPromise;
 }
 
+/** Motor + wordmark para otros documentos jsPDF (BOL) — un solo cargador. */
+export async function getPdfEngine(): Promise<{
+  JsPDF: typeof import("jspdf").jsPDF;
+  wordmark: string | null;
+}> {
+  await preloadDocPdf();
+  if (!jsPdfCtor) throw new Error("PDF engine failed to load");
+  return { JsPDF: jsPdfCtor, wordmark: wordmarkData ?? null };
+}
+
 function pdfMoney(value: unknown): string {
   const n = typeof value === "number" ? value : Number(value);
   const v = Number.isFinite(n) ? n : 0;
