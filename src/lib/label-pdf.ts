@@ -27,7 +27,8 @@ export type PalletLabelItem = {
 
 export type LotLabelItem = {
   lotNumber: string;
-  productLabel: string;
+  productName: string;
+  calibre: string | null;
   supplierName: string | null;
   poNumber: string;
   qty: number;
@@ -124,9 +125,17 @@ function badge(
 }
 
 // Agranda "bold" helvetica hasta el tope que quepa en maxWidth (cada par
-// izquierda/derecha debe caber junto) — así el CALIBRE siempre sale lo más
-// grande posible, sin adivinar anchos de texto a mano. "Choice Medium" y
-// "Jumbo" no miden lo mismo; el tamaño se adapta al más largo del renglón.
+// izquierda/derecha debe caber junto, así que esto ya descuenta el ancho
+// del bloque derecho antes de decidir el tamaño) — así el CALIBRE siempre
+// sale lo más grande posible, sin adivinar anchos de texto a mano.
+//
+// Invariante del motor: `min` SÍ es un piso duro — es el tamaño más chico
+// que Miguel aceptó como legible a un metro, no un simple valor estético.
+// Nunca se devuelve un tamaño menor. Si ni `min` alcanza para que quepan
+// los dos textos del renglón, el motor no lo sabe todavía: es
+// responsabilidad de quien dibuja truncar el texto más largo (ver
+// `truncateToWidth`) — jamás seguir encogiendo la letra hasta volverla
+// ilegible con tal de evitar el encimado.
 function fitFontSize(
   pdf: jsPDF,
   pairs: [string, string][],
@@ -135,15 +144,25 @@ function fitFontSize(
   min: number,
 ): number {
   pdf.setFont("helvetica", "bold");
-  let size = start;
-  while (size > min) {
+  const fits = (size: number) => {
     pdf.setFontSize(size);
-    const fits = pairs.every(([l, r]) => pdf.getTextWidth(l) + pdf.getTextWidth(r) <= maxWidth);
-    if (fits) break;
-    size -= 1;
-  }
+    return pairs.every(([l, r]) => pdf.getTextWidth(l) + pdf.getTextWidth(r) <= maxWidth);
+  };
+  let size = start;
+  while (size > min && !fits(size)) size -= 1;
   pdf.setFontSize(size);
   return size;
+}
+
+// Corta `text` con "…" hasta que quepa en maxWidth al tamaño de fuente ya
+// puesto en `pdf`. Se usa solo sobre etiquetas de texto (calibre, nombre de
+// producto) — nunca sobre la cantidad: truncar un número lo vuelve
+// engañoso ("459" → "45…"), truncar una palabra solo lo vuelve menos claro.
+function truncateToWidth(pdf: jsPDF, text: string, maxWidth: number): string {
+  if (maxWidth <= 0 || pdf.getTextWidth(text) <= maxWidth) return text;
+  let t = text;
+  while (t.length > 1 && pdf.getTextWidth(`${t}…`) > maxWidth) t = t.slice(0, -1);
+  return `${t}…`;
 }
 
 type HeroRow = { left: string; right: string; note?: string | null };
@@ -165,6 +184,12 @@ function drawFillableLabel(
     badgeText: string | null;
     badgeColor: [number, number, number];
     secondTitle: string;
+    // Renglón opcional arriba del hero, tamaño medio (p.ej. nombre de
+    // producto) — así el hero de abajo puede quedarse corto y grande
+    // (CALIBRE + CANTIDAD) en vez de cargar todo en un solo renglón ancho.
+    heroSubtitle?: string | null;
+    heroSubtitleMax?: number;
+    heroSubtitleMin?: number;
     heroRows: HeroRow[];
     heroMax: number;
     heroMin: number;
@@ -230,8 +255,20 @@ function drawFillableLabel(
     opts.heroMax,
     opts.heroMin,
   );
+  const subtitleGap = s.gap * 0.7;
+  const subtitleSize = opts.heroSubtitle
+    ? fitFontSize(
+        pdf,
+        [[opts.heroSubtitle, ""]],
+        innerW,
+        opts.heroSubtitleMax ?? s.second,
+        opts.heroSubtitleMin ?? s.small,
+      )
+    : 0;
+  const subtitleBlockH = opts.heroSubtitle ? subtitleSize * 0.95 + subtitleGap : 0;
+
   const rowGap = s.gap * (opts.heroRows.length > 1 ? 1.2 : 0);
-  let heroBlockH = 0;
+  let heroBlockH = subtitleBlockH;
   opts.heroRows.forEach((r) => {
     heroBlockH += heroSize * 0.95;
     if (r.note) heroBlockH += noteSize * 1.15;
@@ -242,12 +279,27 @@ function drawFillableLabel(
   const midBottom = dividerBottomY - s.gap * 1.2;
   const midZoneH = Math.max(0, midBottom - midTop);
   let top = midTop + Math.max(0, (midZoneH - heroBlockH) / 2);
+  if (opts.heroSubtitle) {
+    const subtitleBaseline = top + subtitleSize * 0.78;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(subtitleSize);
+    pdf.setTextColor(...INK);
+    // subtitleSize ya es el piso legible (heroSubtitleMin) en el peor caso;
+    // si ni así cabe, se trunca en vez de seguir encogiendo la letra.
+    pdf.text(truncateToWidth(pdf, opts.heroSubtitle, innerW), x + s.pad, subtitleBaseline);
+    top += subtitleBlockH;
+  }
   opts.heroRows.forEach((r, i) => {
     const baseline = top + heroSize * 0.78;
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(heroSize);
     pdf.setTextColor(...INK);
-    pdf.text(r.left, x + s.pad, baseline, { maxWidth: innerW - heroGap });
+    // heroSize ya es el piso legible (heroMin) en el peor caso; si ni así
+    // cabe el par completo, se trunca el texto de la izquierda (calibre)
+    // — nunca la cantidad de la derecha, que debe leerse exacta.
+    const rightW = r.right ? pdf.getTextWidth(r.right) : 0;
+    const leftText = truncateToWidth(pdf, r.left, innerW - heroGap - rightW);
+    pdf.text(leftText, x + s.pad, baseline);
     if (r.right) pdf.text(r.right, x + w - s.pad, baseline, { align: "right" });
     top += heroSize * 0.95;
     if (r.note) {
@@ -283,14 +335,21 @@ function drawPalletLabel(pdf: jsPDF, box: Box, item: PalletLabelItem, mode: Draw
 }
 
 function drawLotLabel(pdf: jsPDF, box: Box, item: LotLabelItem, mode: DrawMode) {
+  // Mismo patrón que la etiqueta de pallet: el CALIBRE es el hero (grande,
+  // se lee de lejos) y el nombre de producto es un subtítulo secundario
+  // arriba — así el ancho del nombre de producto (que puede ser largo) ya
+  // no compite por espacio en el mismo renglón que la cantidad.
   drawFillableLabel(pdf, box, mode, {
     ocText: `OC ${item.poNumber}`,
     badgeText: item.qualityState === "retenido" ? "RETENIDO" : null,
     badgeColor: WARN,
     secondTitle: `LOTE ${item.lotNumber}`,
+    heroSubtitle: item.calibre ? item.productName : null,
+    heroSubtitleMax: mode === "true" ? 20 : 11,
+    heroSubtitleMin: mode === "true" ? 11 : 7,
     heroRows: [
       {
-        left: item.productLabel,
+        left: item.calibre ?? item.productName,
         right: `${item.qty.toLocaleString("es-MX", { maximumFractionDigits: 2 })} ${item.unit}`,
       },
     ],
