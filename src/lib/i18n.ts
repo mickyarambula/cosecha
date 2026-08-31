@@ -42,6 +42,7 @@ const ES: Record<string, string> = {
   Home: "Inicio",
   "Purchase Orders": "Órdenes de compra",
   "Sales Orders": "Órdenes de venta",
+  "Shipments": "Embarques",
   "Online Orders": "Pedidos en línea",
   "Online orders": "Pedidos en línea",
   "Price Sheets": "Listas de precio",

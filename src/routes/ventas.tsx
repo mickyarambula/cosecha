@@ -4,6 +4,7 @@ import { Fragment, useMemo, useState } from "react";
 import { MetaCard, Modal, TabOverride } from "@/components/app-shell";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { EmptyOrders, FilterField, FilterRow, ProductPicker } from "@/components/product-picker";
+import { ShipmentsPanel } from "@/components/shipment-panel";
 import { SendButton } from "@/components/send-doc";
 import { packsToSkus, type SkuOption } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
@@ -915,6 +916,8 @@ function SoDetail({
           </tbody>
         </table>
       </div>
+      <ShipmentsPanel tipo="salida" salesOrderId={row.id} />
+
       <div className="mt-4 grid gap-2 lg:grid-cols-4">
         <div className="rounded-md border border-border p-3 text-sm">
           <Link className="text-link" to="/doc/$tipo/$id" params={{ tipo: "ov", id: row.share_token }}>

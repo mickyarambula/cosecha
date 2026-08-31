@@ -5,6 +5,7 @@ import { MetaCard, Modal } from "@/components/app-shell";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { ConceptSelect } from "@/components/concepts";
 import { EmptyOrders, FilterField, FilterRow, ProductPicker } from "@/components/product-picker";
+import { ShipmentsPanel } from "@/components/shipment-panel";
 import { packsToSkus, type SkuOption } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1263,6 +1264,8 @@ function PoDetail({
           </div>
         </>
       ) : null}
+
+      <ShipmentsPanel tipo="entrada" purchaseOrderId={row.id} bol={row.bol} vendorInvoice={row.vendor_invoice} />
 
       <div className="mt-4 grid gap-2 lg:grid-cols-4">
         <div className="rounded-md border border-border p-3 text-sm">
