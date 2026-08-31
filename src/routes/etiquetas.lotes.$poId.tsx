@@ -15,7 +15,8 @@ export const Route = createFileRoute("/etiquetas/lotes/$poId")({
 function toItems(doc: Awaited<ReturnType<typeof getLotLabels>>): LotLabelItem[] {
   return doc.lots.map((l) => ({
     lotNumber: l.lot_number,
-    productLabel: l.product_label,
+    productName: l.product_name,
+    calibre: l.calibre,
     supplierName: doc.supplier_name,
     poNumber: doc.po_number,
     qty: l.qty,
@@ -45,7 +46,8 @@ function LabelCard({ item }: { item: LotLabelItem }) {
         <p className="text-right text-[10px] text-muted">OC {item.poNumber}</p>
       ) : null}
       <div className="mt-2 border-t border-border pt-2">
-        <p className="text-sm font-semibold">{item.productLabel}</p>
+        <p className="text-sm font-semibold">{item.productName}</p>
+        {item.calibre ? <p className="text-lg font-bold leading-tight">{item.calibre}</p> : null}
       </div>
       <div className="mt-2 space-y-0.5 border-t border-border pt-2 text-[11px] text-muted">
         <p>

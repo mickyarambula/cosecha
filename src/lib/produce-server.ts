@@ -1952,7 +1952,8 @@ export const getLotLabels = createServerFn({ method: "GET" })
       lots: lots.map((l) => ({
         id: l.id,
         lot_number: l.lot_number,
-        product_label: l.calibre ? `${l.product_name} — ${l.calibre}` : l.product_name,
+        product_name: l.product_name,
+        calibre: l.calibre,
         qty: n(l.original_qty),
         unit: l.unit,
         received_date: l.received_date,

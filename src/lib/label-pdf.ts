@@ -27,7 +27,8 @@ export type PalletLabelItem = {
 
 export type LotLabelItem = {
   lotNumber: string;
-  productLabel: string;
+  productName: string;
+  calibre: string | null;
   supplierName: string | null;
   poNumber: string;
   qty: number;
@@ -124,9 +125,17 @@ function badge(
 }
 
 // Agranda "bold" helvetica hasta el tope que quepa en maxWidth (cada par
-// izquierda/derecha debe caber junto) — así el CALIBRE siempre sale lo más
-// grande posible, sin adivinar anchos de texto a mano. "Choice Medium" y
-// "Jumbo" no miden lo mismo; el tamaño se adapta al más largo del renglón.
+// izquierda/derecha debe caber junto, así que esto ya descuenta el ancho
+// del bloque derecho antes de decidir el tamaño) — así el CALIBRE siempre
+// sale lo más grande posible, sin adivinar anchos de texto a mano.
+//
+// Invariante del motor: `min` es una preferencia estética, no un piso que
+// se pueda cruzar sin que quepa. Si ni el más pequeño de los tamaños
+// "cómodos" cabe (nombre de producto largo + cantidad, en una etiqueta
+// angosta), se sigue encogiendo hasta ABSOLUTE_FLOOR — nunca se entrega un
+// tamaño que dos textos en el mismo renglón no puedan compartir sin
+// encimarse.
+const ABSOLUTE_FLOOR = 6;
 function fitFontSize(
   pdf: jsPDF,
   pairs: [string, string][],
@@ -135,13 +144,13 @@ function fitFontSize(
   min: number,
 ): number {
   pdf.setFont("helvetica", "bold");
-  let size = start;
-  while (size > min) {
+  const fits = (size: number) => {
     pdf.setFontSize(size);
-    const fits = pairs.every(([l, r]) => pdf.getTextWidth(l) + pdf.getTextWidth(r) <= maxWidth);
-    if (fits) break;
-    size -= 1;
-  }
+    return pairs.every(([l, r]) => pdf.getTextWidth(l) + pdf.getTextWidth(r) <= maxWidth);
+  };
+  let size = start;
+  while (size > min && !fits(size)) size -= 1;
+  while (size > ABSOLUTE_FLOOR && !fits(size)) size -= 1;
   pdf.setFontSize(size);
   return size;
 }
@@ -165,6 +174,12 @@ function drawFillableLabel(
     badgeText: string | null;
     badgeColor: [number, number, number];
     secondTitle: string;
+    // Renglón opcional arriba del hero, tamaño medio (p.ej. nombre de
+    // producto) — así el hero de abajo puede quedarse corto y grande
+    // (CALIBRE + CANTIDAD) en vez de cargar todo en un solo renglón ancho.
+    heroSubtitle?: string | null;
+    heroSubtitleMax?: number;
+    heroSubtitleMin?: number;
     heroRows: HeroRow[];
     heroMax: number;
     heroMin: number;
@@ -230,8 +245,20 @@ function drawFillableLabel(
     opts.heroMax,
     opts.heroMin,
   );
+  const subtitleGap = s.gap * 0.7;
+  const subtitleSize = opts.heroSubtitle
+    ? fitFontSize(
+        pdf,
+        [[opts.heroSubtitle, ""]],
+        innerW,
+        opts.heroSubtitleMax ?? s.second,
+        opts.heroSubtitleMin ?? s.small,
+      )
+    : 0;
+  const subtitleBlockH = opts.heroSubtitle ? subtitleSize * 0.95 + subtitleGap : 0;
+
   const rowGap = s.gap * (opts.heroRows.length > 1 ? 1.2 : 0);
-  let heroBlockH = 0;
+  let heroBlockH = subtitleBlockH;
   opts.heroRows.forEach((r) => {
     heroBlockH += heroSize * 0.95;
     if (r.note) heroBlockH += noteSize * 1.15;
@@ -242,6 +269,14 @@ function drawFillableLabel(
   const midBottom = dividerBottomY - s.gap * 1.2;
   const midZoneH = Math.max(0, midBottom - midTop);
   let top = midTop + Math.max(0, (midZoneH - heroBlockH) / 2);
+  if (opts.heroSubtitle) {
+    const subtitleBaseline = top + subtitleSize * 0.78;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(subtitleSize);
+    pdf.setTextColor(...INK);
+    pdf.text(opts.heroSubtitle, x + s.pad, subtitleBaseline, { maxWidth: innerW });
+    top += subtitleBlockH;
+  }
   opts.heroRows.forEach((r, i) => {
     const baseline = top + heroSize * 0.78;
     pdf.setFont("helvetica", "bold");
@@ -283,14 +318,21 @@ function drawPalletLabel(pdf: jsPDF, box: Box, item: PalletLabelItem, mode: Draw
 }
 
 function drawLotLabel(pdf: jsPDF, box: Box, item: LotLabelItem, mode: DrawMode) {
+  // Mismo patrón que la etiqueta de pallet: el CALIBRE es el hero (grande,
+  // se lee de lejos) y el nombre de producto es un subtítulo secundario
+  // arriba — así el ancho del nombre de producto (que puede ser largo) ya
+  // no compite por espacio en el mismo renglón que la cantidad.
   drawFillableLabel(pdf, box, mode, {
     ocText: `OC ${item.poNumber}`,
     badgeText: item.qualityState === "retenido" ? "RETENIDO" : null,
     badgeColor: WARN,
     secondTitle: `LOTE ${item.lotNumber}`,
+    heroSubtitle: item.calibre ? item.productName : null,
+    heroSubtitleMax: mode === "true" ? 20 : 11,
+    heroSubtitleMin: mode === "true" ? 11 : 7,
     heroRows: [
       {
-        left: item.productLabel,
+        left: item.calibre ?? item.productName,
         right: `${item.qty.toLocaleString("es-MX", { maximumFractionDigits: 2 })} ${item.unit}`,
       },
     ],
