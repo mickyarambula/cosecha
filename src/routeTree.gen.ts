@@ -35,6 +35,8 @@ import { Route as PortalIdRouteImport } from './routes/portal.$id'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCpoAttachmentIdRouteImport } from './routes/api/cpo-attachment.$id'
 import { Route as DocTipoIdRouteImport } from './routes/doc.$tipo.$id'
+import { Route as EtiquetasLotesPoIdRouteImport } from './routes/etiquetas.lotes.$poId'
+import { Route as EtiquetasPalletsPoIdRouteImport } from './routes/etiquetas.pallets.$poId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -166,6 +168,16 @@ const DocTipoIdRoute = DocTipoIdRouteImport.update({
   path: '/doc/$tipo/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EtiquetasLotesPoIdRoute = EtiquetasLotesPoIdRouteImport.update({
+  id: '/etiquetas/lotes/$poId',
+  path: '/etiquetas/lotes/$poId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EtiquetasPalletsPoIdRoute = EtiquetasPalletsPoIdRouteImport.update({
+  id: '/etiquetas/pallets/$poId',
+  path: '/etiquetas/pallets/$poId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -194,6 +206,8 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
+  '/etiquetas/lotes/$poId': typeof EtiquetasLotesPoIdRoute
+  '/etiquetas/pallets/$poId': typeof EtiquetasPalletsPoIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -222,6 +236,8 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
+  '/etiquetas/lotes/$poId': typeof EtiquetasLotesPoIdRoute
+  '/etiquetas/pallets/$poId': typeof EtiquetasPalletsPoIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -251,6 +267,8 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
+  '/etiquetas/lotes/$poId': typeof EtiquetasLotesPoIdRoute
+  '/etiquetas/pallets/$poId': typeof EtiquetasPalletsPoIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -281,6 +299,8 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/cpo-attachment/$id'
     | '/doc/$tipo/$id'
+    | '/etiquetas/lotes/$poId'
+    | '/etiquetas/pallets/$poId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -309,6 +329,8 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/cpo-attachment/$id'
     | '/doc/$tipo/$id'
+    | '/etiquetas/lotes/$poId'
+    | '/etiquetas/pallets/$poId'
   id:
     | '__root__'
     | '/'
@@ -337,6 +359,8 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/cpo-attachment/$id'
     | '/doc/$tipo/$id'
+    | '/etiquetas/lotes/$poId'
+    | '/etiquetas/pallets/$poId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -366,6 +390,8 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCpoAttachmentIdRoute: typeof ApiCpoAttachmentIdRoute
   DocTipoIdRoute: typeof DocTipoIdRoute
+  EtiquetasLotesPoIdRoute: typeof EtiquetasLotesPoIdRoute
+  EtiquetasPalletsPoIdRoute: typeof EtiquetasPalletsPoIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -552,6 +578,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DocTipoIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/etiquetas/lotes/$poId': {
+      id: '/etiquetas/lotes/$poId'
+      path: '/etiquetas/lotes/$poId'
+      fullPath: '/etiquetas/lotes/$poId'
+      preLoaderRoute: typeof EtiquetasLotesPoIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/etiquetas/pallets/$poId': {
+      id: '/etiquetas/pallets/$poId'
+      path: '/etiquetas/pallets/$poId'
+      fullPath: '/etiquetas/pallets/$poId'
+      preLoaderRoute: typeof EtiquetasPalletsPoIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -582,6 +622,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCpoAttachmentIdRoute: ApiCpoAttachmentIdRoute,
   DocTipoIdRoute: DocTipoIdRoute,
+  EtiquetasLotesPoIdRoute: EtiquetasLotesPoIdRoute,
+  EtiquetasPalletsPoIdRoute: EtiquetasPalletsPoIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
