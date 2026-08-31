@@ -152,17 +152,10 @@ function Page() {
             <Input type="date" defaultValue={todayISO()} />
           </FilterField>
         </FilterRow>
-        <div className="flex items-center justify-end gap-2 px-4 py-2">
-          <Button size="sm" variant="outline">
-            Send selected statements
-          </Button>
-          <Button size="sm">Print selected statements</Button>
-        </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
-                <th className="w-8 px-3 py-2" />
                 <th className="px-3 py-2">Customer</th>
                 <th className="px-3 py-2">Statement delivery</th>
                 <th className="px-3 py-2">Terms</th>
@@ -174,9 +167,6 @@ function Page() {
             <tbody>
               {list.map(([name, v]) => (
                 <tr key={name} className="border-b border-border">
-                  <td className="px-3 py-2">
-                    <input type="checkbox" defaultChecked />
-                  </td>
                   <td className="px-3 py-2">{name}</td>
                   <td className="px-3 py-2 text-muted">Email: {v.email || "—"}</td>
                   <td className="px-3 py-2">{v.terms}</td>

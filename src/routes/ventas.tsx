@@ -1104,7 +1104,6 @@ function SoDetail({
               variant="outline"
             />
           </div>
-          <p className="mt-2 text-link">Print SO label</p>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <p className="text-link">Audit log</p>
