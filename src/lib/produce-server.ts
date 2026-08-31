@@ -1292,6 +1292,115 @@ export const setShipmentStatus = createServerFn({ method: "POST" }).validator(z.
 	await sql.query(`update shipments set status = $1 where id = $2`, [data.status, data.id]);
 	return { ok: true };
 });
+/**
+ * Pallets (sesión pallets): qué lleva cada pallet de una carga.
+ * El renglón apunta a la LÍNEA de la OC (el calibre vive en el SKU de la
+ * línea): el cuadre contra las cajas de la carga es aritmética exacta y un
+ * pallet no puede inventar un calibre que la carga no trae. Pallet mixto =
+ * pallet con 2+ renglones. La base no tiene CHECK: el candado de "la línea
+ * pertenece a la misma orden" vive aquí.
+ */
+const palletLineSchema = z.object({
+	purchase_order_line_id: z.number(),
+	cases: z.number().positive(),
+	note: z.string().optional()
+});
+async function assertPalletLines(sql: any, poId: number, lines: { purchase_order_line_id: number }[]) {
+	const ids = [...new Set(lines.map((l) => l.purchase_order_line_id))];
+	const rows = await sql.query(`select id from purchase_order_lines where purchase_order_id = $1 and id = any($2::int[])`, [poId, ids]);
+	if (rows.length !== ids.length) throw new Error("Hay un renglón que no pertenece a esta carga. Recarga la página e intenta de nuevo.");
+}
+export const listPallets = createServerFn({ method: "GET" }).validator(z.object({
+	purchase_order_id: z.number()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const pallets = await sql.query(`select id, pallet_number, notes from pallets where purchase_order_id = $1 order by pallet_number`, [data.purchase_order_id]);
+	const lines = await sql.query(`
+    select pl.id, pl.pallet_id, pl.purchase_order_line_id, pl.cases::text, pl.note,
+           ps.calibre, ps.sku_code, p.name as product_name
+    from pallet_lines pl
+    join pallets pa on pa.id = pl.pallet_id
+    join purchase_order_lines pol on pol.id = pl.purchase_order_line_id
+    join products p on p.id = pol.product_id
+    left join pack_styles ps on ps.id = pol.pack_style_id
+    where pa.purchase_order_id = $1
+    order by pl.id
+  `, [data.purchase_order_id]);
+	return pallets.map((pa) => ({
+		...pa,
+		lines: lines.filter((l) => l.pallet_id === pa.id).map((l) => ({ ...l, cases: n(l.cases) }))
+	}));
+});
+export const addPallets = createServerFn({ method: "POST" }).validator(z.object({
+	purchase_order_id: z.number(),
+	// Captura rápida: N pallets idénticos de un golpe (los 24 sencillos de una
+	// carga como la de Cornejos se capturan en un puñado de altas).
+	count: z.number().int().min(1).max(99).default(1),
+	lines: z.array(palletLineSchema).min(1),
+	notes: z.string().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [po] = await sql.query(`select id from purchase_orders where id = $1`, [data.purchase_order_id]);
+	if (!po) throw new Error("Orden de compra no encontrada");
+	await assertPalletLines(sql, data.purchase_order_id, data.lines);
+	const [row] = await sql.query(`select coalesce(max(pallet_number), 0)::text as m from pallets where purchase_order_id = $1`, [data.purchase_order_id]);
+	let nextNumber = n(row?.m) + 1;
+	const first = nextNumber;
+	for (let i = 0; i < data.count; i++) {
+		const palletId = (await sql.query(`insert into pallets (purchase_order_id, pallet_number, notes) values ($1,$2,$3) returning id`, [
+			data.purchase_order_id,
+			nextNumber++,
+			data.notes?.trim() || null
+		]))[0].id;
+		for (const line of data.lines) await sql.query(`insert into pallet_lines (pallet_id, purchase_order_line_id, cases, note) values ($1,$2,$3,$4)`, [
+			palletId,
+			line.purchase_order_line_id,
+			line.cases,
+			line.note?.trim() || null
+		]);
+	}
+	return { ok: true, first_number: first, count: data.count };
+});
+export const updatePallet = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number(),
+	lines: z.array(palletLineSchema).min(1),
+	notes: z.string().optional()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [pallet] = await sql.query(`select purchase_order_id from pallets where id = $1`, [data.id]);
+	if (!pallet?.purchase_order_id) throw new Error("Pallet no encontrado");
+	await assertPalletLines(sql, pallet.purchase_order_id, data.lines);
+	await sql.query(`delete from pallet_lines where pallet_id = $1`, [data.id]);
+	for (const line of data.lines) await sql.query(`insert into pallet_lines (pallet_id, purchase_order_line_id, cases, note) values ($1,$2,$3,$4)`, [
+		data.id,
+		line.purchase_order_line_id,
+		line.cases,
+		line.note?.trim() || null
+	]);
+	await sql.query(`update pallets set notes = $1 where id = $2`, [data.notes?.trim() || null, data.id]);
+	return { ok: true };
+});
+export const deletePallet = createServerFn({ method: "POST" }).validator(z.object({
+	id: z.number()
+})).middleware([authMiddleware]).handler(async ({ data }) => {
+	const sql = await getSql();
+	const [pallet] = await sql.query(`select purchase_order_id, pallet_number from pallets where id = $1`, [data.id]);
+	if (!pallet) throw new Error("Pallet no encontrado");
+	await sql.query(`delete from pallets where id = $1`, [data.id]);
+	if (pallet.purchase_order_id) {
+		// Renumerar para que la carga siga 1..N como el manifiesto. En dos pasos
+		// (negativo y de regreso) para no chocar con el índice único durante el
+		// corrimiento.
+		await sql.query(`update pallets set pallet_number = -pallet_number where purchase_order_id = $1 and pallet_number > $2`, [
+			pallet.purchase_order_id,
+			pallet.pallet_number
+		]);
+		await sql.query(`update pallets set pallet_number = -pallet_number - 1 where purchase_order_id = $1 and pallet_number < 0`, [
+			pallet.purchase_order_id
+		]);
+	}
+	return { ok: true };
+});
 export const listLots = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async () => {
 	const sql = await getSql();
 	const lots = await sql.query(`
@@ -4556,6 +4665,7 @@ export type LiveWipeCounts = {
 	customer_pos: number;
 	send_events: number;
 	shipments: number;
+	pallets: number;
 };
 
 function wipeTotal(c: LiveWipeCounts) {
@@ -4571,7 +4681,8 @@ function wipeTotal(c: LiveWipeCounts) {
 		c.receptions +
 		c.customer_pos +
 		c.send_events +
-		c.shipments
+		c.shipments +
+		c.pallets
 	);
 }
 
@@ -4593,6 +4704,7 @@ async function countLiveActivity(sql: any): Promise<LiveWipeCounts> {
 		customer_pos: await n(`select count(*)::text as c from customer_pos`),
 		send_events: await n(`select count(*)::text as c from send_events`),
 		shipments: await n(`select count(*)::text as c from shipments`),
+		pallets: await n(`select count(*)::text as c from pallets`),
 	};
 }
 
@@ -4615,6 +4727,7 @@ async function wipeLiveActivity(sql: any) {
 	await sql.query(`delete from cash_movements where folio <> 'CORTE-CHASE'`);
 	await sql.query(`delete from send_events`);
 	await sql.query(`delete from shipments`);
+	await sql.query(`delete from pallets`);
 	await sql.query(`delete from expense_po_links`);
 	await sql.query(`delete from pack_out_lines`);
 	await sql.query(`delete from pack_outs`);

@@ -5,6 +5,7 @@ import { MetaCard, Modal } from "@/components/app-shell";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { ConceptSelect } from "@/components/concepts";
 import { EmptyOrders, FilterField, FilterRow, ProductPicker } from "@/components/product-picker";
+import { PalletsPanel } from "@/components/pallet-panel";
 import { ShipmentsPanel } from "@/components/shipment-panel";
 import { packsToSkus, type SkuOption } from "@/components/sku-select";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
@@ -535,9 +536,6 @@ function Page() {
           </Button>
           <Button size="sm" variant="outline" disabled>
             Previous order
-          </Button>
-          <Button size="sm" variant="outline" disabled={!lines.length}>
-            Split into pallets
           </Button>
           <div className="ml-auto flex flex-wrap gap-2">
             <Field label="Vendor invoice #">
@@ -1264,6 +1262,8 @@ function PoDetail({
           </div>
         </>
       ) : null}
+
+      <PalletsPanel purchaseOrderId={row.id} lines={row.lines} />
 
       <ShipmentsPanel tipo="entrada" purchaseOrderId={row.id} bol={row.bol} vendorInvoice={row.vendor_invoice} />
 
