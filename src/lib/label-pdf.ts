@@ -57,12 +57,12 @@ type DrawMode = "true" | "compact";
 
 const STYLE: Record<
   DrawMode,
-  { pad: number; big: number; med: number; small: number; gap: number; lineH: number }
+  { pad: number; second: number; small: number; gap: number; lineH: number }
 > = {
-  true: { pad: 16, big: 30, med: 16, small: 9.5, gap: 7, lineH: 12.5 },
-  // "el mismo diseño con menos aire": mismos elementos, número de pallet/lote
-  // y calibre se quedan grandes; todo lo demás encoge junto con el relleno.
-  compact: { pad: 8, big: 17, med: 10.5, small: 6.6, gap: 3, lineH: 8.4 },
+  true: { pad: 14, second: 22, small: 9.5, gap: 8, lineH: 12.5 },
+  // "el mismo diseño con menos aire": mismos elementos, calibre y número de
+  // pallet/lote se quedan grandes; todo lo demás encoge junto con el relleno.
+  compact: { pad: 8, second: 13, small: 6.8, gap: 4, lineH: 8.6 },
 };
 
 function cellW() {
@@ -123,144 +123,191 @@ function badge(
   pdf.text(text, xRight - w / 2, yMid + fontSize * 0.35, { align: "center" });
 }
 
-function drawPalletLabel(pdf: jsPDF, box: Box, item: PalletLabelItem, mode: DrawMode) {
+// Agranda "bold" helvetica hasta el tope que quepa en maxWidth (cada par
+// izquierda/derecha debe caber junto) — así el CALIBRE siempre sale lo más
+// grande posible, sin adivinar anchos de texto a mano. "Choice Medium" y
+// "Jumbo" no miden lo mismo; el tamaño se adapta al más largo del renglón.
+function fitFontSize(
+  pdf: jsPDF,
+  pairs: [string, string][],
+  maxWidth: number,
+  start: number,
+  min: number,
+): number {
+  pdf.setFont("helvetica", "bold");
+  let size = start;
+  while (size > min) {
+    pdf.setFontSize(size);
+    const fits = pairs.every(([l, r]) => pdf.getTextWidth(l) + pdf.getTextWidth(r) <= maxWidth);
+    if (fits) break;
+    size -= 1;
+  }
+  pdf.setFontSize(size);
+  return size;
+}
+
+type HeroRow = { left: string; right: string; note?: string | null };
+
+/**
+ * Motor compartido de las dos etiquetas: renglón chico (OC + badge) arriba,
+ * un título "segundo" grande (número de pallet/lote), el bloque HERO
+ * (calibre/producto + cantidad) CENTRADO en el espacio que sobra, y el pie
+ * chico anclado al fondo del rectángulo. Anclar el pie abajo — en vez de
+ * dejarlo pegado al bloque hero — es lo que hace que el contenido llene la
+ * etiqueta en lugar de apilarse en el tercio superior con un hueco debajo.
+ */
+function drawFillableLabel(
+  pdf: jsPDF,
+  box: Box,
+  mode: DrawMode,
+  opts: {
+    ocText: string;
+    badgeText: string | null;
+    badgeColor: [number, number, number];
+    secondTitle: string;
+    heroRows: HeroRow[];
+    heroMax: number;
+    heroMin: number;
+    footerLines: string[];
+  },
+) {
   const s = STYLE[mode];
   const { x, y, w, h } = box;
+  const innerW = w - s.pad * 2;
   pdf.setDrawColor(...RULE);
   pdf.setLineWidth(0.75);
   pdf.rect(x, y, w, h);
 
-  // Renglón superior (OC + badge de mixto) va en SU PROPIA línea, separado del
-  // título grande — un pallet mixto con folio largo montaba el badge encima
-  // del "PALLET N de M" cuando compartían el mismo renglón.
-  let cy = y + s.pad + s.small * 0.9;
+  // Renglón superior: OC + badge, en su propia línea (un badge largo no debe
+  // montarse sobre ningún título, sea el segundo o el hero).
+  const topY = y + s.pad + s.small * 0.9;
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(s.small);
   pdf.setTextColor(...MUTED);
-  if (item.mixed) {
-    pdf.text(`OC ${item.poNumber}`, x + s.pad, cy);
-    badge(pdf, x + w - s.pad, cy - s.small * 0.32, "MIXTO", mode, GREEN);
+  if (opts.badgeText) {
+    pdf.text(opts.ocText, x + s.pad, topY);
+    badge(pdf, x + w - s.pad, topY - s.small * 0.32, opts.badgeText, mode, opts.badgeColor);
   } else {
-    pdf.text(`OC ${item.poNumber}`, x + w - s.pad, cy, { align: "right" });
+    pdf.text(opts.ocText, x + w - s.pad, topY, { align: "right" });
   }
 
-  cy += s.gap * 1.6 + s.big * 0.75;
+  // Título "segundo": grande, pero por debajo del hero en jerarquía.
+  const secondSize = fitFontSize(pdf, [[opts.secondTitle, ""]], innerW, s.second, 11);
+  const secondY = topY + s.gap * 1.6 + secondSize * 0.78;
   pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(s.big);
+  pdf.setFontSize(secondSize);
   pdf.setTextColor(...INK);
-  pdf.text(`PALLET ${item.palletNumber} de ${item.totalPallets}`, x + s.pad, cy, {
-    maxWidth: w - s.pad * 2,
-  });
+  pdf.text(opts.secondTitle, x + s.pad, secondY, { maxWidth: innerW });
 
-  cy += s.gap * 1.4;
+  const dividerTopY = secondY + s.gap * 1.3;
   pdf.setDrawColor(...RULE);
   pdf.setLineWidth(1);
-  pdf.line(x + s.pad, cy, x + w - s.pad, cy);
-  cy += s.gap * 2.2;
+  pdf.line(x + s.pad, dividerTopY, x + w - s.pad, dividerTopY);
 
-  const lineScale = item.lines.length > 2 ? 0.8 : 1;
-  pdf.setTextColor(...INK);
-  for (const line of item.lines) {
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(s.med);
-    pdf.text(line.label, x + s.pad, cy, { maxWidth: w - s.pad * 2 - 60 });
-    pdf.text(`${line.cases} cajas`, x + w - s.pad, cy, { align: "right" });
-    cy += s.med * 0.95 * lineScale;
-    if (line.note) {
-      pdf.setFont("helvetica", "italic");
-      pdf.setFontSize(s.small);
-      pdf.setTextColor(...MUTED);
-      pdf.text(line.note, x + s.pad, cy);
-      pdf.setTextColor(...INK);
-      cy += s.small * 1.1 * lineScale;
-    }
-    cy += s.gap * 0.5 * lineScale;
-  }
-
-  cy += s.gap * 0.4;
+  // Pie anclado al fondo real del rectángulo.
+  const footerH = opts.footerLines.length * s.lineH;
+  const dividerBottomY = y + h - s.pad - footerH - s.gap * 1.6;
   pdf.setDrawColor(...RULE);
   pdf.setLineWidth(0.75);
-  pdf.line(x + s.pad, cy, x + w - s.pad, cy);
-  cy += s.gap * 1.8;
-
+  pdf.line(x + s.pad, dividerBottomY, x + w - s.pad, dividerBottomY);
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(s.small);
   pdf.setTextColor(...MUTED);
-  const footer = [
-    `Total: ${item.totalCases} cajas`,
-    `Proveedor: ${item.supplierName}`,
-    item.weight != null
-      ? `Peso: ${item.weight.toLocaleString("es-MX", { maximumFractionDigits: 1 })} ${item.weightUnit}`
-      : null,
-    item.notes ? `Nota: ${item.notes}` : null,
-  ].filter((v): v is string => Boolean(v));
-  for (const f of footer) {
-    if (cy > y + h - 4) break;
-    pdf.text(f, x + s.pad, cy, { maxWidth: w - s.pad * 2 });
-    cy += s.lineH;
+  let fy = y + h - s.pad - footerH + s.lineH * 0.8;
+  for (const f of opts.footerLines) {
+    pdf.text(f, x + s.pad, fy, { maxWidth: innerW });
+    fy += s.lineH;
   }
+
+  // Bloque HERO: lo más grande de la etiqueta, centrado en el espacio entre
+  // el título segundo y el pie — de ahí sale el "llenado" que pedía Miguel.
+  const heroGap = mode === "true" ? 20 : 12;
+  const noteSize = mode === "true" ? 11 : 7;
+  const heroSize = fitFontSize(
+    pdf,
+    opts.heroRows.map((r): [string, string] => [r.left, r.right]),
+    innerW - heroGap,
+    opts.heroMax,
+    opts.heroMin,
+  );
+  const rowGap = s.gap * (opts.heroRows.length > 1 ? 1.2 : 0);
+  let heroBlockH = 0;
+  opts.heroRows.forEach((r) => {
+    heroBlockH += heroSize * 0.95;
+    if (r.note) heroBlockH += noteSize * 1.15;
+  });
+  heroBlockH += rowGap * Math.max(0, opts.heroRows.length - 1);
+
+  const midTop = dividerTopY + s.gap * 1.8;
+  const midBottom = dividerBottomY - s.gap * 1.2;
+  const midZoneH = Math.max(0, midBottom - midTop);
+  let top = midTop + Math.max(0, (midZoneH - heroBlockH) / 2);
+  opts.heroRows.forEach((r, i) => {
+    const baseline = top + heroSize * 0.78;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(heroSize);
+    pdf.setTextColor(...INK);
+    pdf.text(r.left, x + s.pad, baseline, { maxWidth: innerW - heroGap });
+    if (r.right) pdf.text(r.right, x + w - s.pad, baseline, { align: "right" });
+    top += heroSize * 0.95;
+    if (r.note) {
+      const noteBaseline = top + noteSize * 0.85;
+      pdf.setFont("helvetica", "italic");
+      pdf.setFontSize(noteSize);
+      pdf.setTextColor(...MUTED);
+      pdf.text(r.note, x + s.pad, noteBaseline);
+      top += noteSize * 1.15;
+    }
+    if (i < opts.heroRows.length - 1) top += rowGap;
+  });
+}
+
+function drawPalletLabel(pdf: jsPDF, box: Box, item: PalletLabelItem, mode: DrawMode) {
+  drawFillableLabel(pdf, box, mode, {
+    ocText: `OC ${item.poNumber}`,
+    badgeText: item.mixed ? "MIXTO" : null,
+    badgeColor: GREEN,
+    secondTitle: `PALLET ${item.palletNumber} de ${item.totalPallets}`,
+    heroRows: item.lines.map((l) => ({ left: l.label, right: `${l.cases} cajas`, note: l.note })),
+    heroMax: mode === "true" ? 42 : 22,
+    heroMin: mode === "true" ? 16 : 11,
+    footerLines: [
+      `Total: ${item.totalCases} cajas`,
+      `Proveedor: ${item.supplierName}`,
+      item.weight != null
+        ? `Peso: ${item.weight.toLocaleString("es-MX", { maximumFractionDigits: 1 })} ${item.weightUnit}`
+        : null,
+      item.notes ? `Nota: ${item.notes}` : null,
+    ].filter((v): v is string => Boolean(v)),
+  });
 }
 
 function drawLotLabel(pdf: jsPDF, box: Box, item: LotLabelItem, mode: DrawMode) {
-  const s = STYLE[mode];
-  const { x, y, w, h } = box;
-  pdf.setDrawColor(...RULE);
-  pdf.setLineWidth(0.75);
-  pdf.rect(x, y, w, h);
-
-  let cy = y + s.pad + s.small * 0.9;
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(s.small);
-  pdf.setTextColor(...MUTED);
-  if (item.qualityState === "retenido") {
-    pdf.text(`OC ${item.poNumber}`, x + s.pad, cy);
-    badge(pdf, x + w - s.pad, cy - s.small * 0.32, "RETENIDO", mode, WARN);
-  } else {
-    pdf.text(`OC ${item.poNumber}`, x + w - s.pad, cy, { align: "right" });
-  }
-
-  cy += s.gap * 1.6 + s.big * 0.75 * 0.75;
-  pdf.setTextColor(...INK);
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(s.big * 0.75);
-  pdf.text(`LOTE ${item.lotNumber}`, x + s.pad, cy, { maxWidth: w - s.pad * 2 });
-
-  cy += s.gap * 1.4;
-  pdf.setDrawColor(...RULE);
-  pdf.setLineWidth(1);
-  pdf.line(x + s.pad, cy, x + w - s.pad, cy);
-  cy += s.gap * 2.2;
-
-  pdf.setTextColor(...INK);
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(s.med);
-  pdf.text(item.productLabel, x + s.pad, cy, { maxWidth: w - s.pad * 2 });
-  cy += s.med * 1.1;
-
-  cy += s.gap * 0.4;
-  pdf.setDrawColor(...RULE);
-  pdf.setLineWidth(0.75);
-  pdf.line(x + s.pad, cy, x + w - s.pad, cy);
-  cy += s.gap * 1.8;
-
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(s.small);
-  pdf.setTextColor(...MUTED);
-  const footer = [
-    `Cantidad: ${item.qty.toLocaleString("es-MX", { maximumFractionDigits: 2 })} ${item.unit}`,
-    item.supplierName ? `Proveedor: ${item.supplierName}` : null,
-    item.receivedDate ? `Recibido: ${item.receivedDate}` : null,
-    item.packDate && item.packDate !== item.receivedDate ? `Empacado: ${item.packDate}` : null,
-    item.bestByDate ? `Best by: ${item.bestByDate}` : null,
-    item.grade ? `Grado: ${item.grade}` : null,
-    item.originCountry ? `Origen: ${item.originCountry}` : null,
-    item.qualityState === "retenido" && item.qualityNote ? `Motivo: ${item.qualityNote}` : null,
-  ].filter((v): v is string => Boolean(v));
-  for (const f of footer) {
-    if (cy > y + h - 4) break;
-    pdf.text(f, x + s.pad, cy, { maxWidth: w - s.pad * 2 });
-    cy += s.lineH;
-  }
+  drawFillableLabel(pdf, box, mode, {
+    ocText: `OC ${item.poNumber}`,
+    badgeText: item.qualityState === "retenido" ? "RETENIDO" : null,
+    badgeColor: WARN,
+    secondTitle: `LOTE ${item.lotNumber}`,
+    heroRows: [
+      {
+        left: item.productLabel,
+        right: `${item.qty.toLocaleString("es-MX", { maximumFractionDigits: 2 })} ${item.unit}`,
+      },
+    ],
+    heroMax: mode === "true" ? 42 : 22,
+    heroMin: mode === "true" ? 16 : 11,
+    footerLines: [
+      item.supplierName ? `Proveedor: ${item.supplierName}` : null,
+      item.receivedDate !== "—" ? `Recibido: ${item.receivedDate}` : null,
+      item.packDate !== "—" && item.packDate !== item.receivedDate
+        ? `Empacado: ${item.packDate}`
+        : null,
+      item.bestByDate ? `Best by: ${item.bestByDate}` : null,
+      item.grade ? `Grado: ${item.grade}` : null,
+      item.originCountry ? `Origen: ${item.originCountry}` : null,
+      item.qualityState === "retenido" && item.qualityNote ? `Motivo: ${item.qualityNote}` : null,
+    ].filter((v): v is string => Boolean(v)),
+  });
 }
 
 async function buildLabelsPdf<T>(
