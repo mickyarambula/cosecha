@@ -371,6 +371,18 @@ function Page() {
       setWarn("Choose a result on at least one line.");
       return;
     }
+    for (const l of activas) {
+      if (l.resultado !== "Aceptada con incidencia") continue;
+      const afectada = Number(l.afectada);
+      if (!l.afectada.trim() || !(afectada > 0)) {
+        setWarn(`${l.product_name}: captura cuánto viene afectado.`);
+        return;
+      }
+      if (afectada > Number(l.cantidad) + 1e-9) {
+        setWarn(`${l.product_name}: lo afectado no puede ser mayor que lo recibido.`);
+        return;
+      }
+    }
     if (!rec.location_id) {
       setWarn("Choose a destination.");
       return;
@@ -1094,6 +1106,18 @@ function Page() {
                       />
                     </Field>
                   </div>
+                  {l.resultado === "Aceptada con incidencia" ? (
+                    <Field label="Cantidad afectada" className="mt-2">
+                      <Input
+                        value={l.afectada}
+                        onChange={(e) =>
+                          setRecLines((p) =>
+                            p.map((x, idx) => (idx === i ? { ...x, afectada: e.target.value } : x)),
+                          )
+                        }
+                      />
+                    </Field>
+                  ) : null}
                   {l.resultado && l.resultado !== "Aceptada" ? (
                     <Field label="Reason" className="mt-2">
                       <Select
