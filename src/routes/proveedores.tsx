@@ -481,7 +481,7 @@ function Page() {
                         </thead>
                         <tbody>
                           {(account.data?.applications ?? []).map((ap) => (
-                            <tr key={ap.id} className="border-t border-border">
+                            <tr key={`${ap.source}-${ap.id}`} className="border-t border-border">
                               <td className="px-2 py-2">{fecha(ap.created_at)}</td>
                               <td className="px-2 py-2 font-mono text-xs">
                                 {ap.advance_number} <span className="font-sans text-muted">{ap.concept}</span>

@@ -22,6 +22,7 @@ import {
   createExpense,
   createPurchaseOrder,
   getSettlement,
+  issueGrowerSettlement,
   listLocations,
   listProducts,
   listPurchaseOrders,
@@ -2190,9 +2191,46 @@ function SettlementModal({
   const [crate, setCrate] = useState("");
   const [recover, setRecover] = useState("");
   const [commissionInit, setCommissionInit] = useState(false);
+  const [liqRecover, setLiqRecover] = useState("");
+  const [liqInit, setLiqInit] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const s = data.data;
+
+  // Propuesta de recuperación al emitir (solo comisión pura, donde no hay
+  // bill): lo que alcance entre el saldo vivo y el neto de esta liquidación.
+  if (s && !liqInit) {
+    if (
+      s.deal_type === "comision" &&
+      !s.settlement &&
+      s.breakdown &&
+      s.grower_balance > 0 &&
+      s.breakdown.net_to_grower > 0
+    ) {
+      const proposal = Math.min(s.grower_balance, s.breakdown.net_to_grower);
+      if (proposal > 0) setLiqRecover(proposal.toFixed(2));
+    }
+    setLiqInit(true);
+  }
+
+  async function emitirLiquidacion() {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await issueGrowerSettlement({
+        data: {
+          purchase_order_id: poId,
+          recover_amount: liqRecover ? Number(liqRecover) : undefined,
+        },
+      });
+      await data.reload();
+      setMsg(`Liquidación ${r.settlement_number} emitida — pago final ${money(r.final_payment)}`);
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "No se pudo emitir la liquidación");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   if (s && !commissionInit) {
     setCtype(s.commission_type ?? "");
@@ -2469,6 +2507,52 @@ function SettlementModal({
                   Define la comisión de Plein para calcular la liquidación al productor.
                 </p>
               )}
+              {s.breakdown ? (
+                <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
+                  {s.settlement ? (
+                    <>
+                      <p className="text-sm">
+                        Liquidación{" "}
+                        <span className="font-mono">{s.settlement.settlement_number}</span> emitida
+                        el {fecha(s.settlement.issue_date)} — pago final{" "}
+                        <strong className="tabular-nums">
+                          {money(s.settlement.final_payment)}
+                        </strong>
+                      </p>
+                      <a
+                        href={`/doc/liq/${s.settlement.share_token}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="ml-auto inline-flex h-8 cursor-pointer items-center rounded-md border border-border px-3 text-sm text-link hover:bg-surface"
+                      >
+                        Ver / imprimir
+                      </a>
+                    </>
+                  ) : (
+                    <>
+                      {s.deal_type === "comision" && s.grower_balance > 0 ? (
+                        <Field label="Recuperar adelantos al emitir ($)">
+                          <Input
+                            className="w-32"
+                            value={liqRecover}
+                            onChange={(e) => setLiqRecover(e.target.value)}
+                          />
+                        </Field>
+                      ) : null}
+                      <Button size="sm" disabled={saving} onClick={() => void emitirLiquidacion()}>
+                        Emitir liquidación
+                      </Button>
+                      <p className="ml-auto max-w-md text-xs text-muted">
+                        Congela los montos tal como están hoy y les da folio (account of sales). El
+                        documento emitido no se recalcula: reimprimir devuelve exactamente lo mismo.
+                        {s.deal_type === "comision" && s.grower_balance > 0
+                          ? ` El productor tiene ${money(s.grower_balance)} en adelantos vivos — aquí decides cuánto se recupera (puede ser cero).`
+                          : ""}
+                      </p>
+                    </>
+                  )}
+                </div>
+              ) : null}
             </>
           )}
           {s.grower_balance > 0 ? (
@@ -2497,8 +2581,8 @@ function SettlementModal({
             ) : s.deal_type === "comision" ? (
               <p className="mt-3 text-xs text-muted">
                 El productor tiene {money(s.grower_balance)} en adelantos vivos. En comisión pura no
-                nace CxP por la fruta, así que no hay liquidación contra la cual recuperar en esta
-                carga.
+                nace CxP por la fruta: la recuperación se aplica directamente al emitir la
+                liquidación (arriba).
               </p>
             ) : !s.bill ? (
               <p className="mt-3 text-xs text-warn">
