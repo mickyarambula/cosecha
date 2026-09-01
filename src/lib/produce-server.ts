@@ -4668,8 +4668,12 @@ export const shipSalesLine = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [line] = await sql.query(
-      `select l.id, l.sales_order_id, l.product_id, l.quantity_ordered::text, l.quantity_shipped::text, l.unit, so.status as so_status
-       from sales_order_lines l join sales_orders so on so.id = l.sales_order_id where l.id = $1`,
+      `select l.id, l.sales_order_id, l.product_id, l.pack_style_id, l.quantity_ordered::text, l.quantity_shipped::text, l.unit, so.status as so_status,
+              ps.calibre as line_calibre, ps.name as line_pack_name
+       from sales_order_lines l
+       join sales_orders so on so.id = l.sales_order_id
+       left join pack_styles ps on ps.id = l.pack_style_id
+       where l.id = $1`,
       [data.line_id],
     );
     if (!line) throw new Error("Línea no encontrada");
@@ -4677,11 +4681,25 @@ export const shipSalesLine = createServerFn({ method: "POST" })
     const remaining = n(line.quantity_ordered) - n(line.quantity_shipped);
     if (data.quantity > remaining + 1e-4) throw new Error("Cantidad mayor a lo pendiente");
     const [lot] = await sql.query(
-      `select product_id, current_qty::text, coalesce(quality_state, 'sano') as quality_state, lot_number, coalesce(held,false) as held from lots where id = $1`,
+      `select lo.product_id, lo.pack_style_id, lo.current_qty::text,
+              coalesce(lo.quality_state, 'sano') as quality_state, lo.lot_number, coalesce(lo.held,false) as held,
+              ps.calibre as lot_calibre, ps.name as lot_pack_name
+       from lots lo
+       left join pack_styles ps on ps.id = lo.pack_style_id
+       where lo.id = $1`,
       [data.lot_id],
     );
     if (!lot || lot.product_id !== line.product_id)
       throw new Error("El lote no corresponde al producto");
+    // El producto no basta: Large y Medium son lotes del mismo producto con
+    // precio distinto. Si la línea pide un calibre concreto (pack_style_id),
+    // el lote debe ser exactamente ese — si no, el ingreso se le atribuye al
+    // calibre equivocado y la liquidación al productor paga mal.
+    if (line.pack_style_id != null && lot.pack_style_id !== line.pack_style_id) {
+      throw new Error(
+        `Este lote es ${lot.lot_calibre || lot.lot_pack_name || "otro calibre"} — la línea pide ${line.line_calibre || line.line_pack_name || "otro calibre"}. Elige un lote del mismo calibre.`,
+      );
+    }
     if (lot.held) throw new Error(`Lot ${lot.lot_number} is on hold.`);
     if (lot.quality_state !== "sano")
       throw new Error(
