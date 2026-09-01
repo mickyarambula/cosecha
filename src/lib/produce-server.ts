@@ -6246,6 +6246,11 @@ export const getFinancials = createServerFn({ method: "GET" })
     const advRows = await sql.query(
       `select coalesce(sum(amount - recovered),0)::text as v from grower_advances where cancelled_at is null`,
     );
+    // Dinero de productores en tránsito (comisión pura): pasivo propio, cuenta
+    // 21000 — a propósito NO se suma a la 20100, no es compra a proveedor.
+    const transitRows = await sql.query(
+      `select coalesce(sum(total - paid),0)::text as v from grower_payables where status <> 'cancelled'`,
+    );
     const accounts = await sql.query(`
     select number, name, kind, statement, subtype, parent_number, starting_balance::text, sort_order, description, tracking_start::text
     from gl_accounts where is_active = true order by sort_order
@@ -6297,6 +6302,7 @@ export const getFinancials = createServerFn({ method: "GET" })
       if (number === "14000") return 0;
       if (number === "16000") return starting + cashBal;
       if (number === "20100") return ap;
+      if (number === "21000") return n(transitRows[0]?.v);
       if (number === "20250") return starting;
       if (number === "30000") return starting;
       return starting;
@@ -7043,11 +7049,18 @@ async function wipeLiveActivity(sql: any) {
   const expIds = await ids(`select id from expenses`);
   await sql.query(`delete from payment_applications`);
   await sql.query(`delete from grower_advance_applications`);
+  // Antes de grower_advances: settlement_advance_applications les guarda FK.
+  await sql.query(`delete from settlement_advance_applications`);
   await sql.query(`delete from grower_advances`);
   await sql.query(`update bank_lines set cash_movement_id = null`);
   await sql.query(`delete from bank_lines`);
   await sql.query(`delete from cash_movements where folio <> 'CORTE-CHASE'`);
+  // Orden por FK: payables → detalle de liquidación → liquidaciones (que a su
+  // vez apuntan a las OCs que se borran más abajo).
   await sql.query(`delete from grower_payables`);
+  await sql.query(`delete from grower_settlement_expenses`);
+  await sql.query(`delete from grower_settlement_lots`);
+  await sql.query(`delete from grower_settlements`);
   await sql.query(`delete from send_events`);
   await sql.query(`delete from shipments`);
   await sql.query(`delete from pallets`);
