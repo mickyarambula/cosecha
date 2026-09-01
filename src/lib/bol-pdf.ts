@@ -91,6 +91,21 @@ function buildBolPdf(
     pdf.setTextColor(...MUTED);
     pdf.text(text.toUpperCase(), x, at);
   };
+  // Mismo estilo de aviso visible para cualquier mínimo legal que falte —
+  // avisa, no bloquea la emisión.
+  const warnBox = (text: string) => {
+    ensure(34);
+    pdf.setDrawColor(...WARN);
+    pdf.setLineWidth(0.8);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(...WARN);
+    const warnLines = pdf.splitTextToSize(text, CONTENT_W - 16) as string[];
+    const boxH = warnLines.length * 11 + 12;
+    pdf.rect(M, y - 4, CONTENT_W, boxH);
+    pdf.text(warnLines, M + 8, y + 8);
+    y += boxH + 6;
+  };
 
   // ── Encabezado: wordmark izquierda, título y folio derecha ────────────────
   if (logo) {
@@ -175,6 +190,19 @@ function buildBolPdf(
     party(M + colW + 18, y, "Consignee", s.customer_name, consigneeLines),
   );
   y += 16;
+
+  // Mínimos legales de un bill of lading. "Calle y código postal" se
+  // aproxima buscando un dígito en la dirección — "Nogales, Arizona, USA"
+  // no lo tiene; una dirección real (número de calle o zip) sí.
+  const hasStreetAddress = (text: string | null | undefined) => /\d/.test(text || "");
+  const missing: string[] = [];
+  if (!s.ship_to_address) missing.push("dirección del consignee (destino de la orden)");
+  if (!hasStreetAddress(address)) missing.push("dirección de origen con calle y código postal");
+  if (s.pallet_count == null) missing.push("conteo de pallets");
+  if (!s.ship_date) missing.push("fecha de embarque");
+  if (missing.length) {
+    warnBox(`BOL INCOMPLETO — falta capturar: ${missing.join(", ")}.`);
+  }
 
   // ── Referencias y transporte ──────────────────────────────────────────────
   const factRows: Array<Array<[string, string]>> = [
@@ -286,18 +314,9 @@ function buildBolPdf(
 
   // Un total callado con líneas sin peso es un total falso: se avisa siempre.
   if (missingWeight.length) {
-    ensure(34);
-    pdf.setDrawColor(...WARN);
-    pdf.setLineWidth(0.8);
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(8.5);
-    pdf.setTextColor(...WARN);
-    const warnText = `PESO INCOMPLETO — sin peso neto capturado: ${missingWeight.join(", ")}. El total suma solo las líneas con peso.`;
-    const warnLines = pdf.splitTextToSize(warnText, CONTENT_W - 16) as string[];
-    const boxH = warnLines.length * 11 + 12;
-    pdf.rect(M, y - 4, CONTENT_W, boxH);
-    pdf.text(warnLines, M + 8, y + 8);
-    y += boxH + 6;
+    warnBox(
+      `PESO INCOMPLETO — sin peso neto capturado: ${missingWeight.join(", ")}. El total suma solo las líneas con peso.`,
+    );
   }
 
   // ── Frío ──────────────────────────────────────────────────────────────────

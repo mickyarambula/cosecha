@@ -19,11 +19,13 @@ import {
   createInvoiceFromSO,
   createPurchaseFromSO,
   createSalesOrder,
+  listCustomerLocations,
   listCustomers,
   listLots,
   listProducts,
   listSalesOrders,
   listSuppliers,
+  setSalesOrderDestination,
   shipSalesLine,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
@@ -58,6 +60,7 @@ function Page() {
   const orders = useAsync(() => listSalesOrders(), []);
   const products = useAsync(() => listProducts(), []);
   const customers = useAsync(() => listCustomers(), []);
+  const locations = useAsync(() => listCustomerLocations({ data: {} }), []);
   const lots = useAsync(() => listLots(), []);
   const suppliers = useAsync(() => listSuppliers(), []);
   const skus = packsToSkus(products.data ?? []);
@@ -94,6 +97,7 @@ function Page() {
   });
   const [draft, setDraft] = useState({
     customer_id: "",
+    ship_to_location_id: "",
     notes: "",
     requested: todayISO(),
     type: "Delivery to customer",
@@ -120,6 +124,10 @@ function Page() {
   }, [list, q]);
 
   const selected = list.find((o) => o.id === openId) ?? list.find((o) => o.id === credit) ?? null;
+  const draftLocations = useMemo(
+    () => (locations.data ?? []).filter((l) => l.customer_id === Number(draft.customer_id)),
+    [locations.data, draft.customer_id],
+  );
   const allLots = lots.data ?? [];
 
   function addSku(sku: SkuOption) {
@@ -152,6 +160,9 @@ function Page() {
         data: {
           customer_id: Number(draft.customer_id),
           notes: draft.notes || undefined,
+          ship_to_location_id: draft.ship_to_location_id
+            ? Number(draft.ship_to_location_id)
+            : undefined,
           lines: lines.map((l) => ({
             product_id: l.product_id,
             pack_style_id: l.pack_style_id,
@@ -258,7 +269,18 @@ function Page() {
           <MetaCard label="Customer">
             <Select
               value={draft.customer_id}
-              onChange={(e) => setDraft({ ...draft, customer_id: e.target.value })}
+              onChange={(e) => {
+                const customerId = e.target.value;
+                const custLocs = (locations.data ?? []).filter(
+                  (l) => l.customer_id === Number(customerId),
+                );
+                const def = custLocs.find((l) => l.is_default) ?? custLocs[0];
+                setDraft({
+                  ...draft,
+                  customer_id: customerId,
+                  ship_to_location_id: def ? String(def.id) : "",
+                });
+              }}
             >
               <option value="">Search customers</option>
               {(customers.data ?? []).map((c) => (
@@ -293,7 +315,24 @@ function Page() {
               <option value="">Type to search</option>
             </Select>
           </MetaCard>
-          <MetaCard label="Destination">Select a customer first</MetaCard>
+          <MetaCard label="Destination">
+            {!draft.customer_id ? (
+              "Select a customer first"
+            ) : (
+              <Select
+                value={draft.ship_to_location_id}
+                onChange={(e) => setDraft({ ...draft, ship_to_location_id: e.target.value })}
+              >
+                <option value="">Sin destino capturado</option>
+                {draftLocations.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {[l.label, l.address_line, l.city].filter(Boolean).join(" · ")}
+                    {l.is_default ? " (habitual)" : ""}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </MetaCard>
           <MetaCard label="Expenses">{money(0)}</MetaCard>
           <MetaCard label="Sales rep">{COMPANY.userName}</MetaCard>
         </div>
@@ -640,6 +679,7 @@ function Page() {
                         <td colSpan={7} className="p-4">
                           <SoDetail
                             row={row}
+                            locations={locations.data ?? []}
                             onShip={(line) => {
                               setShip({
                                 line_id: line.id,
@@ -670,6 +710,7 @@ function Page() {
                             }}
                             onCredit={() => setCredit(row.id)}
                             onCancel={() => setCancelSo({ id: row.id, so_number: row.so_number })}
+                            onDestinationSaved={() => orders.reload()}
                             saving={saving}
                           />
                         </td>
@@ -929,19 +970,23 @@ function Page() {
 
 function SoDetail({
   row,
+  locations,
   onShip,
   onInvoice,
   onBuy,
   onCredit,
   onCancel,
+  onDestinationSaved,
   saving,
 }: {
   row: Awaited<ReturnType<typeof listSalesOrders>>[number];
+  locations: Awaited<ReturnType<typeof listCustomerLocations>>;
   onShip: (line: Awaited<ReturnType<typeof listSalesOrders>>[number]["lines"][number]) => void;
   onInvoice: () => void;
   onBuy: () => void;
   onCredit: () => void;
   onCancel: () => void;
+  onDestinationSaved: () => Promise<void>;
   saving: boolean;
 }) {
   const total = row.lines.reduce((s, l) => s + l.quantity_ordered * l.unit_price, 0);
@@ -949,6 +994,27 @@ function SoDetail({
   const profit = total - cost;
   const margin = total ? (profit / total) * 100 : 0;
   const markup = cost ? (profit / cost) * 100 : 0;
+  const [editingDestination, setEditingDestination] = useState(false);
+  const [destValue, setDestValue] = useState(
+    row.ship_to_location_id != null ? String(row.ship_to_location_id) : "",
+  );
+  const [destSaving, setDestSaving] = useState(false);
+  const customerLocations = locations.filter((l) => l.customer_id === row.customer_id);
+  async function saveDestination() {
+    setDestSaving(true);
+    try {
+      await setSalesOrderDestination({
+        data: {
+          sales_order_id: row.id,
+          ship_to_location_id: destValue ? Number(destValue) : null,
+        },
+      });
+      setEditingDestination(false);
+      await onDestinationSaved();
+    } finally {
+      setDestSaving(false);
+    }
+  }
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
       <div className="mb-3 flex items-center justify-between">
@@ -995,15 +1061,58 @@ function SoDetail({
         <MetaCard label="Pickup date">{row.ship_date ? fecha(row.ship_date) : "—"}</MetaCard>
         <MetaCard label="Order type">Delivery to customer</MetaCard>
         <MetaCard label="Destination">
-          {row.ship_to_address_line ? (
-            <>
-              {[row.ship_to_label, row.ship_to_address_line].filter(Boolean).join(" · ")}
-              <div className="text-[11px] font-normal text-subtle">
-                {[row.ship_to_city, row.ship_to_state, row.ship_to_zip].filter(Boolean).join(", ")}
-              </div>
-            </>
+          {editingDestination ? (
+            <div className="flex items-center gap-1">
+              <Select value={destValue} onChange={(e) => setDestValue(e.target.value)}>
+                <option value="">Sin destino</option>
+                {customerLocations.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {[l.label, l.address_line, l.city].filter(Boolean).join(" · ")}
+                    {l.is_default ? " (habitual)" : ""}
+                  </option>
+                ))}
+              </Select>
+              <button
+                type="button"
+                className="cursor-pointer text-xs text-link disabled:opacity-50"
+                disabled={destSaving}
+                onClick={() => void saveDestination()}
+              >
+                {destSaving ? "…" : "Guardar"}
+              </button>
+              <button
+                type="button"
+                className="cursor-pointer text-xs text-muted"
+                onClick={() => setEditingDestination(false)}
+              >
+                Cancelar
+              </button>
+            </div>
           ) : (
-            "—"
+            <>
+              {row.ship_to_address_line ? (
+                <>
+                  {[row.ship_to_label, row.ship_to_address_line].filter(Boolean).join(" · ")}
+                  <div className="text-[11px] font-normal text-subtle">
+                    {[row.ship_to_city, row.ship_to_state, row.ship_to_zip]
+                      .filter(Boolean)
+                      .join(", ")}
+                  </div>
+                </>
+              ) : (
+                "—"
+              )}
+              <button
+                type="button"
+                className="ml-2 cursor-pointer text-[11px] text-link"
+                onClick={() => {
+                  setDestValue(row.ship_to_location_id != null ? String(row.ship_to_location_id) : "");
+                  setEditingDestination(true);
+                }}
+              >
+                Editar
+              </button>
+            </>
           )}
         </MetaCard>
         <MetaCard label="Payment terms">

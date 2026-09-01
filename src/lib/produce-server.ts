@@ -4004,6 +4004,7 @@ export const createSalesOrder = createServerFn({ method: "POST" })
       customer_id: z.number(),
       notes: z.string().optional(),
       customer_po_id: z.number().optional(),
+      ship_to_location_id: z.number().optional(),
       lines: z
         .array(
           z.object({
@@ -4024,9 +4025,15 @@ export const createSalesOrder = createServerFn({ method: "POST" })
     const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
     const created = (
       await sql.query(
-        `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id)
-       values ($1,$2,'confirmed',$3,$4) returning id, share_token`,
-        [so_number, data.customer_id, data.notes || null, data.customer_po_id ?? null],
+        `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id, ship_to_location_id)
+       values ($1,$2,'confirmed',$3,$4,$5) returning id, share_token`,
+        [
+          so_number,
+          data.customer_id,
+          data.notes || null,
+          data.customer_po_id ?? null,
+          data.ship_to_location_id ?? null,
+        ],
       )
     )[0];
     const id = created.id;
@@ -4049,6 +4056,36 @@ export const createSalesOrder = createServerFn({ method: "POST" })
       so_number,
       share_token: created.share_token,
     };
+  });
+// El selector de destino en "New Order" nunca quedó conectado — toda OV
+// creada ahí se quedó con ship_to_location_id en null. Esto permite
+// asignarlo (o corregirlo) después, sin tener que cancelar y rehacer la OV.
+export const setSalesOrderDestination = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      sales_order_id: z.number(),
+      ship_to_location_id: z.number().nullable(),
+    }),
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [so] = await sql.query(`select customer_id from sales_orders where id = $1`, [
+      data.sales_order_id,
+    ]);
+    if (!so) throw new Error("Orden de venta no encontrada");
+    if (data.ship_to_location_id != null) {
+      const [loc] = await sql.query(
+        `select id from customer_locations where id = $1 and customer_id = $2`,
+        [data.ship_to_location_id, so.customer_id],
+      );
+      if (!loc) throw new Error("Ese destino no pertenece a este cliente");
+    }
+    await sql.query(`update sales_orders set ship_to_location_id = $1 where id = $2`, [
+      data.ship_to_location_id,
+      data.sales_order_id,
+    ]);
+    return { ok: true };
   });
 export const listCustomerPOs = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
