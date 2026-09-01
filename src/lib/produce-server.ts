@@ -1495,6 +1495,9 @@ const shipmentFields = {
   ship_date: z.string().optional(),
   seals: z.string().optional(),
   notes: z.string().optional(),
+  // Solo salida: conteo de pallets capturado a mano para el BOL (no es el
+  // desglose por pallet — pallets.sales_order_id sigue sin usarse).
+  pallet_count: z.number().nullable().optional(),
   // Solo entrada — la UI de salida ni los manda.
   customs_broker_mx_id: z.number().nullable().optional(),
   reference_mx: z.string().optional(),
@@ -1537,6 +1540,7 @@ export const listShipments = createServerFn({ method: "GET" })
            s.driver_id, d.name as driver_name, d.license_number as driver_license,
            s.temp_min::text, s.temp_max::text, s.temp_unit,
            s.load_time, s.ship_date::text, s.seals, s.notes,
+           s.bol_number, s.pallet_count,
            s.customs_broker_mx_id, bmx.name as broker_mx_name, s.reference_mx,
            s.customs_broker_us_id, bus.name as broker_us_name, s.reference_us,
            s.border_crossing_id, bc.name as crossing_name, s.crossing_date::text,
@@ -1585,10 +1589,10 @@ export const createShipment = createServerFn({ method: "POST" })
       await sql.query(
         `insert into shipments (shipment_number, shipment_type, purchase_order_id, sales_order_id,
        carrier_id, truck_unit_id, trailer_unit_id, driver_id,
-       temp_min, temp_max, temp_unit, load_time, ship_date, seals, notes,
+       temp_min, temp_max, temp_unit, load_time, ship_date, seals, notes, pallet_count,
        customs_broker_mx_id, reference_mx, customs_broker_us_id, reference_us,
        border_crossing_id, crossing_date, incoterm, incoterm_place, manifest_number, status, created_by)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) returning id`,
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) returning id`,
         [
           shipment_number,
           data.shipment_type,
@@ -1605,6 +1609,7 @@ export const createShipment = createServerFn({ method: "POST" })
           data.ship_date || null,
           data.seals?.trim() || null,
           data.notes?.trim() || null,
+          data.pallet_count ?? null,
           data.customs_broker_mx_id ?? null,
           data.reference_mx?.trim() || null,
           data.customs_broker_us_id ?? null,
@@ -1638,10 +1643,10 @@ export const updateShipment = createServerFn({ method: "POST" })
     assertShipmentStatus(existing.shipment_type, data.status);
     await sql.query(
       `update shipments set carrier_id=$1, truck_unit_id=$2, trailer_unit_id=$3, driver_id=$4,
-       temp_min=$5, temp_max=$6, temp_unit=$7, load_time=$8, ship_date=$9, seals=$10, notes=$11,
-       customs_broker_mx_id=$12, reference_mx=$13, customs_broker_us_id=$14, reference_us=$15,
-       border_crossing_id=$16, crossing_date=$17, incoterm=$18, incoterm_place=$19, manifest_number=$20, status=$21
-     where id=$22`,
+       temp_min=$5, temp_max=$6, temp_unit=$7, load_time=$8, ship_date=$9, seals=$10, notes=$11, pallet_count=$12,
+       customs_broker_mx_id=$13, reference_mx=$14, customs_broker_us_id=$15, reference_us=$16,
+       border_crossing_id=$17, crossing_date=$18, incoterm=$19, incoterm_place=$20, manifest_number=$21, status=$22
+     where id=$23`,
       [
         data.carrier_id ?? null,
         data.truck_unit_id ?? null,
@@ -1654,6 +1659,7 @@ export const updateShipment = createServerFn({ method: "POST" })
         data.ship_date || null,
         data.seals?.trim() || null,
         data.notes?.trim() || null,
+        data.pallet_count ?? null,
         data.customs_broker_mx_id ?? null,
         data.reference_mx?.trim() || null,
         data.customs_broker_us_id ?? null,
@@ -1686,6 +1692,106 @@ export const setShipmentStatus = createServerFn({ method: "POST" })
     assertShipmentStatus(existing.shipment_type, data.status);
     await sql.query(`update shipments set status = $1 where id = $2`, [data.status, data.id]);
     return { ok: true };
+  });
+// ── BOL propio de Plein (salida) ────────────────────────────────────────────
+// Documento distinto de purchase_orders.bol (BOL del transportista en la
+// entrada). El folio se genera y persiste la PRIMERA vez que se imprime —
+// reimprimir regresa el mismo folio, igual que la factura.
+export const issueBol = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      shipment_id: z.number(),
+    }),
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [s] = await sql.query(`select id, shipment_type, bol_number from shipments where id = $1`, [
+      data.shipment_id,
+    ]);
+    if (!s) throw new Error("Embarque no encontrado");
+    if (s.shipment_type !== "salida")
+      throw new Error("El BOL de Plein se emite sobre un embarque de salida, no de entrada.");
+    if (s.bol_number) return { bol_number: s.bol_number };
+    const bol_number = await nextCode(sql, "shipments", "bol_number", "BOL-");
+    await sql.query(`update shipments set bol_number = $1 where id = $2 and bol_number is null`, [
+      bol_number,
+      data.shipment_id,
+    ]);
+    // Releída tras el update condicional: si dos clics compiten, gana el
+    // primero y el segundo regresa el folio que ya quedó persistido.
+    const [after] = await sql.query(`select bol_number from shipments where id = $1`, [
+      data.shipment_id,
+    ]);
+    return { bol_number: after.bol_number as string };
+  });
+export const getBolDoc = createServerFn({ method: "GET" })
+  .validator(
+    z.object({
+      shipment_id: z.number(),
+    }),
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [s] = await sql.query(
+      `
+    select s.id, s.shipment_number, s.bol_number, s.pallet_count,
+           s.temp_min::text, s.temp_max::text, s.temp_unit,
+           s.ship_date::text, s.load_time, s.seals, s.notes,
+           c.name as carrier_name,
+           tu.plates as truck_plates, tu.economic_number as truck_economic,
+           tr.plates as trailer_plates,
+           d.name as driver_name, d.license_number as driver_license,
+           so.id as sales_order_id, so.so_number,
+           cust.name as customer_name,
+           cpo.customer_po_number,
+           cl.label as ship_to_label, cl.address_line as ship_to_address,
+           cl.city as ship_to_city, cl.state as ship_to_state, cl.zip as ship_to_zip
+    from shipments s
+    join sales_orders so on so.id = s.sales_order_id
+    join customers cust on cust.id = so.customer_id
+    left join customer_pos cpo on cpo.id = so.customer_po_id
+    left join customer_locations cl on cl.id = so.ship_to_location_id
+    left join carriers c on c.id = s.carrier_id
+    left join carrier_units tu on tu.id = s.truck_unit_id
+    left join carrier_units tr on tr.id = s.trailer_unit_id
+    left join drivers d on d.id = s.driver_id
+    where s.id = $1 and s.shipment_type = 'salida'
+  `,
+      [data.shipment_id],
+    );
+    if (!s) throw new Error("Embarque de salida no encontrado");
+    const lines = await sql.query(
+      `
+    select l.id, p.name as product_name, p.variety,
+           ps.sku_code, ps.empaque, ps.calibre,
+           ps.net_weight::text, coalesce(ps.weight_unit, 'lb') as weight_unit,
+           l.quantity_ordered::text, l.unit
+    from sales_order_lines l
+    join products p on p.id = l.product_id
+    left join pack_styles ps on ps.id = l.pack_style_id
+    where l.sales_order_id = $1
+    order by l.id
+  `,
+      [s.sales_order_id],
+    );
+    const [company] = await sql.query(
+      `select legal_name, tagline, city, country, email, phone, address_line, paca_license from company_profile where id = 1`,
+    );
+    return {
+      shipment: {
+        ...s,
+        temp_min: s.temp_min == null ? null : n(s.temp_min),
+        temp_max: s.temp_max == null ? null : n(s.temp_max),
+      },
+      lines: lines.map((l) => ({
+        ...l,
+        quantity: n(l.quantity_ordered),
+        net_weight: l.net_weight == null ? null : n(l.net_weight),
+      })),
+      company: company ?? null,
+    };
   });
 /**
  * Pallets (sesión pallets): qué lleva cada pallet de una carga.
@@ -3898,6 +4004,7 @@ export const createSalesOrder = createServerFn({ method: "POST" })
       customer_id: z.number(),
       notes: z.string().optional(),
       customer_po_id: z.number().optional(),
+      ship_to_location_id: z.number().optional(),
       lines: z
         .array(
           z.object({
@@ -3918,9 +4025,15 @@ export const createSalesOrder = createServerFn({ method: "POST" })
     const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
     const created = (
       await sql.query(
-        `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id)
-       values ($1,$2,'confirmed',$3,$4) returning id, share_token`,
-        [so_number, data.customer_id, data.notes || null, data.customer_po_id ?? null],
+        `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id, ship_to_location_id)
+       values ($1,$2,'confirmed',$3,$4,$5) returning id, share_token`,
+        [
+          so_number,
+          data.customer_id,
+          data.notes || null,
+          data.customer_po_id ?? null,
+          data.ship_to_location_id ?? null,
+        ],
       )
     )[0];
     const id = created.id;
@@ -3943,6 +4056,36 @@ export const createSalesOrder = createServerFn({ method: "POST" })
       so_number,
       share_token: created.share_token,
     };
+  });
+// El selector de destino en "New Order" nunca quedó conectado — toda OV
+// creada ahí se quedó con ship_to_location_id en null. Esto permite
+// asignarlo (o corregirlo) después, sin tener que cancelar y rehacer la OV.
+export const setSalesOrderDestination = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      sales_order_id: z.number(),
+      ship_to_location_id: z.number().nullable(),
+    }),
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [so] = await sql.query(`select customer_id from sales_orders where id = $1`, [
+      data.sales_order_id,
+    ]);
+    if (!so) throw new Error("Orden de venta no encontrada");
+    if (data.ship_to_location_id != null) {
+      const [loc] = await sql.query(
+        `select id from customer_locations where id = $1 and customer_id = $2`,
+        [data.ship_to_location_id, so.customer_id],
+      );
+      if (!loc) throw new Error("Ese destino no pertenece a este cliente");
+    }
+    await sql.query(`update sales_orders set ship_to_location_id = $1 where id = $2`, [
+      data.ship_to_location_id,
+      data.sales_order_id,
+    ]);
+    return { ok: true };
   });
 export const listCustomerPOs = createServerFn({ method: "GET" })
   .middleware([authMiddleware])

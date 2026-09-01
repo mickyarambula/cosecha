@@ -32,6 +32,7 @@ import {
   setVendorShare,
   updatePurchaseOrder,
 } from "@/lib/produce-server";
+import { convertTemp, convertWeight } from "@/lib/units";
 import { useAsync } from "@/lib/use-async";
 import {
   DEFECTOS,
@@ -91,11 +92,6 @@ function ceilPallets(qty: string, unitsPerPallet: string): string {
   const upp = Number(unitsPerPallet);
   if (!(q > 0) || !(upp > 0)) return "";
   return String(Math.ceil(q / upp));
-}
-
-function convertTemp(value: number, from: string, to: string): number {
-  if (from === to) return value;
-  return from === "C" ? (value * 9) / 5 + 32 : ((value - 32) * 5) / 9;
 }
 
 // Aviso, no bloqueo: la cámara opera a una temperatura fija; el producto
@@ -1310,11 +1306,17 @@ function PoDetail({
   const received = row.lines.some((l) => l.quantity_received > 0);
   const units = row.lines.reduce((s, l) => s + l.quantity_ordered, 0);
   const pallets = row.lines.reduce((s, l) => s + (l.pallets || 0), 0);
+  const weightUnit = row.lines.find((l) => l.net_weight != null)?.weight_unit || "kg";
+  // Convierte cada línea a la unidad mostrada antes de sumar: con lb y kg
+  // mezclados en la misma OC, sumar en crudo daba un total sin sentido.
   const totalWeight = row.lines.reduce(
-    (s, l) => s + (l.net_weight != null ? l.quantity_ordered * l.net_weight : 0),
+    (s, l) =>
+      s +
+      (l.net_weight != null
+        ? convertWeight(l.quantity_ordered * l.net_weight, l.weight_unit, weightUnit)
+        : 0),
     0,
   );
-  const weightUnit = row.lines.find((l) => l.net_weight != null)?.weight_unit || "kg";
   const hasWeight = row.lines.some((l) => l.net_weight != null);
   const pendingCost = row.deal_type !== "firme" && row.lines.some((l) => !(l.unit_cost > 0));
   const t = useT();

@@ -3,8 +3,11 @@ import { Modal } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { downloadBolPdf } from "@/lib/bol-pdf";
 import {
   createShipment,
+  getBolDoc,
+  issueBol,
   listBorderCrossings,
   listCarrierUnits,
   listCarriers,
@@ -61,7 +64,26 @@ export function ShipmentsPanel({
     [purchaseOrderId, salesOrderId],
   );
   const [editing, setEditing] = useState<Shipment | "new" | null>(null);
+  const [bolBusy, setBolBusy] = useState<number | null>(null);
+  const [bolErr, setBolErr] = useState<string | null>(null);
   const rows = shipments.data ?? [];
+
+  // El folio se emite y persiste la primera vez; reimprimir baja el mismo BOL.
+  async function printBol(s: Shipment) {
+    if (bolBusy != null) return;
+    setBolBusy(s.id);
+    setBolErr(null);
+    try {
+      await issueBol({ data: { shipment_id: s.id } });
+      const doc = await getBolDoc({ data: { shipment_id: s.id } });
+      await downloadBolPdf(doc);
+      await shipments.reload();
+    } catch (e) {
+      setBolErr(errorMessage(e, "No se pudo generar el BOL."));
+    } finally {
+      setBolBusy(null);
+    }
+  }
 
   return (
     <div className="mt-5">
@@ -86,6 +108,7 @@ export function ShipmentsPanel({
                 <th className="px-3 py-2 font-medium">Fecha · hora</th>
                 {tipo === "entrada" ? <th className="px-3 py-2 font-medium">Cruce</th> : null}
                 {tipo === "entrada" ? <th className="px-3 py-2 font-medium">Manifiesto</th> : null}
+                {tipo === "salida" ? <th className="px-3 py-2 font-medium">BOL</th> : null}
                 <th className="px-3 py-2" />
               </tr>
             </thead>
@@ -130,7 +153,24 @@ export function ShipmentsPanel({
                   {tipo === "entrada" ? (
                     <td className="px-3 py-2 text-muted">{s.manifest_number || "—"}</td>
                   ) : null}
+                  {tipo === "salida" ? (
+                    <td className="px-3 py-2 font-mono text-xs">{s.bol_number || "—"}</td>
+                  ) : null}
                   <td className="px-3 py-2 text-right">
+                    {tipo === "salida" ? (
+                      <button
+                        type="button"
+                        className="mr-3 cursor-pointer text-xs text-link disabled:opacity-50"
+                        disabled={bolBusy != null}
+                        onClick={() => void printBol(s)}
+                      >
+                        {bolBusy === s.id
+                          ? "Generando…"
+                          : s.bol_number
+                            ? "Reimprimir BOL"
+                            : "Imprimir BOL"}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="cursor-pointer text-xs text-link"
@@ -147,6 +187,11 @@ export function ShipmentsPanel({
       ) : !shipments.loading ? (
         <p className="rounded-md border border-dashed border-border p-3 text-sm text-muted">
           Sin embarques capturados para esta orden.
+        </p>
+      ) : null}
+      {bolErr ? (
+        <p className="mt-2 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">
+          {bolErr}
         </p>
       ) : null}
       {editing ? (
@@ -180,6 +225,7 @@ function emptyForm() {
     load_time: "",
     ship_date: "",
     seals: "",
+    pallet_count: "",
     notes: "",
     customs_broker_mx_id: "",
     reference_mx: "",
@@ -234,6 +280,7 @@ export function ShipmentModal({
           load_time: existing.load_time || "",
           ship_date: existing.ship_date || "",
           seals: existing.seals || "",
+          pallet_count: existing.pallet_count != null ? String(existing.pallet_count) : "",
           notes: existing.notes || "",
           customs_broker_mx_id:
             existing.customs_broker_mx_id != null ? String(existing.customs_broker_mx_id) : "",
@@ -316,6 +363,10 @@ export function ShipmentModal({
         seals: form.seals || undefined,
         notes: form.notes || undefined,
         status: form.status,
+        // Solo salida: el conteo manual de pallets que imprime el BOL.
+        ...(tipo === "salida"
+          ? { pallet_count: form.pallet_count !== "" ? Number(form.pallet_count) : null }
+          : {}),
         // Aduana: solo un embarque de entrada los manda.
         ...(tipo === "entrada"
           ? {
@@ -481,6 +532,18 @@ export function ShipmentModal({
               placeholder="Van varios, separados por coma"
             />
           </Field>
+          {tipo === "salida" ? (
+            <Field label="Pallets">
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                value={form.pallet_count}
+                onChange={(e) => setForm({ ...form, pallet_count: e.target.value })}
+                placeholder="Conteo para el BOL"
+              />
+            </Field>
+          ) : null}
         </div>
 
         {tipo === "entrada" ? (
