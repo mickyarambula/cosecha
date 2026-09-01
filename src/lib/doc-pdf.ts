@@ -28,6 +28,8 @@ export type DocPdfInput = {
   subtotal?: number;
   total?: number;
   notes?: string | null;
+  /** Aviso visible de documento incompleto — caja WARN, mismo criterio que el BOL. */
+  warning?: string | null;
   showPaca?: boolean;
   company?: {
     legal_name?: string;
@@ -171,6 +173,7 @@ export function fromPrintDoc(doc: {
   subtotal: number;
   total: number;
   notes: string | null;
+  warning?: string | null;
   showPaca: boolean;
   company?: DocPdfInput["company"];
 }): DocPdfInput {
@@ -190,6 +193,7 @@ export function fromPrintDoc(doc: {
     subtotal: doc.subtotal,
     total: doc.total,
     notes: doc.notes,
+    warning: doc.warning ?? null,
     showPaca: doc.showPaca,
     company: doc.company,
   };
@@ -338,6 +342,21 @@ function buildPdf(
       pdf.text(value, x, y + 13);
     });
     y += 28;
+  }
+
+  // Aviso visible de documento incompleto — no bloquea, avisa (como el BOL).
+  if (input.warning) {
+    ensure(34);
+    pdf.setDrawColor(...WARN);
+    pdf.setLineWidth(0.8);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(...WARN);
+    const warnLines = pdf.splitTextToSize(input.warning, CONTENT_W - 16) as string[];
+    const boxH = warnLines.length * 11 + 12;
+    pdf.rect(M, y - 4, CONTENT_W, boxH);
+    pdf.text(warnLines, M + 8, y + 8);
+    y += boxH + 10;
   }
 
   const hasPrice =

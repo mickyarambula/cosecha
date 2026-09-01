@@ -43,7 +43,7 @@ export type PrintLine = {
 };
 export type PrintDoc = {
   id: number;
-  tipo: "factura" | "oc" | "ov" | "cuenta";
+  tipo: "factura" | "oc" | "ov" | "cuenta" | "liq";
   kindLabel: string;
   number: string;
   date: string;
@@ -58,6 +58,8 @@ export type PrintDoc = {
   subtotal: number;
   total: number;
   notes: string | null;
+  /** Aviso visible de documento incompleto (mismo criterio que el BOL). */
+  warning?: string | null;
   showPaca: boolean;
   company: CompanyProfile;
 };
@@ -2440,11 +2442,19 @@ async function loadSettlement(sql, purchase_order_id: number) {
        where purchase_order_id = $1 and status <> 'cancelled' order by id desc limit 1`,
     [purchase_order_id],
   );
+  // Recuperaciones de las DOS rutas: contra bill (consignación) y contra
+  // liquidación (comisión pura). Una recuperación que no aparece donde el
+  // usuario la busca es dinero invisible.
   const recoveries = (
     await sql.query(
       `select ap.amount::text, ap.created_at::text, a.advance_number, a.concept
        from grower_advance_applications ap join grower_advances a on a.id = ap.advance_id
-       where ap.purchase_order_id = $1 order by ap.id`,
+       where ap.purchase_order_id = $1
+       union all
+       select ap.amount::text, ap.created_at::text, a.advance_number, a.concept
+       from settlement_advance_applications ap join grower_advances a on a.id = ap.advance_id
+       where ap.purchase_order_id = $1
+       order by 2`,
       [purchase_order_id],
     )
   ).map((r) => ({
@@ -2452,6 +2462,15 @@ async function loadSettlement(sql, purchase_order_id: number) {
     amount: n(r.amount),
   }));
   const recovered_total = recoveries.reduce((s, r) => s + r.amount, 0);
+  // Liquidación emitida (si ya nació): el documento congelado manda sobre el
+  // cálculo vivo — reimprimir devuelve exactamente lo mismo.
+  const [settlementRow] = await sql.query(
+    `select id, settlement_number, issue_date::text, share_token,
+            revenue::text, grower_expenses::text, commission::text,
+            net_to_grower::text, advance_recovered::text, final_payment::text
+     from grower_settlements where purchase_order_id = $1`,
+    [purchase_order_id],
+  );
   return {
     po_id: po.id,
     po_number: po.po_number,
@@ -2492,6 +2511,20 @@ async function loadSettlement(sql, purchase_order_id: number) {
       : null,
     recoveries,
     recovered_total,
+    settlement: settlementRow
+      ? {
+          id: settlementRow.id,
+          settlement_number: settlementRow.settlement_number,
+          issue_date: settlementRow.issue_date,
+          share_token: settlementRow.share_token,
+          revenue: n(settlementRow.revenue),
+          grower_expenses: n(settlementRow.grower_expenses),
+          commission: n(settlementRow.commission),
+          net_to_grower: n(settlementRow.net_to_grower),
+          advance_recovered: n(settlementRow.advance_recovered),
+          final_payment: n(settlementRow.final_payment),
+        }
+      : null,
     lots,
   };
 }
@@ -2501,6 +2534,141 @@ export const getSettlement = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     return loadSettlement(sql, data.purchase_order_id);
+  });
+/**
+ * Emite el account of sales: congela la liquidación tal como está en este
+ * momento (ingreso, gastos del productor, comisión, neto, recuperación, pago)
+ * y le da folio LIQ-. El documento no puede cambiar después de emitido —
+ * define cuánto se le paga al productor; reimprimir devuelve lo congelado.
+ *
+ * En comisión pura, la emisión puede recuperar adelantos directamente
+ * (recover_amount): no existe bill en ese trato, así que este es el único
+ * camino. Reusa recoverAdvancesFifo — la MISMA guarda atómica que la ruta de
+ * bill, contra el MISMO acumulador. En consignación la recuperación sigue
+ * siendo contra la bill (ese camino no se toca); aquí solo se congela lo ya
+ * aplicado.
+ */
+export const issueGrowerSettlement = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      purchase_order_id: z.number(),
+      recover_amount: z.number().min(0).optional(),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const s = await loadSettlement(sql, data.purchase_order_id);
+    if (s.deal_type === "firme")
+      throw new Error(
+        "La liquidación al productor aplica a consignación y comisión pura — una carga en firme se paga contra su factura.",
+      );
+    if (!s.breakdown)
+      throw new Error("Define la comisión de Plein antes de emitir la liquidación.");
+    if (s.settlement)
+      throw new Error(
+        `Esta carga ya tiene liquidación ${s.settlement.settlement_number} — el documento emitido no se recalcula.`,
+      );
+    const [po] = await sql.query(`select supplier_id from purchase_orders where id = $1`, [
+      data.purchase_order_id,
+    ]);
+    const recoverAmount = data.recover_amount ?? 0;
+    if (recoverAmount > 0.009) {
+      if (s.deal_type !== "comision")
+        throw new Error(
+          "En consignación la recuperación de adelantos se aplica contra la factura de liquidación — este camino directo es solo para comisión pura.",
+        );
+      const maxRecover = Math.max(s.breakdown.net_to_grower, 0);
+      if (recoverAmount > maxRecover + 0.009)
+        throw new Error(
+          `No se puede recuperar más que el neto al productor de esta liquidación (${maxRecover.toFixed(2)}).`,
+        );
+    }
+    // La recuperación (guarda atómica compartida) corre ANTES de congelar:
+    // si el saldo de adelantos no alcanza, no nace ningún documento.
+    const splits =
+      recoverAmount > 0.009 ? await recoverAdvancesFifo(sql, po.supplier_id, recoverAmount) : [];
+    const advance_recovered = s.deal_type === "comision" ? recoverAmount : s.recovered_total;
+    const final_payment = Math.max(s.breakdown.net_to_grower - advance_recovered, 0);
+    const settlement_number = await nextCode(sql, "grower_settlements", "settlement_number", "LIQ-");
+    const settlementId = (
+      await sql.query(
+        `insert into grower_settlements
+         (settlement_number, purchase_order_id, supplier_id, deal_type, commission_type, commission_rate,
+          issue_date, sold_units, revenue, grower_expenses, commission, net_to_grower,
+          advance_recovered, final_payment, created_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`,
+        [
+          settlement_number,
+          data.purchase_order_id,
+          po.supplier_id,
+          s.deal_type,
+          s.commission_type,
+          s.commission_rate,
+          todayISO(),
+          s.breakdown.sold_units,
+          s.breakdown.revenue,
+          s.breakdown.grower_expenses,
+          s.breakdown.commission,
+          s.breakdown.net_to_grower,
+          advance_recovered,
+          final_payment,
+          context.userId ?? null,
+        ],
+      )
+    )[0].id;
+    for (const sp of splits)
+      await sql.query(
+        `insert into settlement_advance_applications (advance_id, settlement_id, purchase_order_id, amount)
+         values ($1,$2,$3,$4)`,
+        [sp.id, settlementId, data.purchase_order_id, sp.take],
+      );
+    // Desglose por lote congelado, con calibre del SKU y texto copiado (una
+    // edición futura del catálogo no reescribe un documento ya entregado).
+    const calibres = new Map<number, string | null>(
+      (
+        await sql.query(
+          `select l.id, ps.calibre from lots l left join pack_styles ps on ps.id = l.pack_style_id
+           where l.purchase_order_id = $1`,
+          [data.purchase_order_id],
+        )
+      ).map((r) => [r.id, r.calibre]),
+    );
+    for (const lot of s.lots)
+      await sql.query(
+        `insert into grower_settlement_lots
+         (settlement_id, lot_id, lot_number, product_name, calibre, sold_qty, unit, unit_price, revenue, remaining_qty)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          settlementId,
+          lot.id,
+          lot.lot_number,
+          lot.product_name,
+          calibres.get(lot.id) ?? null,
+          lot.sold,
+          lot.unit,
+          lot.sold > 0 ? lot.revenue / lot.sold : null,
+          lot.revenue,
+          lot.remaining,
+        ],
+      );
+    for (const e of s.breakdown.grower_expense_rows)
+      await sql.query(
+        `insert into grower_settlement_expenses (settlement_id, category, notes, amount)
+         values ($1,$2,$3,$4)`,
+        [settlementId, e.category, e.notes ?? null, e.amount],
+      );
+    const [created] = await sql.query(
+      `select settlement_number, share_token from grower_settlements where id = $1`,
+      [settlementId],
+    );
+    return {
+      id: settlementId,
+      settlement_number: created.settlement_number,
+      share_token: created.share_token,
+      advance_recovered,
+      final_payment,
+    };
   });
 export const applySettlement = createServerFn({ method: "POST" })
   .validator(
@@ -2706,9 +2874,11 @@ async function loadGrowerAccount(sql, supplier_id: number) {
     recovered: n(a.recovered),
     balance: a.cancelled_at ? 0 : Math.max(n(a.amount) - n(a.recovered), 0),
   }));
-  const applications = (
-    await sql.query(
-      `select ap.id, ap.advance_id, ap.amount::text, ap.created_at::text,
+  // Las dos rutas de recuperación en un solo estado de cuenta: contra bill
+  // (consignación) y contra liquidación (comisión pura). El folio de la
+  // liquidación toma el lugar del folio de bill en esa columna.
+  const billApps = await sql.query(
+    `select ap.id, ap.advance_id, ap.amount::text, ap.created_at::text,
             a.advance_number, a.concept, b.bill_number, po.po_number
      from grower_advance_applications ap
      join grower_advances a on a.id = ap.advance_id
@@ -2716,12 +2886,25 @@ async function loadGrowerAccount(sql, supplier_id: number) {
      left join purchase_orders po on po.id = ap.purchase_order_id
      where a.supplier_id = $1
      order by ap.id`,
-      [supplier_id],
-    )
-  ).map((r) => ({
-    ...r,
-    amount: n(r.amount),
-  }));
+    [supplier_id],
+  );
+  const settlementApps = await sql.query(
+    `select ap.id, ap.advance_id, ap.amount::text, ap.created_at::text,
+            a.advance_number, a.concept, gs.settlement_number as bill_number, po.po_number
+     from settlement_advance_applications ap
+     join grower_advances a on a.id = ap.advance_id
+     join grower_settlements gs on gs.id = ap.settlement_id
+     left join purchase_orders po on po.id = ap.purchase_order_id
+     where a.supplier_id = $1
+     order by ap.id`,
+    [supplier_id],
+  );
+  const applications = [
+    ...billApps.map((r) => ({ ...r, source: "bill" as const })),
+    ...settlementApps.map((r) => ({ ...r, source: "liq" as const })),
+  ]
+    .map((r) => ({ ...r, amount: n(r.amount) }))
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
   const pos = await sql.query(
     `select id, po_number from purchase_orders
      where supplier_id = $1 and status <> 'cancelled' order by id desc limit 50`,
@@ -2742,6 +2925,46 @@ export const getGrowerAccount = createServerFn({ method: "GET" })
     const sql = await getSql();
     return loadGrowerAccount(sql, data.supplier_id);
   });
+/**
+ * Recuperación FIFO de adelantos, compartida por las DOS rutas (contra bill en
+ * consignación, contra liquidación en comisión pura). Los adelantos más viejos
+ * se recuperan primero; el sistema reparte el monto y regresa los splits para
+ * que cada ruta escriba su propio rastro de auditoría. La guarda atómica vive
+ * aquí y solo aquí: el update condicional hace imposible que recovered rebase
+ * amount aunque las dos rutas compitan por el mismo saldo.
+ */
+async function recoverAdvancesFifo(sql, supplierId: number, amount: number) {
+  const open = await sql.query(
+    `select id, amount::text, recovered::text from grower_advances
+     where supplier_id = $1 and cancelled_at is null and recovered < amount - 0.009
+     order by advance_date, id`,
+    [supplierId],
+  );
+  let left = amount;
+  const splits: { id: number; take: number }[] = [];
+  for (const a of open) {
+    if (left <= 0.009) break;
+    const take = Math.min(n(a.amount) - n(a.recovered), left);
+    splits.push({ id: a.id, take });
+    left -= take;
+  }
+  if (left > 0.009)
+    throw new Error(
+      "El productor no tiene saldo de adelantos suficiente para recuperar ese monto.",
+    );
+  for (const s of splits) {
+    // Guarda atómica: recovered nunca puede pasar de amount, así que es
+    // imposible recuperar el mismo adelanto dos veces.
+    const updated = await sql.query(
+      `update grower_advances set recovered = recovered + $1
+       where id = $2 and cancelled_at is null and recovered + $1 <= amount + 0.009 returning id`,
+      [s.take, s.id],
+    );
+    if (!updated.length)
+      throw new Error("El saldo del adelanto cambió — recarga y vuelve a intentar.");
+  }
+  return splits;
+}
 export const applyAdvanceRecovery = createServerFn({ method: "POST" })
   .validator(
     z.object({
@@ -2769,36 +2992,8 @@ export const applyAdvanceRecovery = createServerFn({ method: "POST" })
       throw new Error(
         `Solo quedan ${remaining.toFixed(2)} por cubrir en ${bill.bill_number} — no se puede recuperar más que el neto pendiente de esta liquidación.`,
       );
-    // Los adelantos más viejos se recuperan primero (FIFO). Miguel decide el
-    // monto total; el sistema lo reparte y deja rastro por adelanto.
-    const open = await sql.query(
-      `select id, amount::text, recovered::text from grower_advances
-       where supplier_id = $1 and cancelled_at is null and recovered < amount - 0.009
-       order by advance_date, id`,
-      [po.supplier_id],
-    );
-    let left = data.amount;
-    const splits: { id: number; take: number }[] = [];
-    for (const a of open) {
-      if (left <= 0.009) break;
-      const take = Math.min(n(a.amount) - n(a.recovered), left);
-      splits.push({ id: a.id, take });
-      left -= take;
-    }
-    if (left > 0.009)
-      throw new Error(
-        "El productor no tiene saldo de adelantos suficiente para recuperar ese monto.",
-      );
+    const splits = await recoverAdvancesFifo(sql, po.supplier_id, data.amount);
     for (const s of splits) {
-      // Guarda atómica: recovered nunca puede pasar de amount, así que es
-      // imposible recuperar el mismo adelanto dos veces.
-      const updated = await sql.query(
-        `update grower_advances set recovered = recovered + $1
-         where id = $2 and cancelled_at is null and recovered + $1 <= amount + 0.009 returning id`,
-        [s.take, s.id],
-      );
-      if (!updated.length)
-        throw new Error("El saldo del adelanto cambió — recarga y vuelve a intentar.");
       await sql.query(
         `insert into grower_advance_applications (advance_id, supplier_bill_id, purchase_order_id, amount) values ($1,$2,$3,$4)`,
         [s.id, bill.id, po.id, s.take],
@@ -5090,6 +5285,12 @@ export const registerPago = createServerFn({ method: "POST" })
       remaining: n(bill.total) - paid,
     };
   });
+function money2(v: number) {
+  return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function qtyText(v: number) {
+  return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
 function partyOf(row) {
   const loc = [row.city, row.country].filter(Boolean).join(", ");
   return {
@@ -5102,13 +5303,111 @@ function partyOf(row) {
 export const getPrintDoc = createServerFn({ method: "GET" })
   .validator(
     z.object({
-      tipo: z.enum(["factura", "oc", "ov", "pick", "bol", "confirm", "cuenta"]),
+      tipo: z.enum(["factura", "oc", "ov", "pick", "bol", "confirm", "cuenta", "liq"]),
       token: z.string().min(16),
     }),
   )
   .handler(async ({ data }) => {
     const sql = await getSql();
     const company = await loadCompany(sql);
+    if (data.tipo === "liq") {
+      const [liq] = await sql.query(
+        `select gs.*, po.po_number, s.name, s.contact_name, s.phone, s.email, s.city, s.country, s.paca_number
+         from grower_settlements gs
+         join purchase_orders po on po.id = gs.purchase_order_id
+         join suppliers s on s.id = gs.supplier_id
+         where gs.share_token = $1`,
+        [data.token],
+      );
+      if (!liq) throw new Error("Liquidación no encontrada");
+      const lots = await sql.query(
+        `select lot_number, product_name, calibre, sold_qty::text, unit, unit_price::text, revenue::text, remaining_qty::text
+         from grower_settlement_lots where settlement_id = $1 order by id`,
+        [liq.id],
+      );
+      const expenses = await sql.query(
+        `select category, notes, amount::text from grower_settlement_expenses
+         where settlement_id = $1 order by id`,
+        [liq.id],
+      );
+      const commissionLabel =
+        liq.commission_type === "per_unit"
+          ? `${money2(n(liq.commission_rate))} por caja × ${n(liq.sold_units)} cajas`
+          : liq.commission_type === "gross_pct"
+            ? `${n(liq.commission_rate)}% sobre venta bruta`
+            : `${n(liq.commission_rate)}% sobre neto tras gastos`;
+      const lines: PrintLine[] = [
+        ...lots
+          .filter((l) => n(l.sold_qty) > 0)
+          .map((l) => ({
+            sku: l.lot_number,
+            description: [l.product_name, l.calibre].filter(Boolean).join(" · "),
+            qty: n(l.sold_qty),
+            unit: l.unit || "",
+            unit_price: n(l.unit_price),
+            amount: n(l.revenue),
+          })),
+        ...expenses.map((e) => ({
+          sku: "GASTO",
+          description: `Gasto del productor — ${e.category}${e.notes ? ` (${e.notes})` : ""}`,
+          qty: 1,
+          unit: "",
+          unit_price: -n(e.amount),
+          amount: -n(e.amount),
+        })),
+        {
+          sku: "COMISIÓN",
+          description: `Comisión Plein — ${commissionLabel}`,
+          qty: 1,
+          unit: "",
+          unit_price: -n(liq.commission),
+          amount: -n(liq.commission),
+        },
+        ...(n(liq.advance_recovered) > 0
+          ? [
+              {
+                sku: "ADELANTO",
+                description: "Recuperación de adelantos otorgados",
+                qty: 1,
+                unit: "",
+                unit_price: -n(liq.advance_recovered),
+                amount: -n(liq.advance_recovered),
+              },
+            ]
+          : []),
+      ];
+      const remainingTotal = lots.reduce((sum, l) => sum + n(l.remaining_qty), 0);
+      const missing: string[] = [];
+      if (remainingTotal > 0.009)
+        missing.push(
+          `al emitir quedaban ${qtyText(remainingTotal)} cajas sin vender — esta liquidación cubre solo lo vendido`,
+        );
+      if (!liq.phone && !liq.email) missing.push("productor sin teléfono ni correo capturado");
+      const dealLabel = liq.deal_type === "comision" ? "Comisión pura" : "Consignación";
+      return {
+        id: liq.id,
+        tipo: "liq" as const,
+        kindLabel: "Account of Sales",
+        number: liq.settlement_number,
+        date: liq.issue_date,
+        due: null,
+        terms: dealLabel,
+        reference: liq.po_number,
+        partyTitle: "Productor",
+        party: partyOf(liq),
+        shipTitle: null,
+        ship: null,
+        lines,
+        subtotal: n(liq.net_to_grower),
+        total: n(liq.final_payment),
+        // Guion ASCII a propósito: la helvetica de jsPDF no trae el signo menos
+        // tipográfico (U+2212) y lo imprime como comillas.
+        notes: `Ingreso bruto ${money2(n(liq.revenue))} - gastos del productor ${money2(n(liq.grower_expenses))} - comisión Plein ${money2(n(liq.commission))} = neto al productor ${money2(n(liq.net_to_grower))}. Adelantos recuperados: ${money2(n(liq.advance_recovered))}. Pago final al productor: ${money2(n(liq.final_payment))}.`,
+        warning: missing.length ? `LIQUIDACIÓN INCOMPLETA — ${missing.join("; ")}.` : null,
+        showPaca: false,
+        company,
+      };
+    }
     if (data.tipo === "cuenta") {
       const [sup] = await sql.query(
         `select id, name, contact_name, phone, email, city, country from suppliers where share_token = $1`,
