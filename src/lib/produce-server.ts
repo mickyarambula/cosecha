@@ -392,6 +392,20 @@ async function reverseCashMovementEffects(sql, mov) {
         ]);
       }
     }
+    if (mov.grower_payable_id) {
+      const [gp] = await sql.query(
+        `select total::text, paid::text from grower_payables where id = $1`,
+        [mov.grower_payable_id],
+      );
+      if (gp) {
+        const paid = Math.max(n(gp.paid) - amt, 0);
+        await sql.query(`update grower_payables set paid=$1, status=$2 where id=$3`, [
+          paid,
+          moneyStatus(n(gp.total), paid),
+          mov.grower_payable_id,
+        ]);
+      }
+    }
   }
   await sql.query(
     `update bank_lines set cash_movement_id = null, status = 'open' where cash_movement_id = $1`,
@@ -401,7 +415,7 @@ async function reverseCashMovementEffects(sql, mov) {
 
 async function cancelCashMovementById(sql, context, id, expectedKind, reason) {
   const [mov] = await sql.query(
-    `select id, folio, kind, invoice_id, supplier_bill_id, expense_id, amount::text, cancelled_at
+    `select id, folio, kind, invoice_id, supplier_bill_id, expense_id, grower_payable_id, amount::text, cancelled_at
        from cash_movements where id = $1`,
     [id],
   );
@@ -438,6 +452,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       inventoryValue: 0,
       cxc: 0,
       cxp: 0,
+      porRemitir: 0,
       cash: 0,
       corte: null,
       aging: [],
@@ -465,6 +480,12 @@ export const getDashboard = createServerFn({ method: "GET" })
       );
       const cxp = await one(
         `select coalesce(sum(total - paid), 0)::text as c from supplier_bills where status <> 'cancelled'`,
+      );
+      // Pasivo de comisión pura (remisiones a productores). Línea SEPARADA a
+      // propósito: la suma de arriba es el ancla del corte ($570,097.56) y no
+      // se toca — este dinero no es una compra a proveedor.
+      const porRemitir = await one(
+        `select coalesce(sum(total - paid), 0)::text as c from grower_payables where status <> 'cancelled'`,
       );
       const cash = await one(
         `select coalesce(sum(amount), 0)::text as c from cash_movements where cancelled_at is null`,
@@ -543,6 +564,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         inventoryValue,
         cxc,
         cxp,
+        porRemitir,
         cash,
         corte,
         aging: aging.map((r) => ({
@@ -2658,6 +2680,27 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
          values ($1,$2,$3,$4)`,
         [settlementId, e.category, e.notes ?? null, e.amount],
       );
+    // En comisión pura no hay bill (Plein nunca compró la fruta), así que el
+    // final_payment quedaría sin registrarse en ningún libro. Nace aquí como
+    // pasivo propio — dinero del productor en tránsito, por remitir. En
+    // consignación NO: ahí la obligación es la bill de siempre.
+    let payable_number: string | null = null;
+    if (s.deal_type === "comision" && final_payment > 0.009) {
+      payable_number = await nextCode(sql, "grower_payables", "payable_number", "REM-");
+      await sql.query(
+        `insert into grower_payables (payable_number, settlement_id, purchase_order_id, supplier_id, issue_date, total, notes)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          payable_number,
+          settlementId,
+          data.purchase_order_id,
+          po.supplier_id,
+          todayISO(),
+          final_payment,
+          `Por remitir al productor — liquidación ${settlement_number}`,
+        ],
+      );
+    }
     const [created] = await sql.query(
       `select settlement_number, share_token from grower_settlements where id = $1`,
       [settlementId],
@@ -2668,6 +2711,7 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
       share_token: created.share_token,
       advance_recovered,
       final_payment,
+      payable_number,
     };
   });
 export const applySettlement = createServerFn({ method: "POST" })
@@ -5054,13 +5098,16 @@ export const cancelSupplierBill = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const sql = await getSql();
     const [bill] = await sql.query(
-      `select id, bill_number, status, purchase_order_id, paid::text from supplier_bills where id = $1`,
+      `select id, bill_number, status, purchase_order_id, bill_type, paid::text from supplier_bills where id = $1`,
       [data.bill_id],
     );
     if (!bill) throw new Error("Factura de proveedor no encontrada");
     if (bill.status === "cancelled")
       throw new Error(`La factura ${bill.bill_number} ya está cancelada`);
-    if (bill.purchase_order_id == null)
+    // La marca explícita (0031) es el criterio principal — mismo que
+    // invoice_type='opening'. El chequeo de OC nula se queda como red de
+    // seguridad para cualquier bill sin OC que no traiga la marca.
+    if (bill.bill_type === "opening" || bill.purchase_order_id == null)
       throw new Error("Es una factura del corte de apertura — no se puede cancelar");
     if (n(bill.paid) > 0.009) {
       const folios = await findPaymentFolios(sql, "bill", bill.id);
@@ -5301,6 +5348,81 @@ export const registerPago = createServerFn({ method: "POST" })
       paid,
       status,
       remaining: n(bill.total) - paid,
+    };
+  });
+// Remisiones a productores (comisión pura): el pasivo que nace al emitir la
+// liquidación. Vive aparte de supplier_bills a propósito — no es una compra —
+// y por eso NO entra en la suma del KPI Payable (esa query es el ancla del
+// corte y no se toca).
+export const listGrowerPayables = createServerFn({ method: "GET" })
+  .middleware([moduleMiddleware("finance")])
+  .handler(async () => {
+    return (
+      await (
+        await getSql()
+      ).query(`
+    select gp.id, gp.payable_number, gp.status, gp.issue_date::text, gp.total::text, gp.paid::text, gp.notes,
+           gp.supplier_id, s.name as supplier_name,
+           gs.settlement_number, gs.share_token as settlement_token,
+           po.po_number
+    from grower_payables gp
+    join suppliers s on s.id = gp.supplier_id
+    join grower_settlements gs on gs.id = gp.settlement_id
+    join purchase_orders po on po.id = gp.purchase_order_id
+    order by gp.id desc
+  `)
+    ).map((r) => {
+      const total = n(r.total);
+      const paid = n(r.paid);
+      return { ...r, total, paid, saldo: Math.max(total - paid, 0) };
+    });
+  });
+export const registerPagoProductor = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      payable_id: z.number(),
+      amount: z.number().positive(),
+      notes: z.string().optional(),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [gp] = await sql.query(
+      `select gp.id, gp.payable_number, gp.status, gp.total::text, gp.paid::text, s.name as supplier_name
+       from grower_payables gp join suppliers s on s.id = gp.supplier_id where gp.id = $1`,
+      [data.payable_id],
+    );
+    if (!gp) throw new Error("Remisión al productor no encontrada");
+    if (gp.status === "cancelled") throw new Error(`La remisión ${gp.payable_number} está cancelada`);
+    const remaining = n(gp.total) - n(gp.paid);
+    if (data.amount > remaining + 0.009)
+      throw new Error(`El saldo de ${gp.payable_number} es ${remaining.toFixed(2)}`);
+    const paid = n(gp.paid) + data.amount;
+    const status = moneyStatus(n(gp.total), paid);
+    await sql.query(`update grower_payables set paid = $1, status = $2 where id = $3`, [
+      paid,
+      status,
+      gp.id,
+    ]);
+    const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
+    await sql.query(
+      `insert into cash_movements (folio, mov_date, kind, counterparty, grower_payable_id, amount, notes)
+       values ($1,$2,'pago',$3,$4,$5,$6)`,
+      [
+        folio,
+        todayISO(),
+        gp.supplier_name,
+        gp.id,
+        -data.amount,
+        data.notes || `Remisión ${gp.payable_number}`,
+      ],
+    );
+    return {
+      folio,
+      paid,
+      status,
+      remaining: n(gp.total) - paid,
     };
   });
 function money2(v: number) {
@@ -6925,6 +7047,7 @@ async function wipeLiveActivity(sql: any) {
   await sql.query(`update bank_lines set cash_movement_id = null`);
   await sql.query(`delete from bank_lines`);
   await sql.query(`delete from cash_movements where folio <> 'CORTE-CHASE'`);
+  await sql.query(`delete from grower_payables`);
   await sql.query(`delete from send_events`);
   await sql.query(`delete from shipments`);
   await sql.query(`delete from pallets`);
