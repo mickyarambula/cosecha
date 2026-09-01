@@ -70,6 +70,8 @@ function Page() {
   const [ship, setShip] = useState<{
     line_id: number;
     product_id: number;
+    pack_style_id: number | null;
+    calibre: string | null;
     pending: number;
     unit: string;
   } | null>(null);
@@ -684,6 +686,8 @@ function Page() {
                               setShip({
                                 line_id: line.id,
                                 product_id: line.product_id,
+                                pack_style_id: line.pack_style_id,
+                                calibre: line.calibre,
                                 pending: line.open,
                                 unit: line.unit,
                               });
@@ -740,13 +744,21 @@ function Page() {
               >
                 <option value="">Select lot</option>
                 {allLots
-                  .filter((l) => l.product_id === ship.product_id && l.asignable)
+                  .filter(
+                    (l) =>
+                      l.product_id === ship.product_id &&
+                      (ship.pack_style_id == null || l.pack_style_id === ship.pack_style_id) &&
+                      l.asignable,
+                  )
                   .map((l) => (
                     <option key={l.id} value={l.id}>
-                      {l.lot_number} · {qty(l.current_qty, l.unit)}
+                      {l.lot_number} · {l.pack_name} · {qty(l.current_qty, l.unit)}
                     </option>
                   ))}
               </Select>
+              {ship.calibre ? (
+                <p className="mt-1 text-xs text-muted">Solo lotes de {ship.calibre}.</p>
+              ) : null}
             </Field>
             <Field label="Location">
               <Select
