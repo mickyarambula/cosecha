@@ -6,7 +6,13 @@ import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
-import { cancelSupplierBill, listBills, registerPago } from "@/lib/produce-server";
+import {
+  cancelSupplierBill,
+  listBills,
+  listGrowerPayables,
+  registerPago,
+  registerPagoProductor,
+} from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { fecha, money, qty } from "@/lib/utils";
 
@@ -20,7 +26,9 @@ function matchTone(m: string) {
 
 function Page() {
   const bills = useAsync(() => listBills(), []);
+  const payables = useAsync(() => listGrowerPayables(), []);
   const [pago, setPago] = useState<{ id: number; number: string; saldo: number } | null>(null);
+  const [pagoRem, setPagoRem] = useState<{ id: number; number: string; saldo: number } | null>(null);
   const [amount, setAmount] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -46,6 +54,25 @@ function Page() {
       await bills.reload();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Could not record payment");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function pagarRemision(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pagoRem) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await registerPagoProductor({
+        data: { payable_id: pagoRem.id, amount: Number(amount) },
+      });
+      setPagoRem(null);
+      setMsg(`Pago ${r.folio} · saldo ${money(r.remaining)}`);
+      await payables.reload();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "No se pudo registrar el pago");
     } finally {
       setSaving(false);
     }
@@ -148,6 +175,76 @@ function Page() {
         ))}
       </div>
 
+      {(payables.data ?? []).length > 0 ? (
+        <div className="mt-8">
+          <div className="mb-3 flex items-end justify-between">
+            <div>
+              <h2 className="text-base font-semibold">Por remitir a productores</h2>
+              <p className="text-sm text-muted">
+                Dinero de cargas a comisión pura ya liquidadas — no es compra a proveedor, por eso
+                no entra en el balance de arriba.
+              </p>
+            </div>
+            <p className="text-sm font-semibold tabular-nums">
+              {money((payables.data ?? []).reduce((s, p) => s + p.saldo, 0))}
+            </p>
+          </div>
+          <div className="grid gap-3">
+            {(payables.data ?? []).map((p) => (
+              <Panel key={p.id} className="p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="font-mono text-xs text-muted">
+                      {p.payable_number} · {p.settlement_number} · {p.po_number}
+                    </p>
+                    <h3 className="font-display text-lg font-semibold">{p.supplier_name}</h3>
+                    <p className="text-xs text-muted">{fecha(p.issue_date)}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={orderTone(p.status)}>{orderLabel(p.status)}</Badge>
+                    <a
+                      className="text-xs text-link"
+                      href={`/doc/liq/${p.settlement_token}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Ver liquidación
+                    </a>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                  <div>
+                    <p className="text-xs text-muted">Total</p>
+                    <p className="tabular-nums font-medium">{money(p.total)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted">Pagado</p>
+                    <p className="tabular-nums">{money(p.paid)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted">Saldo</p>
+                    <p className="tabular-nums font-semibold">{money(p.saldo)}</p>
+                  </div>
+                </div>
+                {p.saldo > 0.009 && p.status !== "cancelled" ? (
+                  <div className="mt-3">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setPagoRem({ id: p.id, number: p.payable_number, saldo: p.saldo });
+                        setAmount(String(p.saldo));
+                      }}
+                    >
+                      Registrar pago
+                    </Button>
+                  </div>
+                ) : null}
+              </Panel>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {cancelBill ? (
         <CancelDialog
           title={`Cancel bill ${cancelBill.number}`}
@@ -170,6 +267,20 @@ function Page() {
             </Field>
             <Button type="submit" disabled={saving}>
               {saving ? "Saving…" : "Apply payment"}
+            </Button>
+          </form>
+        </Modal>
+      ) : null}
+
+      {pagoRem ? (
+        <Modal title={`Pagar ${pagoRem.number}`} onClose={() => setPagoRem(null)}>
+          <form className="grid gap-3" onSubmit={pagarRemision}>
+            <p className="text-sm text-muted">Saldo {money(pagoRem.saldo)}</p>
+            <Field label="Monto">
+              <Input required type="number" min="0.01" step="0.01" max={pagoRem.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
+            </Field>
+            <Button type="submit" disabled={saving}>
+              {saving ? "Guardando…" : "Registrar pago"}
             </Button>
           </form>
         </Modal>

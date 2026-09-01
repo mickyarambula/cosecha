@@ -2224,7 +2224,12 @@ function SettlementModal({
         },
       });
       await data.reload();
-      setMsg(`Liquidación ${r.settlement_number} emitida — pago final ${money(r.final_payment)}`);
+      setMsg(
+        `Liquidación ${r.settlement_number} emitida — pago final ${money(r.final_payment)}` +
+          (r.payable_number
+            ? ` · registrado por remitir como ${r.payable_number} (Finanzas → Payments)`
+            : ""),
+      );
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "No se pudo emitir la liquidación");
     } finally {

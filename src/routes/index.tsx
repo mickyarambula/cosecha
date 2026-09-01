@@ -124,7 +124,15 @@ function Home() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi label="Cash" value={loading || !data ? "—" : money(data.cash)} tone={!data ? undefined : data.cash >= 0 ? "ok" : "danger"} />
         <Kpi label="Receivable" value={loading || !data ? "—" : money(data.cxc)} />
-        <Kpi label="Payable" value={loading || !data ? "—" : money(data.cxp)} />
+        <Kpi
+          label="Payable"
+          value={loading || !data ? "—" : money(data.cxp)}
+          hint={
+            data && data.porRemitir > 0.009
+              ? `Por remitir a productores ${money(data.porRemitir)}`
+              : undefined
+          }
+        />
         <Kpi label="Inventory" value={loading || !data ? "—" : money(data.inventoryValue)} />
       </div>
       {data?.corte ? (
