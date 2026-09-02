@@ -29,10 +29,17 @@ export function waDigits(raw: string | null | undefined): string {
   return d;
 }
 
+/** Proveedor para OC/liquidación/cuenta del productor; Cliente para todo lo demás (factura, OV, estado de cuenta). */
+function partyLabelForDocs(docs: SendDocItem[]): string {
+  const tipo = docs[0]?.tipo;
+  return tipo === "oc" || tipo === "liq" || tipo === "cuenta" ? "Proveedor" : "Cliente";
+}
+
 function buildBody(opts: {
   title: string;
   number: string;
   partyName: string;
+  partyLabel: string;
   lines: SendLine[];
   total?: number;
   extra?: string;
@@ -46,7 +53,7 @@ function buildBody(opts: {
   return [
     `${COMPANY.legalName}`,
     `${opts.title} ${opts.number}`,
-    opts.partyName ? `Para: ${opts.partyName}` : "",
+    opts.partyName ? `${opts.partyLabel}: ${opts.partyName}` : "",
     "",
     items + more,
     total,
@@ -169,16 +176,18 @@ export function SendDocuments({
   const [pdfErr, setPdfErr] = useState("");
   const selected = docs.filter((d) => picked[`${d.tipo}-${d.id}`]);
   const subject = `${title} ${number} — ${COMPANY.legalName}`;
+  const partyLabel = partyLabelForDocs(docs);
   const body = useMemo(
     () =>
       buildBody({
         title,
         number,
         partyName,
+        partyLabel,
         lines,
         total,
       }),
-    [title, number, partyName, lines, total],
+    [title, number, partyName, partyLabel, lines, total],
   );
   const [note, setNote] = useState(body);
   const canSend = selected.length > 0 || extraLinks.length > 0 || docs.length === 0;
@@ -194,7 +203,7 @@ export function SendDocuments({
       pdf ?? {
         kindLabel: title,
         number,
-        partyTitle: "Para",
+        partyTitle: partyLabel,
         party: {
           name: partyName,
           lines: [toEmail.trim() || email || "", toPhone.trim() || phone || ""].filter(Boolean),
