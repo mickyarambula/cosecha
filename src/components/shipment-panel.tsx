@@ -499,7 +499,7 @@ export function ShipmentModal({
               <option value="C">°C</option>
             </Select>
           </Field>
-          <Field label="Estado">
+          <Field label="Estado del embarque">
             <Select
               value={form.status}
               onChange={(e) => setForm({ ...form, status: e.target.value })}

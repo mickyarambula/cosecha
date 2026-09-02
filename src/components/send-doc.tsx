@@ -41,12 +41,12 @@ function buildBody(opts: {
     .slice(0, 12)
     .map((l) => `• ${l.qty} ${l.unit || ""} ${l.name}${l.sku ? ` (${l.sku})` : ""}`.replace(/\s+/g, " ").trim())
     .join("\n");
-  const more = opts.lines.length > 12 ? `\n• +${opts.lines.length - 12} more` : "";
+  const more = opts.lines.length > 12 ? `\n• +${opts.lines.length - 12} más` : "";
   const total = opts.total != null ? `\nTotal: ${money(opts.total)}` : "";
   return [
     `${COMPANY.legalName}`,
     `${opts.title} ${opts.number}`,
-    opts.partyName ? `To: ${opts.partyName}` : "",
+    opts.partyName ? `Para: ${opts.partyName}` : "",
     "",
     items + more,
     total,
@@ -194,7 +194,7 @@ export function SendDocuments({
       pdf ?? {
         kindLabel: title,
         number,
-        partyTitle: "To",
+        partyTitle: "Para",
         party: {
           name: partyName,
           lines: [toEmail.trim() || email || "", toPhone.trim() || phone || ""].filter(Boolean),

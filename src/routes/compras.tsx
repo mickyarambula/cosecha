@@ -1609,6 +1609,7 @@ function EditOrderModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const billed = !!row.bill;
   const received = row.lines.some((l) => l.quantity_received > 0);
   const locked = billed;
@@ -1987,7 +1988,7 @@ function EditOrderModal({
           Cancel
         </Button>
         <Button disabled={saving || !lines.length} onClick={() => void save()}>
-          Save changes
+          {t("Save changes")}
         </Button>
       </div>
       {picker ? (

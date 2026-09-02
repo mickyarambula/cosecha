@@ -132,26 +132,26 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
 
         <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
           <div>
-            <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">Date</dt>
+            <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">Fecha</dt>
             <dd>{fechaDoc(doc.date)}</dd>
           </div>
           {doc.due ? (
             <div>
               <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">
-                {doc.tipo === "oc" ? "ETA" : "Due"}
+                {doc.tipo === "oc" ? "ETA" : "Vence"}
               </dt>
               <dd>{fechaDoc(doc.due)}</dd>
             </div>
           ) : null}
           {doc.terms ? (
             <div>
-              <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">Terms</dt>
+              <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">Términos</dt>
               <dd>{doc.terms}</dd>
             </div>
           ) : null}
           {doc.reference ? (
             <div>
-              <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">PO / SO</dt>
+              <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">OC / OV</dt>
               <dd className="font-mono">{doc.reference}</dd>
             </div>
           ) : null}
@@ -160,10 +160,10 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
         <table className="mt-8 w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-border text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-subtle">
-              <th className="pb-2 pr-3">Item</th>
-              <th className="pb-2 pr-3">Description</th>
-              <th className="pb-2 pr-3 text-right">Qty</th>
-              <th className="pb-2 pr-3 text-right">Unit price</th>
+              <th className="pb-2 pr-3">Artículo</th>
+              <th className="pb-2 pr-3">Descripción</th>
+              <th className="pb-2 pr-3 text-right">Cant.</th>
+              <th className="pb-2 pr-3 text-right">Precio unit.</th>
               <th className="pb-2 text-right">Total</th>
             </tr>
           </thead>
@@ -195,7 +195,7 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
 
         {doc.notes ? (
           <p className="mt-8 text-sm text-muted">
-            <span className="font-medium text-fg">Notes. </span>
+            <span className="font-medium text-fg">Notas. </span>
             {doc.notes}
           </p>
         ) : null}

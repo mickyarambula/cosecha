@@ -126,20 +126,20 @@ function pdfDate(raw: string | null | undefined): string {
   const d = new Date(String(raw).length <= 10 ? `${raw}T12:00:00` : raw);
   if (Number.isNaN(d.getTime())) return String(raw);
   const months = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
+    "ene",
+    "feb",
+    "mar",
+    "abr",
+    "may",
+    "jun",
+    "jul",
+    "ago",
+    "sep",
+    "oct",
+    "nov",
+    "dic",
   ];
-  return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
 export function safeFilename(raw: string): string {
@@ -182,7 +182,7 @@ export function fromPrintDoc(doc: {
     number: doc.number,
     date: doc.date,
     due: doc.due,
-    dueLabel: doc.tipo === "oc" ? "ETA" : "Due",
+    dueLabel: doc.tipo === "oc" ? "ETA" : "Vence",
     terms: doc.terms,
     reference: doc.reference,
     partyTitle: doc.partyTitle,
@@ -315,7 +315,7 @@ function buildPdf(
   const colW = (CONTENT_W - 18) / 2;
   const partyY = y;
   y = Math.max(
-    drawParty(pdf, M, partyY, input.partyTitle || "Bill to", input.party),
+    drawParty(pdf, M, partyY, input.partyTitle || "Facturar a", input.party),
     input.ship && input.shipTitle
       ? drawParty(pdf, M + colW + 18, partyY, input.shipTitle, input.ship)
       : partyY,
@@ -323,10 +323,10 @@ function buildPdf(
   y += 14;
 
   const facts: Array<[string, string]> = [
-    ["Date", pdfDate(input.date)],
-    input.due ? [input.dueLabel || "Due", pdfDate(input.due)] : null,
-    input.terms ? ["Terms", input.terms] : null,
-    input.reference ? ["PO / SO", input.reference] : null,
+    ["Fecha", pdfDate(input.date)],
+    input.due ? [input.dueLabel || "Vence", pdfDate(input.due)] : null,
+    input.terms ? ["Términos", input.terms] : null,
+    input.reference ? ["OC / OV", input.reference] : null,
   ].filter((x): x is [string, string] => Boolean(x));
   if (facts.length) {
     const fw = CONTENT_W / facts.length;
@@ -372,11 +372,11 @@ function buildPdf(
   pdf.setFontSize(7);
   pdf.setTextColor(...MUTED);
   const headY = y;
-  pdf.text("ITEM", M, headY);
-  pdf.text("DESCRIPTION", M + skuW, headY);
-  pdf.text("QTY", M + skuW + descW + qtyW, headY, { align: "right" });
+  pdf.text("ARTÍCULO", M, headY);
+  pdf.text("DESCRIPCIÓN", M + skuW, headY);
+  pdf.text("CANT.", M + skuW + descW + qtyW, headY, { align: "right" });
   if (hasPrice) {
-    pdf.text("UNIT PRICE", M + skuW + descW + qtyW + priceW, headY, { align: "right" });
+    pdf.text("PRECIO UNIT.", M + skuW + descW + qtyW + priceW, headY, { align: "right" });
     pdf.text("TOTAL", PAGE_W - M, headY, { align: "right" });
   }
   y += 6;
@@ -454,7 +454,7 @@ function buildPdf(
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(9);
     pdf.setTextColor(...INK);
-    pdf.text("Notes", M, y);
+    pdf.text("Notas", M, y);
     y += 12;
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(9);

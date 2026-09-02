@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { CustomerLocationModal } from "@/components/customer-location-form";
 import { createCustomer, listCustomerLocations, listCustomers, setDefaultCustomerLocation, updateCustomer } from "@/lib/produce-server";
+import { useT } from "@/lib/i18n";
 import { useAsync } from "@/lib/use-async";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -16,6 +17,7 @@ export const Route = createFileRoute("/clientes")({
 });
 
 function Page() {
+  const t = useT();
   const { data, loading, reload } = useAsync(() => listCustomers(), []);
   const [sel, setSel] = useState<number | null>(null);
   const [q, setQ] = useState("");
@@ -337,7 +339,7 @@ function Page() {
                 Cancel
               </Button>
               <Button disabled={saving} onClick={() => void save()}>
-                Save changes
+                {t("Save changes")}
               </Button>
             </div>
           </div>

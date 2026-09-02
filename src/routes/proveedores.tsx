@@ -13,12 +13,14 @@ import {
   listSuppliers,
   updateSupplier,
 } from "@/lib/produce-server";
+import { useT } from "@/lib/i18n";
 import { useAsync } from "@/lib/use-async";
 import { cn, errorMessage, fecha, money, pct, todayISO } from "@/lib/utils";
 
 export const Route = createFileRoute("/proveedores")({ component: Page });
 
 function Page() {
+  const t = useT();
   const { data, loading, reload } = useAsync(() => listSuppliers(), []);
   const lots = useAsync(() => listLots(), []);
   const [sel, setSel] = useState<number | null>(null);
@@ -177,7 +179,7 @@ function Page() {
     <div className="flex min-h-[calc(100dvh-7rem)]">
       <aside className="flex w-full max-w-xs shrink-0 flex-col border-r border-border bg-surface">
         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-          <p className="text-sm font-semibold">Vendors</p>
+          <p className="text-sm font-semibold">{t("Vendors")}</p>
           <div className="flex gap-2">
             <Button size="sm" variant="outline">
               Export all
@@ -514,7 +516,7 @@ function Page() {
                   Cancel
                 </Button>
                 <Button disabled={saving} onClick={() => void save()}>
-                  Save changes
+                  {t("Save changes")}
                 </Button>
               </div>
             </div>

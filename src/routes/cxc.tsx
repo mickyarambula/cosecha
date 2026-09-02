@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
+import { useT } from "@/lib/i18n";
 import { cancelInvoice, listCustomers, listInvoices, registerCustomerPayment } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { aging30, fecha, money, PAY_METHODS, todayISO } from "@/lib/utils";
@@ -21,6 +22,7 @@ export const Route = createFileRoute("/cxc")({
 });
 
 function Page() {
+  const t = useT();
   const { tab } = Route.useSearch();
   const inv = useAsync(() => listInvoices(), []);
   const customers = useAsync(() => listCustomers(), []);
@@ -157,7 +159,7 @@ function Page() {
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
                 <th className="px-3 py-2">Customer</th>
-                <th className="px-3 py-2">Statement delivery</th>
+                <th className="px-3 py-2">{t("Statement delivery")}</th>
                 <th className="px-3 py-2">Terms</th>
                 <th className="px-3 py-2 text-right">Overdue</th>
                 <th className="px-3 py-2 text-right">Balance</th>
@@ -321,7 +323,7 @@ function Page() {
         </FilterField>
         <FilterField label="Customer">
           <Select value={customerFilter} onChange={(e) => setCustomerFilter(e.target.value)}>
-            <option value="">All customers</option>
+            <option value="">{t("All customers")}</option>
             {(customers.data ?? []).map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}

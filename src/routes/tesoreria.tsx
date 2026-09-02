@@ -84,7 +84,7 @@ function Page() {
                 <th className="px-4 py-3 font-medium">Folio</th>
                 <th className="px-4 py-3 font-medium">Date</th>
                 <th className="px-4 py-3 font-medium">Type</th>
-                <th className="px-4 py-3 font-medium">Counterparty</th>
+                <th className="px-4 py-3 font-medium">{t("Counterparty")}</th>
                 <th className="px-4 py-3 text-right font-medium">Amount</th>
                 <th className="px-4 py-3" />
               </tr>
