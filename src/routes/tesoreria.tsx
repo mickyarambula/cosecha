@@ -82,10 +82,10 @@ function Page() {
             <thead className="border-b border-border text-xs text-muted">
               <tr>
                 <th className="px-4 py-3 font-medium">Folio</th>
-                <th className="px-4 py-3 font-medium">Date</th>
-                <th className="px-4 py-3 font-medium">Type</th>
+                <th className="px-4 py-3 font-medium">{t("Date")}</th>
+                <th className="px-4 py-3 font-medium">{t("Type")}</th>
                 <th className="px-4 py-3 font-medium">{t("Counterparty")}</th>
-                <th className="px-4 py-3 text-right font-medium">Amount</th>
+                <th className="px-4 py-3 text-right font-medium">{t("Amount")}</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -117,7 +117,7 @@ function Page() {
                   <td className="px-4 py-3 text-right">
                     {!m.cancelled_at && m.folio !== "CORTE-CHASE" && (m.kind === "cobro" || m.kind === "pago") ? (
                       <Button size="sm" variant="outline" onClick={() => setCancelMov({ id: m.id, folio: m.folio, kind: m.kind })}>
-                        Cancel
+                        {t("Cancel")}
                       </Button>
                     ) : null}
                   </td>
@@ -129,7 +129,7 @@ function Page() {
       </Panel>
       {cancelMov ? (
         <CancelDialog
-          title={`Cancel ${cancelMov.folio}`}
+          title={`Cancelar ${cancelMov.folio}`}
           subtitle="This reverses what it paid — the invoice/bill balance, and any matched bank line."
           onClose={() => setCancelMov(null)}
           onConfirm={async (reason) => {
@@ -282,7 +282,7 @@ function Reconcile({ cash }: { cash: { id: number; folio: string; mov_date: stri
       setForm({ ...form, description: "", amount: "" });
       await lines.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not add");
+      setMsg(err instanceof Error ? err.message : "No se pudo agregar");
     } finally {
       setSaving(false);
     }
@@ -392,7 +392,7 @@ function Reconcile({ cash }: { cash: { id: number; folio: string; mov_date: stri
                       setMatchFor(null);
                       return lines.reload();
                     })
-                    .catch((err) => setMsg(err instanceof Error ? err.message : "Could not match"));
+                    .catch((err) => setMsg(err instanceof Error ? err.message : "No se pudo cuadrar"));
                 }}
               >
                 <span>

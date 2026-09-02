@@ -432,7 +432,7 @@ function PackOutTab() {
       setMsg(`${r.pack_number} → ${r.lot_number}`);
       await Promise.all([lots.reload(), history.reload()]);
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not pack");
+      setMsg(err instanceof Error ? err.message : "No se pudo reempacar");
     } finally {
       setSaving(false);
     }

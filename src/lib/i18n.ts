@@ -987,6 +987,126 @@ const ES: Record<string, string> = {
   Totals: "Totales",
   "Vendor credits appear when a return or overpayment is recorded. Apply them from":
     "Los créditos de proveedor aparecen cuando se registra una devolución o un pago de más. Aplícalos desde",
+
+  // Phase 3 — cxp.tsx
+  "No vendor invoices yet. Receive a purchase and capture its invoice.":
+    "Aún no hay facturas de proveedor. Recibe una compra y captura su factura.",
+  Matched: "Cuadrado",
+  "Short vs ordered": "Faltante vs. pedido",
+  "Over received": "Recibido de más",
+  Ordered: "Pedido",
+  Invoiced: "Facturado",
+  "Amount paid": "Pagado",
+  "Apply payment": "Aplicar pago",
+  "This does not touch inventory — it only voids the payable document.":
+    "Esto no afecta el inventario — solo anula el documento del pasivo.",
+
+  // Phase 3 — cxc.tsx
+  "Sales to terms customers": "Ventas a clientes de crédito",
+  "Sales to cash customers": "Ventas a clientes de contado",
+  "Sales to Terms Customers": "Ventas a clientes de crédito",
+  "Sales to Cash Customers": "Ventas a clientes de contado",
+  "AR Total": "Total CxC",
+  "AR Day Total": "Total CxC del día",
+  "AR Balance": "Saldo CxC",
+  "As of": "Al",
+  Applied: "Aplicado",
+  Unused: "Sin usar",
+  "No credit invoices yet. Create one from a sales order.":
+    "Aún no hay notas de crédito. Crea una desde una orden de venta.",
+  "Customer receipts post here after you record a payment against invoices. Cash, check, card and ACH are supported.":
+    "Los cobros de clientes se registran aquí al aplicar un pago contra facturas. Se admite efectivo, cheque, tarjeta y ACH.",
+  "C PO #": "PO cliente #",
+  Rep: "Vend.",
+  Due: "Vence",
+  "Rem. balance": "Saldo rest.",
+  "New Customer Payment": "Nuevo pago de cliente",
+  "Customer is overpaying {amount}. An overpayment tag will be created.":
+    "El cliente está pagando de más {amount}. Se creará una etiqueta de sobrepago.",
+  "Inventory is not touched — invoicing doesn't move stock. This only voids the billing document.":
+    "El inventario no se toca — facturar no mueve existencia. Esto solo anula el documento de facturación.",
+  "Total sales cash": "Ventas de contado",
+  "Total sales terms accounts": "Ventas a crédito",
+
+  // Phase 3 — cuentas.tsx
+  "Accounting Automations": "Automatizaciones contables",
+  "Accounting in Cosecha posts as you create sales, purchases, expenses and payments. Map the default accounts once — every document afterwards writes the entries.":
+    "La contabilidad de Cosecha registra al crear ventas, compras, gastos y pagos. Mapea las cuentas default una vez — cada documento después escribe los movimientos.",
+  "BillPay & Collections": "Pagos y cobros",
+  Collections: "Cobros",
+  BillPay: "Pagos",
+  "Save mappings": "Guardar mapeos",
+  "Expense Accounts": "Cuentas de gasto",
+  "Select the account used for each expense category. Freight must map to Freight Expenses or COGS.":
+    "Elige la cuenta que se usa para cada categoría de gasto. El flete debe mapear a Gastos de flete o a Costo de ventas.",
+  Workspace: "Espacio de trabajo",
+  "Income Statement Accounts": "Cuentas del estado de resultados",
+  "Revenue accounts": "Cuentas de ingreso",
+  "Expense accounts": "Cuentas de gasto",
+  "Balance Sheet Accounts": "Cuentas del balance general",
+  "Asset accounts": "Cuentas de activo",
+  "Liability accounts": "Cuentas de pasivo",
+  "Equity accounts": "Cuentas de capital",
+  "Total starting balance": "Saldo inicial total",
+  "Add new revenue account": "Agregar cuenta de ingreso",
+  "Add new expense account": "Agregar cuenta de gasto",
+  "Add new asset account": "Agregar cuenta de activo",
+  "Add new liability account": "Agregar cuenta de pasivo",
+  "Add new equity account": "Agregar cuenta de capital",
+  "Tracking start date": "Fecha de inicio de seguimiento",
+  "Current balance": "Saldo actual",
+
+  // Phase 3 — tesoreria.tsx
+  Movements: "Movimientos",
+  Receipt: "Recibo",
+  Payment: "Pago",
+  Adjustment: "Ajuste",
+  "This reverses what it paid — the invoice/bill balance, and any matched bank line.":
+    "Esto revierte lo que pagó — el saldo de la factura/cuenta, y cualquier movimiento bancario cuadrado.",
+
+  // Phase 3 — clientes.tsx
+  "+ Add contact": "+ Agregar contacto",
+  "+ Add destination": "+ Agregar destino",
+  "+ New price sheet": "+ Nueva lista de precio",
+  "Browse files": "Buscar archivos",
+  "Company name *": "Nombre de la empresa *",
+  "Address 1": "Dirección 1",
+  "Address 2": "Dirección 2",
+  "Zip code": "C.P.",
+  "Customer options": "Opciones del cliente",
+  "Delivery destinations": "Destinos de entrega",
+  Disable: "Deshabilitar",
+  "Display country of origin on invoices, BOLs, and sales confirmations for this customer":
+    "Mostrar el país de origen en facturas, BOLs y confirmaciones de venta para este cliente",
+  "Display SKUs on invoices, BOLs, and sales confirmations for this customer":
+    "Mostrar los SKUs en facturas, BOLs y confirmaciones de venta para este cliente",
+  "Documents sent to this contact (0)": "Documentos enviados a este contacto (0)",
+  "Drag and drop files here": "Arrastra y suelta archivos aquí",
+  Enabled: "Habilitado",
+  or: "o",
+  "Select a customer on the left panel to get more details": "Elige un cliente en el panel izquierdo para ver más detalles",
+  "Set as default": "Marcar como predeterminado",
+  "This customer is": "Este cliente está",
+  "Pick Tickets": "Pick Tickets",
+  "Sales Confirmations": "Confirmaciones de venta",
+  BOLs: "BOLs",
+
+  // Phase 3 — proveedores.tsx
+  "+ Add": "+ Agregar",
+  "Select a vendor to edit details": "Elige un proveedor para editar sus datos",
+  "Edit Vendor": "Editar proveedor",
+  "Vendor is enabled and will be visible when creating orders":
+    "El proveedor está activo y será visible al crear órdenes",
+  "Goods vendor": "Proveedor de mercancía",
+  "Services / Expenses vendor": "Proveedor de servicios / gastos",
+  "Shipping Info": "Datos de envío",
+  "Billing Info": "Datos de facturación",
+  Returns: "Devoluciones",
+  Original: "Original",
+  Remaining: "Restante",
+  "Expenses for this vendor live in Finance → Expenses.": "Los gastos de este proveedor viven en Finanzas → Gastos.",
+  "No returns recorded for this vendor.": "No hay devoluciones registradas para este proveedor.",
+  "Delete vendor": "Eliminar proveedor",
 };
 
 export function translate(locale: Locale, key: string | number | null | undefined, vars?: Vars): string {

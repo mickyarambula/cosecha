@@ -1065,7 +1065,9 @@ function VendorPayModal({
             <Field label="Method">
               <Select value={method} onChange={(e) => setMethod(e.target.value)}>
                 {PAY_METHODS.map((m) => (
-                  <option key={m}>{m}</option>
+                  <option key={m} value={m}>
+                    {t(m)}
+                  </option>
                 ))}
               </Select>
             </Field>
