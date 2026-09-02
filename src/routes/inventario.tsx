@@ -105,10 +105,10 @@ function Page() {
     try {
       await wasteLot({ data: { lot_id: waste.id, quantity: Number(waste.qty), reason: waste.reason } });
       setWaste(null);
-      setMsg("Units marked as wasted");
+      setMsg(t("Units marked as wasted"));
       await lots.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not waste");
+      setMsg(err instanceof Error ? err.message : t("Could not waste"));
     } finally {
       setSaving(false);
     }
@@ -120,7 +120,7 @@ function Page() {
         <TabActions>
           <Button size="sm" variant="outline" asChild>
             <Link to="/productos" search={{ tab: "catalog" }}>
-              New product / SKU
+              {t("New product / SKU")}
             </Link>
           </Button>
         </TabActions>
@@ -176,15 +176,15 @@ function Page() {
     return (
       <div>
         {oversold.length === 0 ? (
-          <p className="p-8 text-center text-muted">No oversold inventory items.</p>
+          <p className="p-8 text-center text-muted">{t("No oversold inventory items.")}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
                 <tr>
-                  <th className="px-3 py-2">Item</th>
-                  <th className="px-3 py-2 text-right">Available to sell</th>
-                  <th className="px-3 py-2 text-right">Unlinked sales</th>
+                  <th className="px-3 py-2">{t("Item")}</th>
+                  <th className="px-3 py-2 text-right">{t("Available to sell")}</th>
+                  <th className="px-3 py-2 text-right">{t("Unlinked sales")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -209,9 +209,9 @@ function Page() {
   if (tab === "fulfillment") {
     return (
       <div className="p-6">
-        <p className="text-sm text-muted">Open sales orders waiting on lot assignment.</p>
+        <p className="text-sm text-muted">{t("Open sales orders waiting on lot assignment.")}</p>
         <Link to="/ventas" className="mt-3 inline-block text-sm text-link">
-          Open sales orders
+          {t("Open sales orders")}
         </Link>
       </div>
     );
@@ -229,11 +229,11 @@ function Page() {
           <table className="w-full text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
               <tr>
-                <th className="px-3 py-2">Product</th>
-                <th className="px-3 py-2">Unit</th>
+                <th className="px-3 py-2">{t("Product")}</th>
+                <th className="px-3 py-2">{t("Unit")}</th>
                 <th className="px-3 py-2">SKU</th>
                 <th className="px-3 py-2 text-right">O/H</th>
-                <th className="px-3 py-2">Lots</th>
+                <th className="px-3 py-2">{t("Lots")}</th>
               </tr>
             </thead>
             <tbody>
@@ -279,19 +279,19 @@ function Page() {
     return (
       <div>
         <p className="px-5 py-3 text-sm text-muted">
-          Reconcile on-hand vs physical. If units were lost or damaged, waste them so O/H matches the cooler.
+          {t("Reconcile on-hand vs physical. If units were lost or damaged, waste them so O/H matches the cooler.")}
         </p>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
-                <th className="px-3 py-2">Lot #</th>
-                <th className="px-3 py-2">Item</th>
-                <th className="px-3 py-2">Vendor</th>
-                <th className="px-3 py-2">Received</th>
+                <th className="px-3 py-2">{t("Lot #")}</th>
+                <th className="px-3 py-2">{t("Item")}</th>
+                <th className="px-3 py-2">{t("Vendor")}</th>
+                <th className="px-3 py-2">{t("Received")}</th>
                 <th className="px-3 py-2 text-right">ATS</th>
                 <th className="px-3 py-2 text-right">O/H</th>
-                <th className="px-3 py-2">Source</th>
+                <th className="px-3 py-2">{t("Source")}</th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>
@@ -314,7 +314,7 @@ function Page() {
                       disabled={l.current_qty <= 0}
                       onClick={() => setWaste({ id: l.id, number: l.lot_number, oh: l.current_qty, qty: "1", reason: "Quality dump" })}
                     >
-                      Waste units
+                      {t("Waste units")}
                     </Button>
                   </td>
                 </tr>
@@ -328,7 +328,7 @@ function Page() {
   }
 
   if (tab === "inactive") {
-    return <div className="p-8 text-center text-sm text-muted">No inactive inventory items.</div>;
+    return <div className="p-8 text-center text-sm text-muted">{t("No inactive inventory items.")}</div>;
   }
 
   return (
@@ -336,7 +336,7 @@ function Page() {
       <TabActions>
         <Button size="sm" variant="outline" asChild>
           <Link to="/productos" search={{ tab: "catalog" }}>
-            New product / SKU
+            {t("New product / SKU")}
           </Link>
         </Button>
       </TabActions>
@@ -361,13 +361,13 @@ function Page() {
         </FilterField>
         <FilterField label="On hand">
           <Select value={oh} onChange={(e) => setOh(e.target.value)}>
-            <option value="all">All items</option>
-            <option value="positive">Positive</option>
+            <option value="all">{t("All items")}</option>
+            <option value="positive">{t("Positive")}</option>
           </Select>
         </FilterField>
         <div className="ml-auto flex gap-2">
           <Button size="sm" variant="outline">
-            Export
+            {t("Export")}
           </Button>
         </div>
       </FilterRow>
@@ -376,16 +376,16 @@ function Page() {
           <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
             <tr>
               <th className="w-8 px-3 py-2" />
-              <th className="px-3 py-2">Product</th>
-              <th className="px-3 py-2">Unit</th>
-              <th className="px-3 py-2">Label</th>
-              <th className="px-3 py-2 text-right">Avail. to sell</th>
+              <th className="px-3 py-2">{t("Product")}</th>
+              <th className="px-3 py-2">{t("Unit")}</th>
+              <th className="px-3 py-2">{t("Label")}</th>
+              <th className="px-3 py-2 text-right">{t("Avail. to sell")}</th>
               <th className="px-3 py-2 text-right">O/H</th>
-              <th className="px-3 py-2 text-right">Inc.</th>
-              <th className="px-3 py-2 text-right">Allo.</th>
-              <th className="px-3 py-2 text-right">Unl. sales</th>
+              <th className="px-3 py-2 text-right">{t("Inc.")}</th>
+              <th className="px-3 py-2 text-right">{t("Allo.")}</th>
+              <th className="px-3 py-2 text-right">{t("Unl. sales")}</th>
               <th className="px-3 py-2">B/E</th>
-              <th className="px-3 py-2">Price</th>
+              <th className="px-3 py-2">{t("Price")}</th>
             </tr>
           </thead>
           <tbody>
@@ -412,7 +412,7 @@ function Page() {
                     <td className="px-3 py-2 text-muted">—</td>
                     <td className="px-3 py-2 text-right font-semibold">
                       {ats}
-                      {low ? <span className="ml-2 rounded-full bg-danger/12 px-1.5 py-0.5 text-[10px] font-medium text-danger">Low</span> : null}
+                      {low ? <span className="ml-2 rounded-full bg-danger/12 px-1.5 py-0.5 text-[10px] font-medium text-danger">{t("Low")}</span> : null}
                     </td>
                     <td className="px-3 py-2 text-right">{ohQty}</td>
                     <td className="px-3 py-2 text-right">{inc}</td>
@@ -430,17 +430,17 @@ function Page() {
                   {expanded ? (
                     <tr className="bg-bg">
                       <td colSpan={11} className="px-4 py-3">
-                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Lots</p>
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">{t("Lots")}</p>
                         <table className="w-full text-left text-xs">
                           <thead className="text-muted">
                             <tr>
-                              <th className="py-1">Vendor</th>
-                              <th>Lot #</th>
-                              <th>Origin</th>
-                              <th>Source</th>
-                              <th>Cost/unit</th>
-                              <th>Received</th>
-                              <th className="text-right">Avail. to sell</th>
+                              <th className="py-1">{t("Vendor")}</th>
+                              <th>{t("Lot #")}</th>
+                              <th>{t("Origin")}</th>
+                              <th>{t("Source")}</th>
+                              <th>{t("Cost/unit")}</th>
+                              <th>{t("Received")}</th>
+                              <th className="text-right">{t("Avail. to sell")}</th>
                               <th className="text-right">O/H</th>
                               <th />
                             </tr>
@@ -473,7 +473,7 @@ function Page() {
                                     variant="outline"
                                     onClick={() => setWaste({ id: l.id, number: l.lot_number, oh: l.current_qty, qty: "1", reason: "Quality dump" })}
                                   >
-                                    Waste
+                                    {t("Waste")}
                                   </Button>
                                 </td>
                               </tr>
@@ -506,7 +506,7 @@ function Page() {
             </Field>
             {calidadErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{calidadErr}</p> : null}
             <Button type="submit" disabled={saving}>
-              Save
+              {t("Save")}
             </Button>
           </form>
         </Modal>
@@ -552,6 +552,7 @@ function LotsBoard({
   onHold: (l: LotRow) => Promise<void>;
   onClose: (l: LotRow) => Promise<void>;
 }) {
+  const t = useT();
   const groups = useMemo(() => {
     const map = new Map<string, { po: string | null; vendor: string | null; received: string | null; lots: LotRow[] }>();
     for (const l of lots) {
@@ -580,10 +581,10 @@ function LotsBoard({
         return (
           <div key={g.po || "x"} className="mb-6 border-b border-border pb-4">
             <div className="flex flex-wrap items-center gap-3 bg-primary px-4 py-2 text-primary-fg">
-              <span className="font-semibold">PO {g.po ? `#${poShort(g.po)}` : "—"}</span>
+              <span className="font-semibold">{t("PO")} {g.po ? `#${poShort(g.po)}` : "—"}</span>
               <span className="text-sm">{g.vendor}</span>
-              <span className="text-sm">Received {fecha(g.received)}</span>
-              <span className="ml-auto text-sm">Inv. units {units} · T. sales {money(revenue)}</span>
+              <span className="text-sm">{t("Received")} {fecha(g.received)}</span>
+              <span className="ml-auto text-sm">{t("Inv. units")} {units} · {t("T. sales")} {money(revenue)}</span>
             </div>
             <div className="grid grid-cols-2 gap-2 px-4 py-3 sm:grid-cols-5">
               <Kpi label="Lots" value={String(g.lots.length)} />
@@ -596,17 +597,17 @@ function LotsBoard({
               <table className="w-full min-w-[960px] text-left text-sm">
                 <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
                   <tr>
-                    <th className="px-3 py-2">Lot #</th>
-                    <th className="px-3 py-2">Product</th>
-                    <th className="px-3 py-2 text-right">Total</th>
+                    <th className="px-3 py-2">{t("Lot #")}</th>
+                    <th className="px-3 py-2">{t("Product")}</th>
+                    <th className="px-3 py-2 text-right">{t("Total")}</th>
                     <th className="px-3 py-2 text-right">ATS</th>
                     <th className="px-3 py-2 text-right">O/H</th>
-                    <th className="px-3 py-2 text-right">Waste</th>
+                    <th className="px-3 py-2 text-right">{t("Waste")}</th>
                     <th className="px-3 py-2 text-right">RTS</th>
-                    <th className="px-3 py-2 text-right">Sold</th>
-                    <th className="px-3 py-2">Avg $/unit</th>
-                    <th className="px-3 py-2">T. sales</th>
-                    <th className="px-3 py-2">Cost/U</th>
+                    <th className="px-3 py-2 text-right">{t("Sold")}</th>
+                    <th className="px-3 py-2">{t("Avg $/unit")}</th>
+                    <th className="px-3 py-2">{t("T. sales")}</th>
+                    <th className="px-3 py-2">{t("Cost/U")}</th>
                     <th className="px-3 py-2" />
                   </tr>
                 </thead>
@@ -635,13 +636,13 @@ function LotsBoard({
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap gap-1">
                           <Button size="sm" variant="outline" onClick={() => onWaste(l)}>
-                            Waste
+                            {t("Waste")}
                           </Button>
                           <Button size="sm" variant="outline" onClick={() => void onHold(l)}>
-                            {l.held ? "Unhold" : "Hold"}
+                            {l.held ? t("Unhold") : t("Hold")}
                           </Button>
                           <Button size="sm" onClick={() => void onClose(l)}>
-                            Close lot
+                            {t("Close lot")}
                           </Button>
                         </div>
                       </td>
@@ -670,6 +671,7 @@ function LotDetailModal({
   onHold: (l: LotRow) => Promise<void>;
   onCloseLot: (l: LotRow) => Promise<void>;
 }) {
+  const t = useT();
   const trace = useAsync(() => (lot ? getLotTrace({ data: { lotId: lot.id } }) : Promise.resolve(null)), [lot?.id]);
   if (!lot) return null;
   const sales = trace.data?.sales ?? [];
@@ -678,47 +680,47 @@ function LotDetailModal({
   const be = lot.unit_cost;
   const profit = revenue - be * lot.original_qty;
   return (
-    <Modal wide title={`Lot: ${lot.lot_number}`} onClose={onClose}>
+    <Modal wide title={`${t("Lot")}: ${lot.lot_number}`} onClose={onClose}>
       <div className="mb-3 flex justify-end">
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" className="size-4 accent-action" checked={lot.held} onChange={() => void onHold(lot)} />
-          Hold lot
+          {t("Hold lot")}
         </label>
       </div>
       <div className="grid gap-2 rounded-md border border-border p-3 text-sm sm:grid-cols-4 lg:grid-cols-8">
-        <Info label="Source" value={lot.po_number ? `PO #${poShort(lot.po_number)}` : "—"} />
-        <Info label="Recvd date" value={fecha(lot.received_date)} />
-        <Info label="Product" value={lot.product_name} />
-        <Info label="Unit" value={lot.pack_name || lot.unit} />
-        <Info label="Vendor" value={lot.supplier_name || "—"} />
-        <Info label="Total qty" value={String(lot.original_qty)} />
-        <Info label="Available to sell" value={String(lot.asignable ? lot.current_qty : 0)} />
-        <Info label="Waste" value={String(lot.waste_qty)} />
+        <Info label={t("Source")} value={lot.po_number ? `PO #${poShort(lot.po_number)}` : "—"} />
+        <Info label={t("Recvd date")} value={fecha(lot.received_date)} />
+        <Info label={t("Product")} value={lot.product_name} />
+        <Info label={t("Unit")} value={lot.pack_name || lot.unit} />
+        <Info label={t("Vendor")} value={lot.supplier_name || "—"} />
+        <Info label={t("Total qty")} value={String(lot.original_qty)} />
+        <Info label={t("Available to sell")} value={String(lot.asignable ? lot.current_qty : 0)} />
+        <Info label={t("Waste")} value={String(lot.waste_qty)} />
       </div>
       <div className="mt-3 grid gap-2 lg:grid-cols-2">
         <div className="rounded-md border border-border p-3">
-          <p className="text-xs font-semibold uppercase text-muted">Lot expenses</p>
-          <p className="mt-1 text-sm text-muted">Allocated from the purchase order. Open settlement to edit.</p>
+          <p className="text-xs font-semibold uppercase text-muted">{t("Lot expenses")}</p>
+          <p className="mt-1 text-sm text-muted">{t("Allocated from the purchase order. Open settlement to edit.")}</p>
         </div>
         <div className="rounded-md border border-border p-3">
-          <p className="text-xs font-semibold uppercase text-muted">Performance</p>
+          <p className="text-xs font-semibold uppercase text-muted">{t("Performance")}</p>
           <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
-            <Info label="Break-even/unit" value={be ? money(be, 4) : "PAS"} />
-            <Info label="Qty sold" value={String(lot.sold_qty)} />
-            <Info label="Avg price/unit" value={avg ? money(avg) : "—"} />
-            <Info label="Revenue total" value={money(revenue)} />
-            <Info label="Profit total" value={money(profit)} />
-            <Info label="Profit as %" value={revenue ? pct((profit / revenue) * 100) : "—"} />
+            <Info label={t("Break-even/unit")} value={be ? money(be, 4) : "PAS"} />
+            <Info label={t("Qty sold")} value={String(lot.sold_qty)} />
+            <Info label={t("Avg price/unit")} value={avg ? money(avg) : "—"} />
+            <Info label={t("Revenue total")} value={money(revenue)} />
+            <Info label={t("Profit total")} value={money(profit)} />
+            <Info label={t("Profit as %")} value={revenue ? pct((profit / revenue) * 100) : "—"} />
           </div>
         </div>
       </div>
-      <p className="mt-4 mb-2 text-sm font-semibold">Lot Sales</p>
+      <p className="mt-4 mb-2 text-sm font-semibold">{t("Lot Sales")}</p>
       <table className="w-full text-left text-sm">
         <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
           <tr>
             {["SO #", "Inv #", "Customer", "Requested date", "Lot qty", "Price per unit", "Lot revenue"].map((h) => (
               <th key={h} className="px-2 py-2">
-                {h}
+                {t(h)}
               </th>
             ))}
           </tr>
@@ -738,7 +740,7 @@ function LotDetailModal({
           {sales.length === 0 ? (
             <tr>
               <td colSpan={7} className="px-2 py-4 text-center text-muted">
-                No sales from this lot yet.
+                {t("No sales from this lot yet.")}
               </td>
             </tr>
           ) : null}
@@ -746,10 +748,10 @@ function LotDetailModal({
       </table>
       <div className="mt-4 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" onClick={() => onWaste(lot)}>
-          Waste from this lot
+          {t("Waste from this lot")}
         </Button>
         <Button size="sm" onClick={() => void onCloseLot(lot)}>
-          Close lot
+          {t("Close lot")}
         </Button>
       </div>
     </Modal>
@@ -776,28 +778,31 @@ function WasteModal({
   saving: boolean;
   onSubmit: (e: React.FormEvent) => void;
 }) {
+  const t = useT();
   return (
-    <Modal title="Mark units as wasted" onClose={() => setWaste(null)}>
+    <Modal title={t("Mark units as wasted")} onClose={() => setWaste(null)}>
       <form className="grid gap-3" onSubmit={onSubmit}>
         <p className="text-sm text-muted">
-          Lot {waste.number} · O/H {waste.oh}
+          {t("Lot")} {waste.number} · O/H {waste.oh}
         </p>
-        <Field label="Units to waste">
+        <Field label={t("Units to waste")}>
           <Input value={waste.qty} onChange={(e) => setWaste({ ...waste, qty: e.target.value })} />
         </Field>
-        <Field label="Waste reason">
+        <Field label={t("Waste reason")}>
           <Select value={waste.reason} onChange={(e) => setWaste({ ...waste, reason: e.target.value })}>
             {WASTE_REASONS.map((r) => (
-              <option key={r}>{r}</option>
+              <option key={r} value={r}>
+                {t(r)}
+              </option>
             ))}
           </Select>
         </Field>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={() => setWaste(null)}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button type="submit" disabled={saving}>
-            Waste units
+            {t("Waste units")}
           </Button>
         </div>
       </form>
@@ -821,18 +826,19 @@ function PalletTab({
   }[];
   onSave: (id: number, fields: { units_per_pallet?: number; units_per_layer?: number; weight_per_pallet?: number }) => Promise<void>;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState<Record<number, { upp: string; upl: string; wpp: string }>>({});
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[800px] text-left text-sm">
         <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
           <tr>
-            <th className="px-3 py-2">Product</th>
-            <th className="px-3 py-2">Unit</th>
+            <th className="px-3 py-2">{t("Product")}</th>
+            <th className="px-3 py-2">{t("Unit")}</th>
             <th className="px-3 py-2">SKU</th>
-            <th className="px-3 py-2">Units per pallet</th>
-            <th className="px-3 py-2">Units per layer</th>
-            <th className="px-3 py-2">Weight per pallet</th>
+            <th className="px-3 py-2">{t("Units per pallet")}</th>
+            <th className="px-3 py-2">{t("Units per layer")}</th>
+            <th className="px-3 py-2">{t("Weight per pallet")}</th>
           </tr>
         </thead>
         <tbody>

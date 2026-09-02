@@ -6,6 +6,7 @@ import { FilterField, FilterRow } from "@/components/product-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
   cancelExpense,
@@ -35,6 +36,7 @@ export const Route = createFileRoute("/gastos")({
 });
 
 function Page() {
+  const t = useT();
   const { tab, expense } = Route.useSearch();
   const payables = useAsync(() => listPayables(), []);
   const suppliers = useAsync(() => listSuppliers(), []);
@@ -82,9 +84,9 @@ function Page() {
   if (tab === "credits") {
     return (
       <div className="p-5 text-sm text-muted">
-        Vendor credits appear when a return or overpayment is recorded. Apply them from{" "}
+        {t("Vendor credits appear when a return or overpayment is recorded. Apply them from")}{" "}
         <button type="button" className="text-link" onClick={() => setPayOpen(true)}>
-          Pay vendor → Apply credit
+          {t("Pay vendor → Apply credit")}
         </button>
         .
         {payOpen ? (
@@ -128,20 +130,19 @@ function Page() {
     return (
       <div>
         <p className="px-5 pt-4 text-sm text-muted">
-          Each vendor’s POs and expenses based on what you owe that is within terms (current) and then what is overdue. Paid
-          transactions are excluded.
+          {t("Each vendor’s POs and expenses based on what you owe that is within terms (current) and then what is overdue. Paid transactions are excluded.")}
         </p>
         <div className="overflow-x-auto p-4">
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
-                <th className="px-3 py-2">Vendor name</th>
-                <th className="px-3 py-2 text-right">Current</th>
+                <th className="px-3 py-2">{t("Vendor name")}</th>
+                <th className="px-3 py-2 text-right">{t("Current")}</th>
                 <th className="px-3 py-2 text-right">1-30</th>
                 <th className="px-3 py-2 text-right">31-60</th>
                 <th className="px-3 py-2 text-right">61-90</th>
                 <th className="px-3 py-2 text-right">91+</th>
-                <th className="px-3 py-2 text-right">Total</th>
+                <th className="px-3 py-2 text-right">{t("Total")}</th>
               </tr>
             </thead>
             <tbody>
@@ -157,7 +158,7 @@ function Page() {
                 </tr>
               ))}
               <tr className="bg-surface-2 font-semibold">
-                <td className="px-3 py-2">Totals</td>
+                <td className="px-3 py-2">{t("Totals")}</td>
                 <td className="px-3 py-2 text-right">{money(tot.current)}</td>
                 <td className="px-3 py-2 text-right">{money(tot.b30)}</td>
                 <td className="px-3 py-2 text-right">{money(tot.b60)}</td>
@@ -187,34 +188,34 @@ function Page() {
         </FilterRow>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <div className="rounded-lg border border-border bg-surface p-5">
-            <p className="label-caps">Total expenses</p>
+            <p className="label-caps">{t("Total expenses")}</p>
             <p className="mt-2 text-3xl font-semibold tabular-nums text-action">{money(kpis.total)}</p>
           </div>
           <div className="rounded-lg border border-border bg-surface p-5">
-            <p className="label-caps">Paid status</p>
+            <p className="label-caps">{t("Paid status")}</p>
             <div className="mt-4">
               <BarSplit left={kpis.paid} right={kpis.unpaid} leftLabel="Paid" rightLabel="Unpaid" />
             </div>
           </div>
           <div className="rounded-lg border border-border bg-surface p-5">
-            <p className="label-caps">Unpaid</p>
+            <p className="label-caps">{t("Unpaid")}</p>
             <p className="mt-2 text-3xl font-semibold tabular-nums text-warn">{money(kpis.unpaid)}</p>
           </div>
           <div className="rounded-lg border border-border bg-surface p-5">
-            <p className="label-caps">Aging breakdown</p>
+            <p className="label-caps">{t("Aging breakdown")}</p>
             <div className="mt-3 flex h-3 overflow-hidden rounded-sm bg-surface-2">
               <div className="bg-ok" style={{ width: `${kpis.unpaid ? (kpis.buckets.current / kpis.unpaid) * 100 : 0}%` }} />
               <div className="bg-warn" style={{ flex: 1 }} />
             </div>
             <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-              <span className="text-ok">Current {money(kpis.buckets.current)}</span>
+              <span className="text-ok">{t("Current")} {money(kpis.buckets.current)}</span>
               <span className="text-warn">
-                Overdue {money(kpis.unpaid - kpis.buckets.current)}
+                {t("Overdue")} {money(kpis.unpaid - kpis.buckets.current)}
               </span>
-              <span className="text-xs text-muted">1-7 days {money(kpis.buckets.d1)}</span>
-              <span className="text-xs text-muted">8-14 days {money(kpis.buckets.d8)}</span>
-              <span className="text-xs text-muted">15-21 days {money(kpis.buckets.d15)}</span>
-              <span className="text-xs text-muted">22+ days {money(kpis.buckets.d22)}</span>
+              <span className="text-xs text-muted">{t("1-7 days")} {money(kpis.buckets.d1)}</span>
+              <span className="text-xs text-muted">{t("8-14 days")} {money(kpis.buckets.d8)}</span>
+              <span className="text-xs text-muted">{t("15-21 days")} {money(kpis.buckets.d15)}</span>
+              <span className="text-xs text-muted">{t("22+ days")} {money(kpis.buckets.d22)}</span>
             </div>
           </div>
         </div>
@@ -238,7 +239,7 @@ function Page() {
       <div>
         <TabActions>
           <Button size="sm" onClick={() => setPayOpen(true)}>
-            Pay vendor
+            {t("Pay vendor")}
           </Button>
         </TabActions>
         <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-5">
@@ -252,19 +253,19 @@ function Page() {
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
-                <th className="px-3 py-2">Payment date</th>
-                <th className="px-3 py-2">Vendor</th>
-                <th className="px-3 py-2 text-right">Total amount</th>
-                <th className="px-3 py-2">Method</th>
-                <th className="px-3 py-2">Notes</th>
-                <th className="px-3 py-2">Payment ID</th>
+                <th className="px-3 py-2">{t("Payment date")}</th>
+                <th className="px-3 py-2">{t("Vendor")}</th>
+                <th className="px-3 py-2 text-right">{t("Total amount")}</th>
+                <th className="px-3 py-2">{t("Method")}</th>
+                <th className="px-3 py-2">{t("Notes")}</th>
+                <th className="px-3 py-2">{t("Payment ID")}</th>
               </tr>
             </thead>
             <tbody>
               {movs.length === 0 ? (
                 <tr>
                   <td className="px-3 py-8 text-muted" colSpan={6}>
-                    No vendor payments yet. Use Pay vendor to record ACH, check, or cash.
+                    {t("No vendor payments yet. Use Pay vendor to record ACH, check, or cash.")}
                   </td>
                 </tr>
               ) : (
@@ -303,17 +304,17 @@ function Page() {
       <TabActions>
         <div className="flex gap-2">
           <Button size="sm" onClick={() => setPayOpen(true)}>
-            Pay vendor
+            {t("Pay vendor")}
           </Button>
           <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-            + Add new expense
+            {t("+ Add new expense")}
           </Button>
         </div>
       </TabActions>
       <FilterRow>
         <FilterField label="Vendor">
           <Select value={vendor} onChange={(e) => setVendor(e.target.value)}>
-            <option value="">Search your vendors</option>
+            <option value="">{t("Search your vendors")}</option>
             {(suppliers.data ?? []).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -323,9 +324,9 @@ function Page() {
         </FilterField>
         <FilterField label="Payment statuses">
           <Select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All payment statuses</option>
-            <option value="unpaid">Unpaid</option>
-            <option value="paid">Paid</option>
+            <option value="">{t("All payment statuses")}</option>
+            <option value="unpaid">{t("Unpaid")}</option>
+            <option value="paid">{t("Paid")}</option>
           </Select>
         </FilterField>
       </FilterRow>
@@ -336,9 +337,9 @@ function Page() {
         <KpiMini label="Total expenses terms accounts" value={money(0)} tone="warn" />
       </div>
       <div className="px-4 pb-2 text-sm text-muted">
-        Below you can find all expenses. Select any to export to CSV.{" "}
+        {t("Below you can find all expenses. Select any to export to CSV.")}{" "}
         <button type="button" className="rounded-md border border-border px-2 py-1 text-fg">
-          Export expenses
+          {t("Export expenses")}
         </button>
         {cancelled.length ? (
           <button type="button" className="ml-2 text-link" onClick={() => setShowCancelled((v) => !v)}>
@@ -359,15 +360,15 @@ function Page() {
                   }}
                 />
               </th>
-              <th className="px-3 py-2">PO # / Exp #</th>
-              <th className="px-3 py-2">Inv #</th>
-              <th className="px-3 py-2">Category</th>
-              <th className="px-3 py-2">Vendor</th>
-              <th className="px-3 py-2">Reqs. date</th>
-              <th className="px-3 py-2">Due date</th>
-              <th className="px-3 py-2 text-right">Total amount</th>
-              <th className="px-3 py-2 text-right">Remaining balance</th>
-              <th className="px-3 py-2">Status</th>
+              <th className="px-3 py-2">{t("PO # / Exp #")}</th>
+              <th className="px-3 py-2">{t("Inv #")}</th>
+              <th className="px-3 py-2">{t("Category")}</th>
+              <th className="px-3 py-2">{t("Vendor")}</th>
+              <th className="px-3 py-2">{t("Reqs. date")}</th>
+              <th className="px-3 py-2">{t("Due date")}</th>
+              <th className="px-3 py-2 text-right">{t("Total amount")}</th>
+              <th className="px-3 py-2 text-right">{t("Remaining balance")}</th>
+              <th className="px-3 py-2">{t("Status")}</th>
             </tr>
           </thead>
           <tbody>
@@ -498,9 +499,10 @@ function Page() {
 }
 
 function KpiMini({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
+  const t = useT();
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2">
-      <p className="label-caps">{label}</p>
+      <p className="label-caps">{t(label)}</p>
       <p className={`text-lg font-semibold tabular-nums ${tone === "warn" ? "text-warn" : ""}`}>{value}</p>
     </div>
   );
@@ -515,6 +517,7 @@ function CreateExpenseDrawer({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const [form, setForm] = useState({
     category: "Materia prima",
     date: todayISO(),
@@ -528,11 +531,11 @@ function CreateExpenseDrawer({
 
   async function submit() {
     if (form.payable && !form.supplier_id) {
-      setErr("Payable expenses must have a vendor selected");
+      setErr(t("Payable expenses must have a vendor selected"));
       return;
     }
     if (!form.supplier_id) {
-      setErr("Select a vendor");
+      setErr(t("Select a vendor"));
       return;
     }
     setSaving(true);
@@ -548,7 +551,7 @@ function CreateExpenseDrawer({
       });
       onSaved();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not create");
+      setErr(e instanceof Error ? e.message : t("Could not create"));
     } finally {
       setSaving(false);
     }
@@ -556,15 +559,15 @@ function CreateExpenseDrawer({
 
   return (
     <Drawer
-      title="Create Expense"
+      title={t("Create Expense")}
       onClose={onClose}
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button disabled={saving || !form.amount} onClick={() => void submit()}>
-            Create expense
+            {t("Create expense")}
           </Button>
         </>
       }
@@ -601,7 +604,7 @@ function CreateExpenseDrawer({
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Vendor">
             <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
-              <option value="">Search vendors</option>
+              <option value="">{t("Search vendors")}</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
@@ -614,7 +617,7 @@ function CreateExpenseDrawer({
           </Field>
           <Field label="Liability account">
             <Select defaultValue="20100">
-              <option value="20100">20100 Accounts Payable</option>
+              <option value="20100">20100 {t("Accounts Payable")}</option>
             </Select>
           </Field>
         </div>
@@ -622,7 +625,7 @@ function CreateExpenseDrawer({
         <div className="mt-4">
           <Field label="Vendor">
             <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
-              <option value="">Search vendors</option>
+              <option value="">{t("Search vendors")}</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
@@ -652,6 +655,7 @@ function ExpenseDetail({
   onConnect: () => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const detail = useAsync(() => listExpenseLinks({ data: { expense_id: id } }), [id]);
   const d = detail.data;
   const [editing, setEditing] = useState(false);
@@ -735,41 +739,41 @@ function ExpenseDetail({
     }
   }
   return (
-    <Modal title="Expense Details" onClose={onClose} wide>
+    <Modal title={t("Expense Details")} onClose={onClose} wide>
       {d ? (
         <div>
           <h3 className="text-lg font-semibold">{d.category}</h3>
           <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
             <div>
-              <p className="label-caps">Expense #</p>
+              <p className="label-caps">{t("Expense #")}</p>
               <p>{d.expense_number.replace(/^EXP-/, "")}</p>
             </div>
             <div>
-              <p className="label-caps">Invoice #</p>
+              <p className="label-caps">{t("Invoice #")}</p>
               <p>{d.invoice_number || "—"}</p>
             </div>
             <div>
-              <p className="label-caps">Vendor</p>
+              <p className="label-caps">{t("Vendor")}</p>
               <p>{d.supplier_name}</p>
             </div>
             <div>
-              <p className="label-caps">Requested date</p>
+              <p className="label-caps">{t("Requested date")}</p>
               <p>{fecha(d.issue_date)}</p>
             </div>
             <div>
-              <p className="label-caps">Payable</p>
-              <p>{d.payable ? "Yes" : "No"}</p>
+              <p className="label-caps">{t("Payable")}</p>
+              <p>{d.payable ? t("Yes") : t("No")}</p>
             </div>
             <div>
-              <p className="label-caps">Amount</p>
+              <p className="label-caps">{t("Amount")}</p>
               <p>{money(d.amount)}</p>
             </div>
             <div>
-              <p className="label-caps">Distribution type</p>
-              <p>Auto distributed by pallet</p>
+              <p className="label-caps">{t("Distribution type")}</p>
+              <p>{t("Auto distributed by pallet")}</p>
             </div>
           </div>
-          <p className="mt-6 text-sm font-medium">Expense connected to:</p>
+          <p className="mt-6 text-sm font-medium">{t("Expense connected to:")}</p>
           <div className="mt-2 grid gap-2">
             {d.links.map((l) => (
               <div key={l.purchase_order_id} className="flex items-stretch overflow-hidden rounded-md border border-border">
@@ -777,7 +781,7 @@ function ExpenseDetail({
                 <div className="flex flex-1 flex-wrap items-center justify-between gap-3 p-3 text-sm">
                   <div>
                     <p className="font-medium text-ok">
-                      PO #{poShort(l.po_number)}
+                      {t("PO #")}{poShort(l.po_number)}
                     </p>
                     <p className="text-xs text-muted">
                       {fecha(l.order_date)} · {l.supplier_name}
@@ -787,13 +791,13 @@ function ExpenseDetail({
                   <div className="text-right">
                     <p className="tabular-nums">{money(l.amount_applied)}</p>
                     <Button size="sm" variant="outline" onClick={() => void disconnect(l.purchase_order_id)}>
-                      Disconnect
+                      {t("Disconnect")}
                     </Button>
                   </div>
                 </div>
               </div>
             ))}
-            {d.links.length === 0 ? <p className="text-sm text-muted">Not connected to a PO.</p> : null}
+            {d.links.length === 0 ? <p className="text-sm text-muted">{t("Not connected to a PO.")}</p> : null}
           </div>
           {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
 
@@ -878,19 +882,19 @@ function ExpenseDetail({
           ) : (
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="outline" onClick={onConnect}>
-                Connect additional POs
+                {t("Connect additional POs")}
               </Button>
               {!cancelling ? (
                 <Button variant="outline" onClick={() => { setErr(null); setCancelling(true); }}>
                   Cancelar gasto
                 </Button>
               ) : null}
-              {!editing ? <Button onClick={startEdit}>Edit expense</Button> : null}
+              {!editing ? <Button onClick={startEdit}>{t("Edit expense")}</Button> : null}
             </div>
           )}
         </div>
       ) : (
-        <p className="text-sm text-muted">Loading…</p>
+        <p className="text-sm text-muted">{t("Loading…")}</p>
       )}
       {pos.length ? null : null}
     </Modal>
@@ -908,22 +912,23 @@ function ConnectPo({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const [q, setQ] = useState("");
   const filtered = pos.filter((p) => !q || p.po_number.includes(q) || poShort(p.po_number).includes(q));
   return (
-    <Modal title={`Connect to Expense`} onClose={onClose} wide>
+    <Modal title={t("Connect to Expense")} onClose={onClose} wide>
       <Field label="Search by PO #">
         <Input value={q} onChange={(e) => setQ(e.target.value)} />
       </Field>
-      <p className="mt-4 text-sm font-medium">Select POs to connect to your expense</p>
+      <p className="mt-4 text-sm font-medium">{t("Select POs to connect to your expense")}</p>
       <div className="mt-2 overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead className="text-[11px] uppercase text-muted">
             <tr>
-              <th className="px-2 py-2">PO #</th>
-              <th className="px-2 py-2">Status</th>
-              <th className="px-2 py-2">Vendor</th>
-              <th className="px-2 py-2">Requested date</th>
+              <th className="px-2 py-2">{t("PO #")}</th>
+              <th className="px-2 py-2">{t("Status")}</th>
+              <th className="px-2 py-2">{t("Vendor")}</th>
+              <th className="px-2 py-2">{t("Requested date")}</th>
               <th className="px-2 py-2" />
             </tr>
           </thead>
@@ -942,7 +947,7 @@ function ConnectPo({
                       onDone();
                     }}
                   >
-                    Connect
+                    {t("Connect")}
                   </Button>
                 </td>
               </tr>
@@ -951,7 +956,7 @@ function ConnectPo({
         </table>
       </div>
       <Button variant="outline" className="mt-4" onClick={onClose}>
-        Back to detail
+        {t("Back to detail")}
       </Button>
     </Modal>
   );
@@ -970,6 +975,7 @@ function VendorPayModal({
   onSaved: () => void;
   initialTab?: "manual" | "credit";
 }) {
+  const t = useT();
   const [tab, setTab] = useState<"manual" | "credit">(initialTab);
   const unpaidVendors = [...new Set(rows.filter((r) => r.saldo > 0).map((r) => r.supplier_id))];
   const [vendorId, setVendorId] = useState(String(unpaidVendors[0] ?? suppliers[0]?.id ?? ""));
@@ -994,7 +1000,7 @@ function VendorPayModal({
         return { kind: kind as "expense" | "po", id: Number(id), amount };
       });
     if (!apps.length) {
-      setErr("Select at least one invoice");
+      setErr(t("Select at least one invoice"));
       return;
     }
     setSaving(true);
@@ -1011,14 +1017,14 @@ function VendorPayModal({
       });
       onSaved();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not record");
+      setErr(e instanceof Error ? e.message : t("Could not record"));
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <Modal title="New Vendor Payment" onClose={onClose} wide>
+    <Modal title={t("New Vendor Payment")} onClose={onClose} wide>
       <div className="grid gap-3 sm:grid-cols-5">
         <Field label="Vendor">
           <Select
@@ -1042,14 +1048,14 @@ function VendorPayModal({
       </div>
       <div className="mt-4 flex gap-4 border-b border-border text-sm">
         <button type="button" className={`pb-2 ${tab === "manual" ? "border-b-2 border-action font-medium" : "text-muted"}`} onClick={() => setTab("manual")}>
-          Record Manual Payment
+          {t("Record Manual Payment")}
         </button>
         <button type="button" className={`pb-2 ${tab === "credit" ? "border-b-2 border-action font-medium" : "text-muted"}`} onClick={() => setTab("credit")}>
-          Apply Credit
+          {t("Apply Credit")}
         </button>
       </div>
       {tab === "credit" ? (
-        <p className="mt-6 text-sm text-muted">No open vendor credits for this supplier. Overpayments create a credit automatically.</p>
+        <p className="mt-6 text-sm text-muted">{t("No open vendor credits for this supplier. Overpayments create a credit automatically.")}</p>
       ) : (
         <div className="mt-4 grid gap-4 lg:grid-cols-[220px_1fr]">
           <div className="grid gap-3">
@@ -1075,11 +1081,11 @@ function VendorPayModal({
               <thead className="text-[11px] uppercase text-muted">
                 <tr>
                   <th className="px-2 py-2" />
-                  <th className="px-2 py-2">PO / Exp #</th>
-                  <th className="px-2 py-2">Requested</th>
-                  <th className="px-2 py-2 text-right">Amount</th>
-                  <th className="px-2 py-2">Status</th>
-                  <th className="px-2 py-2 text-right">Amt to apply</th>
+                  <th className="px-2 py-2">{t("PO / Exp #")}</th>
+                  <th className="px-2 py-2">{t("Requested")}</th>
+                  <th className="px-2 py-2 text-right">{t("Amount")}</th>
+                  <th className="px-2 py-2">{t("Status")}</th>
+                  <th className="px-2 py-2 text-right">{t("Amt to apply")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1100,7 +1106,7 @@ function VendorPayModal({
                           }}
                         />
                       </td>
-                      <td className="px-2 py-2">{r.kind === "po" ? `PO #${poShort(r.number)}` : r.number}</td>
+                      <td className="px-2 py-2">{r.kind === "po" ? `${t("PO #")}${poShort(r.number)}` : r.number}</td>
                       <td className="px-2 py-2">{fecha(r.issue_date)}</td>
                       <td className="px-2 py-2 text-right">{money(r.amount)}</td>
                       <td className="px-2 py-2">{r.status}</td>
@@ -1125,12 +1131,12 @@ function VendorPayModal({
       )}
       {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
       <div className="mt-4 flex items-center justify-end gap-3">
-        <p className="mr-auto text-sm text-muted">Invoices selected: {Object.keys(checks).length}</p>
+        <p className="mr-auto text-sm text-muted">{t("Invoices selected")}: {Object.keys(checks).length}</p>
         <Button variant="outline" onClick={onClose}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button disabled={saving || applied <= 0} onClick={() => void submit()}>
-          Record payment
+          {t("Record payment")}
         </Button>
       </div>
     </Modal>
