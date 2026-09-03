@@ -1107,6 +1107,27 @@ const ES: Record<string, string> = {
   "Expenses for this vendor live in Finance → Expenses.": "Los gastos de este proveedor viven en Finanzas → Gastos.",
   "No returns recorded for this vendor.": "No hay devoluciones registradas para este proveedor.",
   "Delete vendor": "Eliminar proveedor",
+
+  // Phase 4 — login.tsx
+  Password: "Contraseña",
+  "Could not create account": "No se pudo crear la cuenta",
+  "Could not sign in": "No se pudo iniciar sesión",
+  "This email is not authorized to create a Cosecha account. Ask Miguel to add it.":
+    "Este correo no está autorizado para crear una cuenta en Cosecha. Pide a Miguel que lo agregue.",
+
+  // Phase 4 — portal.$id.tsx
+  "Navigate to": "Ir a",
+  Summary: "Resumen",
+  "Back to purchase orders": "Volver a órdenes de compra",
+  "Order Detail": "Detalle de la orden",
+  "Avg $/U": "Prom. $/U",
+  "T/Sales $": "V. total $",
+  Wasted: "Merma",
+  Returned: "Devuelto",
+  "Total cost": "Costo total",
+  "$/Unit": "$/Unidad",
+  "Total payments": "Total de pagos",
+  "No payments found.": "No se encontraron pagos.",
 };
 
 export function translate(locale: Locale, key: string | number | null | undefined, vars?: Vars): string {

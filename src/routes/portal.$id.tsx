@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Kpi, Panel } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { COMPANY } from "@/lib/company";
+import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import { getVendorPortal } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
@@ -12,30 +13,31 @@ export const Route = createFileRoute("/portal/$id")({
 });
 
 function Page() {
+  const t = useT();
   const { id } = Route.useParams();
   const portal = useAsync(() => getVendorPortal({ data: { token: id } }), [id]);
   const d = portal.data;
   const level = d?.level ?? "po";
 
-  if (portal.loading) return <p className="p-6 text-sm text-muted">Loading vendor portal…</p>;
+  if (portal.loading) return <p className="p-6 text-sm text-muted">{t("Loading vendor portal…")}</p>;
   if (portal.error) return <p className="p-6 text-sm text-danger">{portal.error}</p>;
   if (!d) return null;
 
   return (
     <div className="mx-auto max-w-6xl p-5">
       <p className="mb-3 text-xs text-muted">
-        This view is identical to what a vendor can see in Vendor Portal if you share the{" "}
-        {level === "po" ? "PO" : level === "basic" ? "PO + Basic sales" : "PO + Detailed sales"} view.
+        Esta vista es idéntica a lo que ve un proveedor en el Portal de Proveedor si compartes la vista{" "}
+        {level === "po" ? "de OC" : level === "basic" ? "de OC + ventas básicas" : "de OC + ventas detalladas"}.
       </p>
       <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <p className="text-xs uppercase tracking-wide text-muted">Navigate to</p>
+          <p className="text-xs uppercase tracking-wide text-muted">{t("Navigate to")}</p>
           <h1 className="text-xl font-semibold">
-            {COMPANY.legalName} Summary · Customer PO #{poShort(d.po_number)}
+            {COMPANY.legalName} {t("Summary")} · {t("Customer PO #")} {poShort(d.po_number)}
           </h1>
         </div>
         <Link to="/compras" className="text-sm text-link">
-          Back to purchase orders
+          {t("Back to purchase orders")}
         </Link>
       </div>
 
@@ -47,22 +49,22 @@ function Page() {
       </div>
 
       <Panel className="mt-4">
-        <p className="mb-3 text-sm font-semibold">Order Detail</p>
+        <p className="mb-3 text-sm font-semibold">{t("Order Detail")}</p>
         <div className="mb-3 grid gap-2 text-sm sm:grid-cols-4">
           <div>
-            <p className="text-[11px] uppercase text-muted">Vendor</p>
+            <p className="text-[11px] uppercase text-muted">{t("Vendor")}</p>
             <p>{d.supplier_name}</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase text-muted">Requested date</p>
+            <p className="text-[11px] uppercase text-muted">{t("Requested date")}</p>
             <p>{fecha(d.expected_date)}</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase text-muted">Customer PO #</p>
+            <p className="text-[11px] uppercase text-muted">{t("Customer PO #")}</p>
             <p>{poShort(d.po_number)}</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase text-muted">BOL #</p>
+            <p className="text-[11px] uppercase text-muted">{t("BOL #")}</p>
             <p>{d.bol || "—"}</p>
           </div>
         </div>
@@ -73,7 +75,7 @@ function Page() {
                 {["Item", "Lot #", "B/E", "Avg $/U", "T/Sales $", "Sold", "Wasted", "Returned", "Remaining", "Qty", "Cost/U", "Total cost"].map(
                   (h) => (
                     <th key={h} className="px-2 py-2">
-                      {h}
+                      {t(h)}
                     </th>
                   ),
                 )}
@@ -107,15 +109,17 @@ function Page() {
       {level !== "po" ? (
         <Panel className="mt-4">
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold">Sales</p>
-            <span className="text-sm text-muted">Total sales {money(d.revenue)}</span>
+            <p className="text-sm font-semibold">{t("Sales")}</p>
+            <span className="text-sm text-muted">
+              {t("Total sales")} {money(d.revenue)}
+            </span>
           </div>
           <table className="w-full text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
                 {["Requested date", "Item", "Lot #", "Status", "Type", "Qty", "$/Unit", "Total"].map((h) => (
                   <th key={h} className="px-2 py-2">
-                    {h}
+                    {t(h)}
                   </th>
                 ))}
               </tr>
@@ -141,15 +145,17 @@ function Page() {
       {level !== "po" ? (
         <Panel className="mt-4">
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold">Expenses</p>
-            <span className="text-sm text-muted">Total expenses {money(d.expenses)}</span>
+            <p className="text-sm font-semibold">{t("Expenses")}</p>
+            <span className="text-sm text-muted">
+              {t("Total expenses")} {money(d.expenses)}
+            </span>
           </div>
           <table className="w-full text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
                 {["Type", "Notes", "Total"].map((h) => (
                   <th key={h} className="px-2 py-2">
-                    {h}
+                    {t(h)}
                   </th>
                 ))}
               </tr>
@@ -169,12 +175,12 @@ function Page() {
 
       <Panel className="mt-4">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold">Payments</p>
+          <p className="text-sm font-semibold">{t("Payments")}</p>
           <span className="text-sm text-muted">
-            Total payments {money(d.paid)} · Remaining {money(d.balance_due)}
+            {t("Total payments")} {money(d.paid)} · {t("Remaining")} {money(d.balance_due)}
           </span>
         </div>
-        <p className="mt-3 text-sm text-muted">No payments found.</p>
+        <p className="mt-3 text-sm text-muted">{t("No payments found.")}</p>
       </Panel>
     </div>
   );
