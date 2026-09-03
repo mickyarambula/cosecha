@@ -361,7 +361,7 @@ function drawLotLabel(pdf: jsPDF, box: Box, item: LotLabelItem, mode: DrawMode) 
       item.packDate !== "—" && item.packDate !== item.receivedDate
         ? `Empacado: ${item.packDate}`
         : null,
-      item.bestByDate ? `Best by: ${item.bestByDate}` : null,
+      item.bestByDate ? `Caduca: ${item.bestByDate}` : null,
       item.grade ? `Grado: ${item.grade}` : null,
       item.originCountry ? `Origen: ${item.originCountry}` : null,
       item.qualityState === "retenido" && item.qualityNote ? `Motivo: ${item.qualityNote}` : null,

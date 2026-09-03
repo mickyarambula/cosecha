@@ -1128,6 +1128,65 @@ const ES: Record<string, string> = {
   "$/Unit": "$/Unidad",
   "Total payments": "Total de pagos",
   "No payments found.": "No se encontraron pagos.",
+
+  // Phase 5 — listas.tsx
+  "Pack, count and grade vocabulary that feeds SKU builders.":
+    "Vocabulario de empaque, calibre y grado que alimenta los constructores de SKU.",
+  Count: "Calibre",
+  Grade: "Grado",
+  "New pack": "Nuevo empaque",
+  "New count": "Nuevo calibre",
+  "New grade": "Nuevo grado",
+  Empty: "Vacío",
+  "Adding…": "Agregando…",
+  "Could not add": "No se pudo agregar",
+
+  // Phase 5 — destinos.tsx
+  Code: "Código",
+  Contact: "Contacto",
+  Destinations: "Destinos",
+  "SHIP TO locations: owned warehouse, customer dock, or cross-dock.":
+    "Ubicaciones ENVIAR A: bodega propia, andén del cliente, o cross-dock.",
+  "Used as the receive-to location on inbound POs.":
+    "Se usa como la ubicación de recepción en las OC entrantes.",
+  "Create destination": "Crear destino",
+
+  // Phase 5 — cpo.tsx
+  "PO date": "Fecha del PO",
+  "Create customer PO": "Crear PO de cliente",
+  "+ Add line": "+ Agregar línea",
+  "Converting…": "Convirtiendo…",
+  "Convert to sales order": "Convertir a orden de venta",
+
+  // Phase 5 — reportes.tsx
+  "Vendor settlements": "Liquidaciones de proveedor",
+  "PAS lots post here after a purchase is signed off. Close lots from Warehouse → Lots, then settle from the PO.":
+    "Los lotes PAS se liquidan aquí después de firmar la compra (Vo. Bo.). Cierra los lotes desde Almacén → Lotes y luego liquida desde la OC.",
+  "No purchase orders yet.": "Aún no hay órdenes de compra.",
+  Signed: "Firmado",
+  "# Orders": "# Órdenes",
+  "Inv. units sold": "Unid. inv. vendidas",
+  "T/ Inv. sales": "V. inv. total",
+  "T/ Cost": "T/ Costo",
+  "T/ Profit": "T/ Utilidad",
+  "% Profit": "% Utilidad",
+  "Returned qty": "Cant. devuelta",
+  "Total COG": "Costo total",
+  "Sales by Vendor": "Ventas por proveedor",
+  "Sales by Inventory": "Ventas por inventario",
+  "Inv. Units Sold": "Unid. Inv. Vendidas",
+  "T/ Inv. Sales": "V. Inv. Total",
+  "Non-Inv. Units Sold": "Unid. No Inv. Vendidas",
+  "T/ Non-Inv. Sales": "V. No Inv. Total",
+  "Avg. Sales": "V. Prom.",
+  "Avg. Cost": "Costo Prom.",
+  "Avg. Profit": "Utilidad Prom.",
+  "% Markup": "% Margen",
+  "View report with expenses": "Ver reporte con gastos",
+  "This report groups sales data based on the departments associated with the inventory on a sales order item. Cost data for inventory items is based on the purchase cost of both wasted and sold units, plus expenses (if enabled).":
+    "Este reporte agrupa las ventas según los departamentos ligados al inventario en cada línea de la orden de venta. El costo de los artículos de inventario se basa en el costo de compra de las unidades vendidas y mermadas, más gastos (si está activado).",
+  "Received purchase lots based on received date. Unreceived purchase lots are not included. Returns, regardless of date, are reflected in the Returned Qty column.":
+    "Lotes de compra recibidos según su fecha de recepción. No incluye lotes aún no recibidos. Las devoluciones, sin importar la fecha, se reflejan en la columna Cant. devuelta.",
 };
 
 export function translate(locale: Locale, key: string | number | null | undefined, vars?: Vars): string {

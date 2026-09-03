@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { Kpi, Panel } from "@/components/app-shell";
+import { orderLabel } from "@/components/ui/badge";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { poShort } from "@/lib/nav";
 import { COMPANY } from "@/lib/company";
@@ -8,6 +9,12 @@ import { useT } from "@/lib/i18n";
 import { getDashboard, getFinancials, listPurchasedLots, listSalesOrders, listSettlements } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { fecha, money, todayISO } from "@/lib/utils";
+
+const SETTLEMENT_DEAL_TYPE_LABEL: Record<string, string> = {
+  firme: "Firm",
+  consignacion: "Consignment",
+  comision: "Pure commission",
+};
 
 type Search = { tab?: string };
 export const Route = createFileRoute("/reportes")({
@@ -58,23 +65,23 @@ function Page() {
       return (
         <div className="p-5">
           <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
-          <p className="text-sm text-muted">Vendor settlements</p>
+          <p className="text-sm text-muted">{t("Vendor settlements")}</p>
           <p className="mt-1 max-w-2xl text-sm text-muted">
-            PAS lots post here after a purchase is signed off. Close lots from Warehouse → Lots, then settle from the PO.
+            {t("PAS lots post here after a purchase is signed off. Close lots from Warehouse → Lots, then settle from the PO.")}
           </p>
-          {settlements.loading ? <p className="mt-4 text-sm text-muted">Loading…</p> : null}
+          {settlements.loading ? <p className="mt-4 text-sm text-muted">{t("Loading…")}</p> : null}
           {settlements.error ? <p className="mt-4 text-sm text-danger">{settlements.error}</p> : null}
           <table className="mt-4 w-full text-left text-sm">
             <thead className="border-y border-border text-[11px] uppercase text-muted">
               <tr>
-                <th className="px-3 py-2">PO</th>
-                <th className="px-3 py-2">Vendor</th>
-                <th className="px-3 py-2">Deal type</th>
-                <th className="px-3 py-2 text-right">Revenue</th>
-                <th className="px-3 py-2 text-right">Expenses</th>
-                <th className="px-3 py-2 text-right">Profit</th>
-                <th className="px-3 py-2 text-right">Balance due</th>
-                <th className="px-3 py-2">Sign-off</th>
+                <th className="px-3 py-2">{t("PO")}</th>
+                <th className="px-3 py-2">{t("Vendor")}</th>
+                <th className="px-3 py-2">{t("Deal type")}</th>
+                <th className="px-3 py-2 text-right">{t("Revenue")}</th>
+                <th className="px-3 py-2 text-right">{t("Expenses")}</th>
+                <th className="px-3 py-2 text-right">{t("Profit")}</th>
+                <th className="px-3 py-2 text-right">{t("Balance due")}</th>
+                <th className="px-3 py-2">{t("Sign-off")}</th>
               </tr>
             </thead>
             <tbody>
@@ -86,17 +93,19 @@ function Page() {
                     </Link>
                   </td>
                   <td className="px-3 py-2">{r.supplier_name}</td>
-                  <td className="px-3 py-2 uppercase text-xs text-muted">{r.deal_type}</td>
+                  <td className="px-3 py-2 uppercase text-xs text-muted">
+                    {t(SETTLEMENT_DEAL_TYPE_LABEL[r.deal_type] ?? r.deal_type)}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{money(r.revenue)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{money(r.expenses)}</td>
                   <td className={`px-3 py-2 text-right tabular-nums ${r.profit < 0 ? "text-danger" : ""}`}>{money(r.profit)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{money(r.balance_due)}</td>
-                  <td className="px-3 py-2 text-xs">{r.signed_off ? "Signed" : r.status}</td>
+                  <td className="px-3 py-2 text-xs">{r.signed_off ? t("Signed") : t(orderLabel(r.status))}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!settlements.loading && !rows.length ? <p className="mt-4 text-sm text-muted">No purchase orders yet.</p> : null}
+          {!settlements.loading && !rows.length ? <p className="mt-4 text-sm text-muted">{t("No purchase orders yet.")}</p> : null}
         </div>
       );
     }
@@ -104,13 +113,13 @@ function Page() {
       return (
         <div className="p-5">
           <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
-          <p className="text-sm text-muted">Trial Balance</p>
+          <p className="text-sm text-muted">{t("Trial Balance")}</p>
           <table className="mt-4 w-full text-left text-sm">
             <thead className="border-y border-border text-[11px] uppercase text-muted">
               <tr>
-                <th className="px-3 py-2">Account</th>
-                <th className="px-3 py-2 text-right">Debit</th>
-                <th className="px-3 py-2 text-right">Credit</th>
+                <th className="px-3 py-2">{t("Account")}</th>
+                <th className="px-3 py-2 text-right">{t("Debit")}</th>
+                <th className="px-3 py-2 text-right">{t("Credit")}</th>
               </tr>
             </thead>
             <tbody>
@@ -139,7 +148,7 @@ function Page() {
       return (
         <div className="mx-auto max-w-3xl p-8">
           <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
-          <p className="text-sm text-muted">Balance Sheet</p>
+          <p className="text-sm text-muted">{t("Balance Sheet")}</p>
           <SheetBlock title="Assets" rows={assets} />
           <SheetBlock title="Liabilities" rows={liab} />
           <SheetBlock title="Equity" rows={eq} />
@@ -172,13 +181,13 @@ function Page() {
           <table className="mt-6 w-full text-sm">
             <thead>
               <tr className="border-b border-fg">
-                <th className="py-2 text-left">Account</th>
-                <th className="py-2 text-right">Total</th>
+                <th className="py-2 text-left">{t("Account")}</th>
+                <th className="py-2 text-right">{t("Total")}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td className="py-2 font-semibold">Income</td>
+                <td className="py-2 font-semibold">{t("Income")}</td>
                 <td />
               </tr>
               {rev.map((a) => (
@@ -190,11 +199,11 @@ function Page() {
                 </tr>
               ))}
               <tr className="border-t border-border font-semibold">
-                <td className="py-2">Total Income</td>
+                <td className="py-2">{t("Total Income")}</td>
                 <td className="py-2 text-right">{money(f?.income ?? 0)}</td>
               </tr>
               <tr>
-                <td className="py-3 font-semibold">Cost of Goods Sold</td>
+                <td className="py-3 font-semibold">{t("Cost of Goods Sold")}</td>
                 <td />
               </tr>
               {cogs.map((a) => (
@@ -206,15 +215,15 @@ function Page() {
                 </tr>
               ))}
               <tr className="border-t border-border font-semibold">
-                <td className="py-2">Total Cost of Goods Sold</td>
+                <td className="py-2">{t("Total Cost of Goods Sold")}</td>
                 <td className="py-2 text-right">{money(f?.cogs ?? 0)}</td>
               </tr>
               <tr className="bg-surface-2 font-semibold">
-                <td className="py-2">Gross Profit</td>
+                <td className="py-2">{t("Gross Profit")}</td>
                 <td className="py-2 text-right">{money(f?.gp ?? 0)}</td>
               </tr>
               <tr>
-                <td className="py-3 font-semibold">Expenses</td>
+                <td className="py-3 font-semibold">{t("Expenses")}</td>
                 <td />
               </tr>
               {exp.filter((a) => a.current_balance).map((a) => (
@@ -226,7 +235,7 @@ function Page() {
                 </tr>
               ))}
               <tr className="border-t border-border font-semibold">
-                <td className="py-2">Net Income</td>
+                <td className="py-2">{t("Net Income")}</td>
                 <td className="py-2 text-right">{money(f?.net ?? 0)}</td>
               </tr>
             </tbody>
@@ -318,10 +327,11 @@ function Page() {
     return (
       <div>
         <div className="px-5 pt-5">
-          <h1 className="text-xl font-semibold">Purchased Lots</h1>
+          <h1 className="text-xl font-semibold">{t("Purchased Lots")}</h1>
           <p className="mt-1 max-w-3xl text-sm text-muted">
-            Received purchase lots based on received date. Unreceived purchase lots are not included. Returns, regardless of date,
-            are reflected in the Returned Qty column.
+            {t(
+              "Received purchase lots based on received date. Unreceived purchase lots are not included. Returns, regardless of date, are reflected in the Returned Qty column.",
+            )}
           </p>
         </div>
         <div className="grid grid-cols-2 gap-3 p-5 sm:grid-cols-4">
@@ -364,7 +374,7 @@ function Page() {
     return (
       <div>
         <div className="px-5 pt-5">
-          <h1 className="text-xl font-semibold">{title}</h1>
+          <h1 className="text-xl font-semibold">{t(title)}</h1>
         </div>
         <FilterRow>
           <FilterField label="SO requested date">
@@ -379,10 +389,11 @@ function Page() {
   return (
     <div>
       <div className="px-5 pt-5">
-        <h1 className="text-xl font-semibold">Sales by Department</h1>
+        <h1 className="text-xl font-semibold">{t("Sales by Department")}</h1>
         <p className="mt-1 max-w-3xl text-sm text-muted">
-          This report groups sales data based on the departments associated with the inventory on a sales order item. Cost data
-          for inventory items is based on the purchase cost of both wasted and sold units, plus expenses (if enabled).
+          {t(
+            "This report groups sales data based on the departments associated with the inventory on a sales order item. Cost data for inventory items is based on the purchase cost of both wasted and sold units, plus expenses (if enabled).",
+          )}
         </p>
       </div>
       <FilterRow>
@@ -391,14 +402,14 @@ function Page() {
         </FilterField>
         <FilterField label="Sales rep">
           <select className="flex h-9 w-full rounded-md border border-border bg-surface px-3 text-sm">
-            <option>All sales reps</option>
+            <option value="All sales reps">{t("All sales reps")}</option>
           </select>
         </FilterField>
         <label className="ml-auto flex items-center gap-2 text-sm">
           <span className="inline-flex h-5 w-9 items-center rounded-full bg-action p-0.5">
             <span className="ml-auto size-4 rounded-full bg-white" />
           </span>
-          View report with expenses
+          {t("View report with expenses")}
         </label>
       </FilterRow>
       <div className="overflow-x-auto p-4">
@@ -421,14 +432,14 @@ function Page() {
                 "% Markup",
               ].map((h) => (
                 <th key={h} className="px-3 py-2 font-medium">
-                  {h}
+                  {t(h)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             <tr className="border-b border-border bg-surface">
-              <td className="px-3 py-2">Uncategorized</td>
+              <td className="px-3 py-2">{t("Uncategorized")}</td>
               <td className="px-3 py-2">{dept.orders}</td>
               <td className="px-3 py-2">{dept.units}</td>
               <td className="px-3 py-2">{money(dept.salesT)}</td>
@@ -443,7 +454,7 @@ function Page() {
               <td className="px-3 py-2">{dept.markup.toFixed(0)}%</td>
             </tr>
             <tr className="bg-surface-2 font-semibold">
-              <td className="px-3 py-2">Total</td>
+              <td className="px-3 py-2">{t("Total")}</td>
               <td className="px-3 py-2">{dept.orders}</td>
               <td className="px-3 py-2">{dept.units}</td>
               <td className="px-3 py-2">{money(dept.salesT)}</td>
@@ -471,10 +482,11 @@ function SheetBlock({
   title: string;
   rows: { number: string; name: string; current_balance: number }[];
 }) {
+  const t = useT();
   const total = rows.reduce((s, r) => s + r.current_balance, 0);
   return (
     <div className="mt-6">
-      <h2 className="font-semibold">{title}</h2>
+      <h2 className="font-semibold">{t(title)}</h2>
       <table className="mt-2 w-full text-sm">
         <tbody>
           {rows.map((a) => (
@@ -486,7 +498,9 @@ function SheetBlock({
             </tr>
           ))}
           <tr className="font-semibold">
-            <td className="py-2">Total {title}</td>
+            <td className="py-2">
+              {t("Total")} {t(title)}
+            </td>
             <td className="py-2 text-right">{money(total)}</td>
           </tr>
         </tbody>
@@ -500,6 +514,7 @@ function InputDate() {
 }
 
 function Table({ cols, rows }: { cols: string[]; rows: string[][] }) {
+  const t = useT();
   return (
     <div className="overflow-x-auto p-4">
       <table className="w-full min-w-[720px] text-left text-sm">
@@ -507,7 +522,7 @@ function Table({ cols, rows }: { cols: string[]; rows: string[][] }) {
           <tr>
             {cols.map((c) => (
               <th key={c} className="px-3 py-2 font-medium">
-                {c}
+                {t(c)}
               </th>
             ))}
           </tr>
