@@ -512,9 +512,9 @@ function Page() {
               value={draft.order_type}
               onChange={(e) => setDraft({ ...draft, order_type: e.target.value })}
             >
-              <option>{t("Delivery by vendor")}</option>
-              <option>{t("Pickup")}</option>
-              <option>{t("Will-call")}</option>
+              <option value="Delivery by vendor">{t("Delivery by vendor")}</option>
+              <option value="Pickup">{t("Pickup")}</option>
+              <option value="Will-call">{t("Will-call")}</option>
             </Select>
           </MetaCard>
           <MetaCard label="Requested date">

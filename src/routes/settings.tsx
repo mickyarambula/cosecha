@@ -119,9 +119,9 @@ function InventorySettings({ map, setKey }: { map: Record<string, string>; setKe
             className="w-48"
             onChange={(e) => void setKey("repack_pack_date", e.target.value)}
           >
-            <option>{t("Earliest pack date")}</option>
-            <option>{t("Current date")}</option>
-            <option>{t("No default date")}</option>
+            <option value="Earliest pack date">{t("Earliest pack date")}</option>
+            <option value="Current date">{t("Current date")}</option>
+            <option value="No default date">{t("No default date")}</option>
           </Select>
         </Setting>
         <p className="label-caps pt-4">{t("Purchases")}</p>
@@ -134,8 +134,8 @@ function InventorySettings({ map, setKey }: { map: Record<string, string>; setKe
             className="w-48"
             onChange={(e) => void setKey("lot_number_method", e.target.value)}
           >
-            <option>{t("Sequential")}</option>
-            <option>{t("PO # Prefaced")}</option>
+            <option value="Sequential">{t("Sequential")}</option>
+            <option value="PO # Prefaced">{t("PO # Prefaced")}</option>
           </Select>
         </Setting>
       </div>
