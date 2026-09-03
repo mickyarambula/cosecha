@@ -496,7 +496,7 @@ function Page() {
               <Select value={calidad.state} onChange={(e) => setCalidad({ ...calidad, state: e.target.value })}>
                 {Object.keys(CALIDAD_LABEL).map((c) => (
                   <option key={c} value={c}>
-                    {qualityLabel(c)}
+                    {t(qualityLabel(c))}
                   </option>
                 ))}
               </Select>

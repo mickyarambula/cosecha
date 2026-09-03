@@ -954,7 +954,7 @@ function Page() {
                       </td>
                       <td className="px-3 py-2">{row.bol || "—"}</td>
                       <td className="px-3 py-2">
-                        {row.order_type === "entrega" ? t("Delivery") : row.order_type}
+                        {row.order_type === "entrega" ? t("Delivery") : t(row.order_type)}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">{unitsN}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
@@ -1354,7 +1354,7 @@ function PoDetail({
           ) : null}
         </MetaCard>
         <MetaCard label="Order type">
-          {row.order_type === "entrega" ? t("Delivery by vendor") : row.order_type}
+          {row.order_type === "entrega" ? t("Delivery by vendor") : t(row.order_type)}
         </MetaCard>
         <MetaCard label="Requested date">{fecha(row.expected_date || row.order_date)}</MetaCard>
         <MetaCard label="BOL #">{row.bol || ""}</MetaCard>

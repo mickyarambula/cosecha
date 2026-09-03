@@ -318,7 +318,7 @@ function Departments() {
         <form className="flex flex-wrap items-start gap-2 border-t border-border px-4 py-3" onSubmit={add}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Department name" />
           <Button type="submit" size="sm" disabled={saving || !name.trim()}>
-            + Add department
+            {t("+ Add department")}
           </Button>
           {err ? <p className="w-full rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{err}</p> : null}
         </form>
@@ -651,7 +651,7 @@ function SentLog() {
             {(ev.data ?? []).map((row) => (
               <tr key={row.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 text-xs text-muted">{fecha(row.created_at)}</td>
-                <td className="px-4 py-3 capitalize">{row.channel}</td>
+                <td className="px-4 py-3">{row.channel === "email" ? t("Email") : t("WhatsApp")}</td>
                 <td className="px-4 py-3">
                   {row.doc_number || "—"}
                   {row.party_name ? <span className="text-muted"> · {row.party_name}</span> : null}
