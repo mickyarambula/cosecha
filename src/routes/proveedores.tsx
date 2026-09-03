@@ -13,12 +13,14 @@ import {
   listSuppliers,
   updateSupplier,
 } from "@/lib/produce-server";
+import { useT } from "@/lib/i18n";
 import { useAsync } from "@/lib/use-async";
 import { cn, errorMessage, fecha, money, pct, todayISO } from "@/lib/utils";
 
 export const Route = createFileRoute("/proveedores")({ component: Page });
 
 function Page() {
+  const t = useT();
   const { data, loading, reload } = useAsync(() => listSuppliers(), []);
   const lots = useAsync(() => listLots(), []);
   const [sel, setSel] = useState<number | null>(null);
@@ -177,13 +179,13 @@ function Page() {
     <div className="flex min-h-[calc(100dvh-7rem)]">
       <aside className="flex w-full max-w-xs shrink-0 flex-col border-r border-border bg-surface">
         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-          <p className="text-sm font-semibold">Vendors</p>
+          <p className="text-sm font-semibold">{t("Vendors")}</p>
           <div className="flex gap-2">
             <Button size="sm" variant="outline">
-              Export all
+              {t("Export all")}
             </Button>
             <Button size="sm" onClick={() => { setOpen(true); setFormErr(null); }}>
-              + Add
+              {t("+ Add")}
             </Button>
           </div>
         </div>
@@ -191,7 +193,7 @@ function Page() {
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search vendors" />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {loading ? <p className="p-4 text-sm text-muted">Loading…</p> : null}
+          {loading ? <p className="p-4 text-sm text-muted">{t("Loading…")}</p> : null}
           {groups.map(([letter, rows]) => (
             <div key={letter}>
               <p className="bg-surface-2 px-3 py-1 text-xs font-semibold text-muted">{letter}</p>
@@ -214,10 +216,10 @@ function Page() {
       </aside>
       <section className="min-w-0 flex-1 overflow-y-auto p-5">
         {!current ? (
-          <p className="pt-24 text-center text-muted">Select a vendor to edit details</p>
+          <p className="pt-24 text-center text-muted">{t("Select a vendor to edit details")}</p>
         ) : (
           <div>
-            <h1 className="mb-4 text-lg font-semibold">Edit Vendor</h1>
+            <h1 className="mb-4 text-lg font-semibold">{t("Edit Vendor")}</h1>
             <div className="grid gap-4 lg:grid-cols-2">
               <div>
                 <Field label="Vendor name">
@@ -257,21 +259,21 @@ function Page() {
               <div className="space-y-2 pt-5 text-sm">
                 <label className="flex items-center gap-2">
                   <input type="checkbox" className="size-4 accent-action" checked={edit.enabled} onChange={(e) => setEdit({ ...edit, enabled: e.target.checked })} />
-                  Vendor is enabled and will be visible when creating orders
+                  {t("Vendor is enabled and will be visible when creating orders")}
                 </label>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" className="size-4 accent-action" checked={edit.goods} onChange={(e) => setEdit({ ...edit, goods: e.target.checked })} />
-                  Goods vendor
+                  {t("Goods vendor")}
                 </label>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" className="size-4 accent-action" checked={edit.services} onChange={(e) => setEdit({ ...edit, services: e.target.checked })} />
-                  Services / Expenses vendor
+                  {t("Services / Expenses vendor")}
                 </label>
               </div>
             </div>
             <div className="mt-6 grid gap-4 lg:grid-cols-2">
               <div>
-                <p className="mb-2 text-sm font-semibold">Shipping Info</p>
+                <p className="mb-2 text-sm font-semibold">{t("Shipping Info")}</p>
                 <Field label="Name">
                   <Input />
                 </Field>
@@ -291,7 +293,7 @@ function Page() {
                 </div>
               </div>
               <div>
-                <p className="mb-2 text-sm font-semibold">Billing Info</p>
+                <p className="mb-2 text-sm font-semibold">{t("Billing Info")}</p>
                 <Field label="Name">
                   <Input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
                 </Field>
@@ -312,7 +314,7 @@ function Page() {
               </div>
             </div>
             <div className="mt-6">
-              <p className="mb-2 text-sm font-semibold">Contacts</p>
+              <p className="mb-2 text-sm font-semibold">{t("Contacts")}</p>
               <div className="grid gap-2 rounded-md border border-border p-3 sm:grid-cols-4">
                 <Input placeholder="Name" value={edit.contact_name} onChange={(e) => setEdit({ ...edit, contact_name: e.target.value })} />
                 <Input placeholder="Phone" value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} />
@@ -333,14 +335,14 @@ function Page() {
                     onClick={() => setVtab(tabId)}
                   >
                     {tabId === "skus"
-                      ? "Preferred SKUs"
+                      ? t("Preferred SKUs")
                       : tabId === "lots"
-                        ? "Lots"
+                        ? t("Lots")
                         : tabId === "account"
                           ? "Cuenta corriente"
                           : tabId === "expenses"
-                            ? "Expenses"
-                            : "Returns"}
+                            ? t("Expenses")
+                            : t("Returns")}
                   </button>
                 ))}
               </div>
@@ -353,15 +355,15 @@ function Page() {
                   <table className="w-full min-w-[720px] text-left text-sm">
                     <thead className="text-[11px] uppercase text-muted">
                       <tr>
-                        <th className="px-2 py-2">Source</th>
-                        <th className="px-2 py-2">Received</th>
-                        <th className="px-2 py-2">Lot #</th>
-                        <th className="px-2 py-2 text-right">Original</th>
-                        <th className="px-2 py-2 text-right">Remaining</th>
-                        <th className="px-2 py-2 text-right">Sold</th>
-                        <th className="px-2 py-2 text-right">Avg $/unit</th>
-                        <th className="px-2 py-2 text-right">Total sales</th>
-                        <th className="px-2 py-2 text-right">Profit</th>
+                        <th className="px-2 py-2">{t("Source")}</th>
+                        <th className="px-2 py-2">{t("Received")}</th>
+                        <th className="px-2 py-2">{t("Lot #")}</th>
+                        <th className="px-2 py-2 text-right">{t("Original")}</th>
+                        <th className="px-2 py-2 text-right">{t("Remaining")}</th>
+                        <th className="px-2 py-2 text-right">{t("Sold")}</th>
+                        <th className="px-2 py-2 text-right">{t("Avg $/unit")}</th>
+                        <th className="px-2 py-2 text-right">{t("Total sales")}</th>
+                        <th className="px-2 py-2 text-right">{t("Profit")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -414,7 +416,7 @@ function Page() {
                       </Button>
                     </div>
                   </div>
-                  {account.loading ? <p className="mt-3 text-sm text-muted">Loading…</p> : null}
+                  {account.loading ? <p className="mt-3 text-sm text-muted">{t("Loading…")}</p> : null}
                   {cancelErr ? <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{cancelErr}</p> : null}
                   <div className="mt-3 overflow-x-auto">
                     <table className="w-full min-w-[720px] text-left text-sm">
@@ -500,21 +502,23 @@ function Page() {
                 </div>
               ) : (
                 <p className="mt-4 text-sm text-muted">
-                  {vtab === "expenses" ? "Expenses for this vendor live in Finance → Expenses." : "No returns recorded for this vendor."}
+                  {vtab === "expenses"
+                    ? t("Expenses for this vendor live in Finance → Expenses.")
+                    : t("No returns recorded for this vendor.")}
                 </p>
               )}
             </div>
             {editErr ? <p className="mt-4 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{editErr}</p> : null}
             <div className="mt-4 flex items-center justify-between">
               <button type="button" className="text-sm text-danger">
-                Delete vendor
+                {t("Delete vendor")}
               </button>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={() => setSel(null)}>
-                  Cancel
+                  {t("Cancel")}
                 </Button>
                 <Button disabled={saving} onClick={() => void save()}>
-                  Save changes
+                  {t("Save changes")}
                 </Button>
               </div>
             </div>
@@ -558,7 +562,7 @@ function Page() {
           {advErr ? <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{advErr}</p> : null}
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="outline" onClick={() => setAdvOpen(false)}>
-              Cancel
+              {t("Cancel")}
             </Button>
             <Button disabled={saving || !adv.concept.trim() || !(Number(adv.amount) > 0)} onClick={() => void saveAdvance()}>
               Registrar adelanto
@@ -567,7 +571,7 @@ function Page() {
         </Modal>
       ) : null}
       {open ? (
-        <Modal title="Add vendor" onClose={() => setOpen(false)}>
+        <Modal title={t("Add vendor")} onClose={() => setOpen(false)}>
           <form className="grid gap-3" onSubmit={submit}>
             <Field label="Vendor name">
               <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -581,10 +585,10 @@ function Page() {
             {formErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{formErr}</p> : null}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                Cancel
+                {t("Cancel")}
               </Button>
               <Button type="submit" disabled={saving}>
-                Add
+                {t("Add")}
               </Button>
             </div>
           </form>

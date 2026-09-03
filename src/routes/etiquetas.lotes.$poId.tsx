@@ -58,7 +58,7 @@ function LabelCard({ item }: { item: LotLabelItem }) {
         {item.packDate !== "—" && item.packDate !== item.receivedDate ? (
           <p>Empacado: {item.packDate}</p>
         ) : null}
-        {item.bestByDate ? <p>Best by: {item.bestByDate}</p> : null}
+        {item.bestByDate ? <p>Caduca: {item.bestByDate}</p> : null}
         {item.grade ? <p>Grado: {item.grade}</p> : null}
         {item.originCountry ? <p>Origen: {item.originCountry}</p> : null}
         {item.qualityState === "retenido" && item.qualityNote ? (

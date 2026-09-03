@@ -187,10 +187,10 @@ function Page() {
         lines: lines.map((l) => ({ qty: Number(l.qty), unit: l.unit, name: l.name })),
         total: lines.reduce((s, l) => s + Number(l.qty) * Number(l.price || 0), 0),
       });
-      setMsg(`SO ${r.so_number} placed`);
+      setMsg(`Orden de venta ${r.so_number} colocada`);
       await orders.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not place");
+      setMsg(err instanceof Error ? err.message : "No se pudo colocar la orden");
     } finally {
       setSaving(false);
     }
@@ -210,10 +210,10 @@ function Page() {
         },
       });
       setShip(null);
-      setMsg("Fulfilled");
+      setMsg(t("Fulfilled"));
       await Promise.all([orders.reload(), lots.reload()]);
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not fulfill");
+      setMsg(err instanceof Error ? err.message : "No se pudo surtir");
     } finally {
       setSaving(false);
     }
@@ -223,10 +223,10 @@ function Page() {
     setSaving(true);
     try {
       const r = await createInvoiceFromSO({ data: { sales_order_id: soId } });
-      setMsg(`Invoice ${r.invoice_number} for ${money(r.total)}`);
+      setMsg(`Factura ${r.invoice_number} por ${money(r.total)}`);
       await orders.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not invoice");
+      setMsg(err instanceof Error ? err.message : "No se pudo facturar");
     } finally {
       setSaving(false);
     }
@@ -253,10 +253,10 @@ function Page() {
         },
       });
       setBuy(null);
-      setMsg(`PO ${r.po_number} generated from ${r.so_number}`);
+      setMsg(`OC ${r.po_number} generada desde ${r.so_number}`);
       await orders.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not generate PO");
+      setMsg(err instanceof Error ? err.message : "No se pudo generar la OC");
     } finally {
       setSaving(false);
     }
@@ -284,7 +284,7 @@ function Page() {
                 });
               }}
             >
-              <option value="">Search customers</option>
+              <option value="">{t("Search customers")}</option>
               {(customers.data ?? []).map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -307,19 +307,19 @@ function Page() {
               value={draft.type}
               onChange={(e) => setDraft({ ...draft, type: e.target.value })}
             >
-              <option>Delivery to customer</option>
-              <option>Pickup</option>
-              <option>Will-call</option>
+              <option value="Delivery to customer">{t("Delivery to customer")}</option>
+              <option value="Pickup">{t("Pickup")}</option>
+              <option value="Will-call">{t("Will-call")}</option>
             </Select>
           </MetaCard>
           <MetaCard label="Delivery route">
             <Select defaultValue="">
-              <option value="">Type to search</option>
+              <option value="">{t("Type to search")}</option>
             </Select>
           </MetaCard>
           <MetaCard label="Destination">
             {!draft.customer_id ? (
-              "Select a customer first"
+              t("Select a customer first")
             ) : (
               <Select
                 value={draft.ship_to_location_id}
@@ -340,7 +340,7 @@ function Page() {
         </div>
         <div className="px-4">
           <Button size="sm" disabled={!draft.customer_id} onClick={() => setPicker(true)}>
-            + Add item
+            {t("+ Add item")}
           </Button>
         </div>
         {lines.length ? (
@@ -348,10 +348,10 @@ function Page() {
             <table className="w-full text-left text-sm">
               <thead className="bg-surface-2 text-xs text-muted">
                 <tr>
-                  <th className="px-3 py-2">Item</th>
-                  <th className="px-3 py-2">Qty</th>
-                  <th className="px-3 py-2">Price</th>
-                  <th className="px-3 py-2">Total</th>
+                  <th className="px-3 py-2">{t("Item")}</th>
+                  <th className="px-3 py-2">{t("Qty")}</th>
+                  <th className="px-3 py-2">{t("Price")}</th>
+                  <th className="px-3 py-2">{t("Total")}</th>
                   <th className="w-10 px-3 py-2" />
                 </tr>
               </thead>
@@ -427,7 +427,7 @@ function Page() {
             disabled={saving || !draft.customer_id || !lines.length}
             onClick={() => void place()}
           >
-            Place order
+            {t("Place order")}
           </Button>
         </div>
         {picker ? (
@@ -487,7 +487,7 @@ function Page() {
             </button>
             <SendButton
               className="w-28 rounded-none"
-              title="Sales Order"
+              title={t("Sales Order")}
               number={placed.so_number}
               partyName={placed.customer_name}
               email={placed.customer_email}
@@ -535,7 +535,7 @@ function Page() {
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <Button variant="outline" onClick={() => setPrintOpen(false)}>
-                No, go back
+                {t("No, go back")}
               </Button>
               <Button
                 onClick={() => {
@@ -550,7 +550,7 @@ function Page() {
                   setPrintOpen(false);
                 }}
               >
-                Yes, print
+                {t("Yes, print")}
               </Button>
             </div>
           </Modal>
@@ -596,7 +596,7 @@ function Page() {
           </Select>
         </FilterField>
       </FilterRow>
-      {orders.loading ? <p className="p-6 text-sm text-muted">Loading…</p> : null}
+      {orders.loading ? <p className="p-6 text-sm text-muted">{t("Loading…")}</p> : null}
       {!orders.loading && filtered.length === 0 ? (
         <EmptyOrders
           kind="sales"
@@ -646,7 +646,7 @@ function Page() {
                             {poShort(row.so_number)}
                           </button>
                           <SendButton
-                            title="Sales Order"
+                            title={t("Sales Order")}
                             number={row.so_number}
                             partyName={row.customer_name}
                             email={row.customer_email}
@@ -673,7 +673,7 @@ function Page() {
                       </td>
                       <td className="px-3 py-2">{row.customer_name}</td>
                       <td className="px-3 py-2">{fecha(row.requested_date || row.order_date)}</td>
-                      <td className="px-3 py-2">Delivery to customer</td>
+                      <td className="px-3 py-2">{t("Delivery to customer")}</td>
                       <td className="px-3 py-2 text-right">{money(total)}</td>
                     </tr>
                     {open ? (
@@ -742,7 +742,7 @@ function Page() {
                 value={shipForm.lot_id}
                 onChange={(e) => setShipForm({ ...shipForm, lot_id: e.target.value })}
               >
-                <option value="">Select lot</option>
+                <option value="">{t("Select lot")}</option>
                 {allLots
                   .filter(
                     (l) =>
@@ -765,7 +765,7 @@ function Page() {
                 value={shipForm.location_id}
                 onChange={(e) => setShipForm({ ...shipForm, location_id: e.target.value })}
               >
-                <option value="">Select</option>
+                <option value="">{t("Select")}</option>
                 {allLots
                   .find((l) => String(l.id) === shipForm.lot_id)
                   ?.locations.map((loc) => (
@@ -779,7 +779,7 @@ function Page() {
               </p>
             </Field>
             <Button type="submit" disabled={saving}>
-              Fulfill
+              {t("Fulfill")}
             </Button>
           </form>
         </Modal>
@@ -808,7 +808,7 @@ function Page() {
                   });
                 }}
               >
-                <option value="">Select</option>
+                <option value="">{t("Select")}</option>
                 {(suppliers.data ?? []).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
@@ -864,7 +864,7 @@ function Page() {
               </Field>
             )}
             <Button type="submit" disabled={saving}>
-              Create PO
+              {t("Create PO")}
             </Button>
           </form>
         </Modal>
@@ -881,18 +881,18 @@ function Page() {
             <MetaCard label="Customer PO #">{selected.customer_po_number || ""}</MetaCard>
           </div>
           <p className="mt-4 text-sm text-muted">
-            Select the items to credit, the credit type, and the amount to credit per unit.
+            {t("Select the items to credit, the credit type, and the amount to credit per unit.")}
           </p>
           <div className="mt-3 overflow-x-auto rounded-md border border-border">
             <table className="w-full text-left text-sm">
               <thead className="bg-surface-2 text-xs text-muted">
                 <tr>
-                  <th className="px-3 py-2">Item</th>
-                  <th className="px-3 py-2">Sold</th>
-                  <th className="px-3 py-2">Type</th>
-                  <th className="px-3 py-2">Qty to credit</th>
-                  <th className="px-3 py-2">Credit/unit</th>
-                  <th className="px-3 py-2">Credit total</th>
+                  <th className="px-3 py-2">{t("Item")}</th>
+                  <th className="px-3 py-2">{t("Sold")}</th>
+                  <th className="px-3 py-2">{t("Type")}</th>
+                  <th className="px-3 py-2">{t("Qty to credit")}</th>
+                  <th className="px-3 py-2">{t("Credit/unit")}</th>
+                  <th className="px-3 py-2">{t("Credit total")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -902,9 +902,9 @@ function Page() {
                     <td className="px-3 py-2">{l.quantity_ordered}</td>
                     <td className="px-3 py-2">
                       <Select defaultValue="Restock">
-                        <option>Restock</option>
-                        <option>Loss</option>
-                        <option>Price Adjustment</option>
+                        <option value="Restock">{t("Restock")}</option>
+                        <option value="Loss">{t("Loss")}</option>
+                        <option value="Price Adjustment">{t("Price Adjustment")}</option>
                       </Select>
                     </td>
                     <td className="px-3 py-2">
@@ -929,7 +929,7 @@ function Page() {
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="outline" onClick={() => setCredit(null)}>
-              Cancel
+              {t("Cancel")}
             </Button>
             <Button
               onClick={async () => {
@@ -948,24 +948,26 @@ function Page() {
                     },
                   });
                   setCredit(null);
-                  setMsg("Credit invoice created");
+                  setMsg("Nota de crédito creada");
                   await orders.reload();
                 } catch (err) {
-                  setMsg(err instanceof Error ? err.message : "Could not create credit");
+                  setMsg(err instanceof Error ? err.message : "No se pudo crear el crédito");
                 } finally {
                   setSaving(false);
                 }
               }}
             >
-              Create credit
+              {t("Create credit")}
             </Button>
           </div>
         </Modal>
       ) : null}
       {cancelSo ? (
         <CancelDialog
-          title={`Cancel order ${poShort(cancelSo.so_number)}`}
-          subtitle="If anything was shipped from a lot, it returns to inventory. Blocked if this order already has an invoice."
+          title={`${t("Cancel order")} ${poShort(cancelSo.so_number)}`}
+          subtitle={t(
+            "If anything was shipped from a lot, it returns to inventory. Blocked if this order already has an invoice.",
+          )}
           onClose={() => setCancelSo(null)}
           onConfirm={async (reason) => {
             await cancelSalesOrder({
@@ -1001,6 +1003,7 @@ function SoDetail({
   onDestinationSaved: () => Promise<void>;
   saving: boolean;
 }) {
+  const t = useT();
   const total = row.lines.reduce((s, l) => s + l.quantity_ordered * l.unit_price, 0);
   const cost = row.lines.reduce((s, l) => s + l.quantity_ordered * (l.unit_cost || 0), 0);
   const profit = total - cost;
@@ -1032,15 +1035,15 @@ function SoDetail({
       <div className="mb-3 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">SO #{poShort(row.so_number)}</h2>
+            <h2 className="text-lg font-semibold">{t("SO #")}{poShort(row.so_number)}</h2>
             <Badge tone={orderTone(row.status)}>{orderLabel(row.status)}</Badge>
           </div>
-          <p className="text-xs text-muted">Placed on {fecha(row.order_date)}</p>
+          <p className="text-xs text-muted">{t("Placed on")} {fecha(row.order_date)}</p>
           <CancelledNote by={row.cancelled_by} at={row.cancelled_at} reason={row.cancel_reason} />
         </div>
         <div className="flex gap-2">
           <SendButton
-            title="Sales Order"
+            title={t("Sales Order")}
             number={row.so_number}
             partyName={row.customer_name}
             email={row.customer_email}
@@ -1059,7 +1062,7 @@ function SoDetail({
           />
           <Button size="sm" variant="outline" asChild>
             <Link to="/ventas" search={{ tab: "new" }}>
-              + New order
+              + {t("New order")}
             </Link>
           </Button>
         </div>
@@ -1067,11 +1070,13 @@ function SoDetail({
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <MetaCard label="Customer">
           {row.customer_name}
-          <div className="text-[11px] font-normal text-subtle">Price sheet: Default</div>
+          <div className="text-[11px] font-normal text-subtle">
+            {t("Price sheet")}: {t("Default")}
+          </div>
         </MetaCard>
         <MetaCard label="Requested date">{fecha(row.requested_date || row.order_date)}</MetaCard>
         <MetaCard label="Pickup date">{row.ship_date ? fecha(row.ship_date) : "—"}</MetaCard>
-        <MetaCard label="Order type">Delivery to customer</MetaCard>
+        <MetaCard label="Order type">{t("Delivery to customer")}</MetaCard>
         <MetaCard label="Destination">
           {editingDestination ? (
             <div className="flex items-center gap-1">
@@ -1135,13 +1140,13 @@ function SoDetail({
         <MetaCard label="Order total">
           {money(total)}
           <div className="text-[11px] font-normal text-subtle">
-            Items: {row.lines.length} · Units:{" "}
+            {t("Items")}: {row.lines.length} · {t("Units")}:{" "}
             {row.lines.reduce((s, l) => s + l.quantity_ordered, 0)}
           </div>
         </MetaCard>
         <MetaCard label="Sales rep">{COMPANY.userName}</MetaCard>
         <MetaCard label="Fulfilled by">
-          {row.status === "completed" ? `Auto-fulfilled ${fecha(row.order_date)}` : "—"}
+          {row.status === "completed" ? `${t("Auto-fulfilled")} ${fecha(row.order_date)}` : "—"}
         </MetaCard>
       </div>
       {row.ship_to_instructions ? (
@@ -1152,15 +1157,15 @@ function SoDetail({
           <p className="whitespace-pre-wrap">{row.ship_to_instructions}</p>
         </div>
       ) : null}
-      <p className="mt-5 mb-2 text-sm font-semibold">Inventory Items</p>
+      <p className="mt-5 mb-2 text-sm font-semibold">{t("Inventory Items")}</p>
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full text-left text-sm">
           <thead className="bg-surface-2 text-xs text-muted">
             <tr>
-              <th className="px-3 py-2">Item</th>
-              <th className="px-3 py-2">Qty ordered</th>
-              <th className="px-3 py-2">Price</th>
-              <th className="px-3 py-2">Total</th>
+              <th className="px-3 py-2">{t("Item")}</th>
+              <th className="px-3 py-2">{t("Qty ordered")}</th>
+              <th className="px-3 py-2">{t("Price")}</th>
+              <th className="px-3 py-2">{t("Total")}</th>
               <th className="px-3 py-2" />
             </tr>
           </thead>
@@ -1174,7 +1179,7 @@ function SoDetail({
                   </div>
                   {l.lot_number ? (
                     <div className="text-xs text-muted">
-                      {l.lot_number} — {l.quantity_shipped} received / {l.open} ATS
+                      {l.lot_number} — {l.quantity_shipped} {t("received")} / {l.open} {t("ATS")}
                     </div>
                   ) : null}
                 </td>
@@ -1184,7 +1189,7 @@ function SoDetail({
                 <td className="px-3 py-3">
                   {l.open > 0 && row.status !== "cancelled" ? (
                     <Button size="sm" onClick={() => onShip(l)}>
-                      Fulfill
+                      {t("Fulfill")}
                     </Button>
                   ) : null}
                 </td>
@@ -1202,11 +1207,11 @@ function SoDetail({
             to="/doc/$tipo/$id"
             params={{ tipo: "ov", id: row.share_token }}
           >
-            Print documents
+            {t("Print documents")}
           </Link>
           <div className="mt-2">
             <SendButton
-              title="Sales Order"
+              title={t("Sales Order")}
               number={row.so_number}
               partyName={row.customer_name}
               email={row.customer_email}
@@ -1227,34 +1232,34 @@ function SoDetail({
           </div>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
-          <p className="text-link">Audit log</p>
+          <p className="text-link">{t("Audit log")}</p>
           <button type="button" className="mt-2 block text-link" onClick={onCredit}>
-            Create credit invoice
+            {t("Create credit invoice")}
           </button>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between text-muted">
-            <span>Inventory items</span>
+            <span>{t("Inventory items")}</span>
             <span>{row.lines.length}</span>
           </div>
           <div className="mt-1 flex justify-between text-muted">
-            <span>Inventory units</span>
+            <span>{t("Inventory units")}</span>
             <span>{row.lines.reduce((s, l) => s + l.quantity_ordered, 0)}</span>
           </div>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-muted">Inventory item total</span>
+            <span className="text-muted">{t("Inventory item total")}</span>
             <span>{money(total)}</span>
           </div>
           <div className="mt-1 flex justify-between font-semibold">
-            <span>Order total</span>
+            <span>{t("Order total")}</span>
             <span>{money(total)}</span>
           </div>
           <div className="mt-1 flex justify-between text-muted">
-            <span>Blended margin (est.)</span>
+            <span>{t("Blended margin (est.)")}</span>
             <span>
-              {margin.toFixed(0)}% · markup {markup.toFixed(0)}%
+              {margin.toFixed(0)}% · {t("markup")} {markup.toFixed(0)}%
             </span>
           </div>
         </div>
@@ -1262,16 +1267,16 @@ function SoDetail({
       <div className="mt-4 flex flex-wrap gap-2">
         {!row.invoice && row.status !== "cancelled" ? (
           <Button size="sm" disabled={saving} onClick={onInvoice}>
-            Invoice
+            {t("Invoice")}
           </Button>
         ) : null}
         {row.status !== "cancelled" ? (
           <>
             <Button size="sm" variant="outline" onClick={onBuy}>
-              Generate purchase
+              {t("Generate purchase")}
             </Button>
             <Button size="sm" variant="outline" onClick={onCancel}>
-              Cancel order
+              {t("Cancel order")}
             </Button>
           </>
         ) : null}

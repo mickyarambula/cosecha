@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { CustomerLocationModal } from "@/components/customer-location-form";
 import { createCustomer, listCustomerLocations, listCustomers, setDefaultCustomerLocation, updateCustomer } from "@/lib/produce-server";
+import { useT } from "@/lib/i18n";
 import { useAsync } from "@/lib/use-async";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -16,6 +17,7 @@ export const Route = createFileRoute("/clientes")({
 });
 
 function Page() {
+  const t = useT();
   const { data, loading, reload } = useAsync(() => listCustomers(), []);
   const [sel, setSel] = useState<number | null>(null);
   const [q, setQ] = useState("");
@@ -141,7 +143,7 @@ function Page() {
           city: edit.city || undefined,
         },
       });
-      setMsg("Saved");
+      setMsg(t("Saved"));
       await reload();
     } catch (e) {
       setErr(errorMessage(e, "No se pudo guardar el cliente."));
@@ -154,21 +156,21 @@ function Page() {
     <div className="flex min-h-[calc(100dvh-7rem)]">
       <TabActions>
         <Button size="sm" variant="outline">
-          Export all
+          {t("Export all")}
         </Button>
         <Button size="sm" onClick={() => { setOpen(true); setFormErr(null); }}>
-          + Add new
+          {t("+ Add new")}
         </Button>
       </TabActions>
       <aside className="flex w-full max-w-xs shrink-0 flex-col border-r border-border bg-surface">
         <div className="flex gap-2 border-b border-border p-3">
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" />
           <Button size="sm" variant="outline">
-            Filters
+            {t("Filters")}
           </Button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {loading ? <p className="p-4 text-sm text-muted">Loading…</p> : null}
+          {loading ? <p className="p-4 text-sm text-muted">{t("Loading…")}</p> : null}
           {groups.map(([letter, rows]) => (
             <div key={letter}>
               <p className="bg-surface-2 px-3 py-1 text-xs font-semibold text-muted">{letter}</p>
@@ -183,7 +185,7 @@ function Page() {
                   )}
                 >
                   <span className="text-sm font-medium">{c.name}</span>
-                  <span className="text-xs text-muted">Default</span>
+                  <span className="text-xs text-muted">{t("Default")}</span>
                 </button>
               ))}
             </div>
@@ -197,12 +199,12 @@ function Page() {
               <ellipse cx="40" cy="50" rx="18" ry="10" fill="currentColor" opacity="0.2" />
               <path d="M22 48c8-16 16-22 18-22 4 0 8 10 14 14 4 3 8 4 10 10H22z" fill="currentColor" opacity="0.25" />
             </svg>
-            <p>Select a customer on the left panel to get more details</p>
+            <p>{t("Select a customer on the left panel to get more details")}</p>
           </div>
         ) : (
           <div>
             <div className="mb-4 flex items-center justify-between">
-              <h1 className="text-lg font-semibold">Edit Customer</h1>
+              <h1 className="text-lg font-semibold">{t("Edit Customer")}</h1>
               {msg ? <span className="text-sm text-ok">{msg}</span> : null}
               {err ? <span className="text-sm text-danger">{err}</span> : null}
             </div>
@@ -219,20 +221,20 @@ function Page() {
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Delivery route">
                   <Select defaultValue="">
-                    <option value="">None</option>
+                    <option value="">{t("None")}</option>
                   </Select>
                 </Field>
                 <Field label="Price sheet">
                   <Select defaultValue="Default">
-                    <option>Default</option>
+                    <option value="Default">{t("Default")}</option>
                   </Select>
                 </Field>
               </div>
             </div>
             <p className="mt-3 text-sm">
-              This customer is <strong>Enabled</strong>{" "}
+              {t("This customer is")} <strong>{t("Enabled")}</strong>{" "}
               <button type="button" className="text-danger">
-                Disable
+                {t("Disable")}
               </button>
             </p>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
@@ -250,16 +252,16 @@ function Page() {
               <Textarea value={edit.notes} onChange={(e) => setEdit({ ...edit, notes: e.target.value })} />
             </Field>
             <div className="mt-4 space-y-2 text-sm">
-              <p className="label-caps">Customer options</p>
+              <p className="label-caps">{t("Customer options")}</p>
               <label className="flex items-center gap-2">
-                <input type="checkbox" className="size-4 accent-action" /> Display country of origin on invoices, BOLs, and sales confirmations for this customer
+                <input type="checkbox" className="size-4 accent-action" /> {t("Display country of origin on invoices, BOLs, and sales confirmations for this customer")}
               </label>
               <label className="flex items-center gap-2">
-                <input type="checkbox" className="size-4 accent-action" /> Display SKUs on invoices, BOLs, and sales confirmations for this customer
+                <input type="checkbox" className="size-4 accent-action" /> {t("Display SKUs on invoices, BOLs, and sales confirmations for this customer")}
               </label>
             </div>
             <div className="mt-6">
-              <p className="mb-2 text-sm font-semibold">Delivery destinations</p>
+              <p className="mb-2 text-sm font-semibold">{t("Delivery destinations")}</p>
               <div className="grid gap-2 sm:grid-cols-2">
                 {(locations.data ?? []).map((loc) => (
                   <div key={loc.id} className="rounded-md border border-border p-3 text-xs">
@@ -274,7 +276,7 @@ function Page() {
                     {loc.receiving_instructions ? <p className="mt-2 whitespace-pre-wrap text-warn">{loc.receiving_instructions}</p> : null}
                     <div className="mt-2 flex gap-3">
                       <button type="button" className="font-medium text-link" onClick={() => setLocationModal(loc.id)}>
-                        Edit
+                        {t("Edit")}
                       </button>
                       {!loc.is_default ? (
                         <button
@@ -282,7 +284,7 @@ function Page() {
                           className="font-medium text-link"
                           onClick={() => void setDefaultCustomerLocation({ data: { id: loc.id } }).then(() => locations.reload())}
                         >
-                          Set as default
+                          {t("Set as default")}
                         </button>
                       ) : null}
                     </div>
@@ -293,16 +295,16 @@ function Page() {
                   className="rounded-md border border-dashed border-border p-3 text-xs text-muted"
                   onClick={() => setLocationModal("new")}
                 >
-                  + Add destination
+                  {t("+ Add destination")}
                 </button>
               </div>
             </div>
             <div className="mt-6">
-              <p className="mb-2 text-sm font-semibold">Contacts</p>
+              <p className="mb-2 text-sm font-semibold">{t("Contacts")}</p>
               <Field label="Statement delivery method" className="max-w-xs">
                 <Select defaultValue="Email">
-                  <option>Email</option>
-                  <option>Print</option>
+                  <option value="Email">{t("Email")}</option>
+                  <option value="Print">{t("Print")}</option>
                 </Select>
               </Field>
               <div className="mt-3 grid gap-2 rounded-md border border-border p-3 sm:grid-cols-4">
@@ -312,32 +314,32 @@ function Page() {
                 <Input placeholder="Email address" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} />
               </div>
               <details className="mt-2 rounded-md border border-border p-3 text-sm">
-                <summary className="cursor-pointer text-muted">Documents sent to this contact (0)</summary>
+                <summary className="cursor-pointer text-muted">{t("Documents sent to this contact (0)")}</summary>
                 <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {["Price Sheets", "Pick Tickets", "Statements", "Sales Confirmations", "Invoices", "BOLs"].map((d) => (
                     <label key={d} className="flex items-center gap-2">
-                      <input type="checkbox" className="size-4 accent-action" /> {d}
+                      <input type="checkbox" className="size-4 accent-action" /> {t(d)}
                     </label>
                   ))}
                 </div>
               </details>
               <button type="button" className="mt-2 text-sm text-link">
-                + Add contact
+                {t("+ Add contact")}
               </button>
             </div>
             <PartySkuPanel partyKind="customer" partyId={current.id} />
             <div className="mt-6 rounded-md border border-dashed border-border p-8 text-center text-sm text-muted">
-              Drag and drop files here
+              {t("Drag and drop files here")}
               <div>
-                or <span className="text-link">Browse files</span>
+                {t("or")} <span className="text-link">{t("Browse files")}</span>
               </div>
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="outline" onClick={() => setSel(null)}>
-                Cancel
+                {t("Cancel")}
               </Button>
               <Button disabled={saving} onClick={() => void save()}>
-                Save changes
+                {t("Save changes")}
               </Button>
             </div>
           </div>
@@ -387,25 +389,25 @@ function Page() {
             </div>
             <Field label="Price sheet">
               <Select defaultValue="Default">
-                <option>Default</option>
+                <option value="Default">{t("Default")}</option>
               </Select>
             </Field>
             <Field label="Statement delivery method">
               <Select defaultValue="Email">
-                <option>Email</option>
-                <option>Print</option>
+                <option value="Email">{t("Email")}</option>
+                <option value="Print">{t("Print")}</option>
               </Select>
             </Field>
             <button type="button" className="text-left text-sm text-link">
-              + New price sheet
+              {t("+ New price sheet")}
             </button>
             {formErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{formErr}</p> : null}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                Cancel
+                {t("Cancel")}
               </Button>
               <Button type="submit" disabled={saving}>
-                Add customer
+                {t("Add customer")}
               </Button>
             </div>
           </form>

@@ -4,6 +4,7 @@ import { Kpi, Modal, PageHeader } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { useT } from "@/lib/i18n";
 import { createLocation, listLocations } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { DESTINO_DUENO, DESTINO_TIPO, qty } from "@/lib/utils";
@@ -11,6 +12,7 @@ import { DESTINO_DUENO, DESTINO_TIPO, qty } from "@/lib/utils";
 export const Route = createFileRoute("/destinos")({ component: Page });
 
 function Page() {
+  const t = useT();
   const locs = useAsync(() => listLocations(), []);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
@@ -48,10 +50,10 @@ function Page() {
       });
       setOpen(false);
       setForm({ name: "", location_type: "bodega", owner_kind: "propia", city: "", contact_name: "", notes: "" });
-      setMsg(`Route ${r.code} created`);
+      setMsg(`Ruta ${r.code} creada`);
       await locs.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not create");
+      setMsg(err instanceof Error ? err.message : t("Could not create"));
     } finally {
       setSaving(false);
     }
@@ -60,28 +62,28 @@ function Page() {
   return (
     <div>
       <PageHeader
-        title="Delivery routes"
-        subtitle="SHIP TO locations: owned warehouse, customer dock, or cross-dock."
-        action={<Button onClick={() => setOpen(true)}>New destination</Button>}
+        title="Delivery Routes"
+        subtitle={t("SHIP TO locations: owned warehouse, customer dock, or cross-dock.")}
+        action={<Button onClick={() => setOpen(true)}>{t("New destination")}</Button>}
       />
       <div className="mb-5 grid grid-cols-3 gap-3">
-        <Kpi label="Destinations" value={String(kpis.total)} />
+        <Kpi label={t("Destinations")} value={String(kpis.total)} />
         <Kpi label="Owned" value={String(kpis.propias)} />
         <Kpi label="Customer" value={String(kpis.cliente)} />
       </div>
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
-      {locs.loading ? <p className="text-sm text-muted">Loading…</p> : null}
+      {locs.loading ? <p className="text-sm text-muted">{t("Loading…")}</p> : null}
       {locs.error ? <p className="text-sm text-danger">{locs.error}</p> : null}
       <div className="overflow-x-auto rounded-xl border border-border bg-surface">
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="border-b border-border text-xs text-muted">
             <tr>
-              <th className="px-4 py-3 font-medium">Code</th>
-              <th className="px-4 py-3 font-medium">Name</th>
-              <th className="px-4 py-3 font-medium">Type</th>
-              <th className="px-4 py-3 font-medium">Owner</th>
-              <th className="px-4 py-3 font-medium">City</th>
-              <th className="px-4 py-3 text-right font-medium">On hand</th>
+              <th className="px-4 py-3 font-medium">{t("Code")}</th>
+              <th className="px-4 py-3 font-medium">{t("Name")}</th>
+              <th className="px-4 py-3 font-medium">{t("Type")}</th>
+              <th className="px-4 py-3 font-medium">{t("Owner")}</th>
+              <th className="px-4 py-3 font-medium">{t("City")}</th>
+              <th className="px-4 py-3 text-right font-medium">{t("On hand")}</th>
             </tr>
           </thead>
           <tbody>
@@ -92,7 +94,7 @@ function Page() {
                   <div className="font-medium">{l.name}</div>
                   {l.notes ? <div className="text-xs text-muted">{l.notes}</div> : null}
                 </td>
-                <td className="px-4 py-3 text-muted">{DESTINO_TIPO[l.location_type] ?? l.location_type}</td>
+                <td className="px-4 py-3 text-muted">{t(DESTINO_TIPO[l.location_type] ?? l.location_type)}</td>
                 <td className="px-4 py-3">
                   <Badge tone={l.owner_kind === "propia" ? "ok" : l.owner_kind === "cliente" ? "warn" : "mute"}>
                     {DESTINO_DUENO[l.owner_kind] ?? l.owner_kind}
@@ -107,7 +109,7 @@ function Page() {
       </div>
 
       {open ? (
-        <Modal title="New destination" subtitle="Used as the receive-to location on inbound POs." onClose={() => setOpen(false)}>
+        <Modal title="New destination" subtitle={t("Used as the receive-to location on inbound POs.")} onClose={() => setOpen(false)}>
           <form className="grid gap-3" onSubmit={submit}>
             <Field label="Name">
               <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Bodega McAllen 2" />
@@ -117,7 +119,7 @@ function Page() {
                 <Select value={form.location_type} onChange={(e) => setForm({ ...form, location_type: e.target.value })}>
                   {Object.entries(DESTINO_TIPO).map(([k, v]) => (
                     <option key={k} value={k}>
-                      {v}
+                      {t(v)}
                     </option>
                   ))}
                 </Select>
@@ -126,7 +128,7 @@ function Page() {
                 <Select value={form.owner_kind} onChange={(e) => setForm({ ...form, owner_kind: e.target.value })}>
                   {Object.entries(DESTINO_DUENO).map(([k, v]) => (
                     <option key={k} value={k}>
-                      {v}
+                      {t(v)}
                     </option>
                   ))}
                 </Select>
@@ -136,7 +138,7 @@ function Page() {
               <Field label="City">
                 <Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
               </Field>
-              <Field label="Contact">
+              <Field label={t("Contact")}>
                 <Input value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} />
               </Field>
             </div>
@@ -144,7 +146,7 @@ function Page() {
               <Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </Field>
             <Button type="submit" disabled={saving}>
-              {saving ? "Saving…" : "Create destination"}
+              {saving ? t("Saving…") : t("Create destination")}
             </Button>
           </form>
         </Modal>

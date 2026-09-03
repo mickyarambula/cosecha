@@ -119,9 +119,9 @@ function InventorySettings({ map, setKey }: { map: Record<string, string>; setKe
             className="w-48"
             onChange={(e) => void setKey("repack_pack_date", e.target.value)}
           >
-            <option>{t("Earliest pack date")}</option>
-            <option>{t("Current date")}</option>
-            <option>{t("No default date")}</option>
+            <option value="Earliest pack date">{t("Earliest pack date")}</option>
+            <option value="Current date">{t("Current date")}</option>
+            <option value="No default date">{t("No default date")}</option>
           </Select>
         </Setting>
         <p className="label-caps pt-4">{t("Purchases")}</p>
@@ -134,8 +134,8 @@ function InventorySettings({ map, setKey }: { map: Record<string, string>; setKe
             className="w-48"
             onChange={(e) => void setKey("lot_number_method", e.target.value)}
           >
-            <option>{t("Sequential")}</option>
-            <option>{t("PO # Prefaced")}</option>
+            <option value="Sequential">{t("Sequential")}</option>
+            <option value="PO # Prefaced">{t("PO # Prefaced")}</option>
           </Select>
         </Setting>
       </div>
@@ -318,7 +318,7 @@ function Departments() {
         <form className="flex flex-wrap items-start gap-2 border-t border-border px-4 py-3" onSubmit={add}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Department name" />
           <Button type="submit" size="sm" disabled={saving || !name.trim()}>
-            + Add department
+            {t("+ Add department")}
           </Button>
           {err ? <p className="w-full rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{err}</p> : null}
         </form>
@@ -651,7 +651,7 @@ function SentLog() {
             {(ev.data ?? []).map((row) => (
               <tr key={row.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 text-xs text-muted">{fecha(row.created_at)}</td>
-                <td className="px-4 py-3 capitalize">{row.channel}</td>
+                <td className="px-4 py-3">{row.channel === "email" ? t("Email") : t("WhatsApp")}</td>
                 <td className="px-4 py-3">
                   {row.doc_number || "—"}
                   {row.party_name ? <span className="text-muted"> · {row.party_name}</span> : null}

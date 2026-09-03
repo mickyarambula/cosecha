@@ -128,7 +128,7 @@ export const MODULES: ModuleDef[] = [
       },
       {
         to: "/cxc",
-        label: "Sales",
+        label: "Accounts Receivable",
         starred: true,
         tabs: [
           { label: "Overview", tab: "overview" },

@@ -398,9 +398,10 @@ function MenuList({
   onClose: () => void;
   className?: string;
 }) {
+  const t = useT();
   return (
     <>
-      <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close" onClick={onClose} />
+      <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label={t("Close")} onClick={onClose} />
       <div className={cn("absolute top-10 z-50 min-w-48 rounded-md border border-border bg-surface py-1 shadow-lg", className)}>
         {items.map((it) => (
           <Link

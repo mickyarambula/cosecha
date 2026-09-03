@@ -17,7 +17,7 @@ export const usePrefs = create<PrefsState>()(
   persist(
     (set) => ({
       theme: "system",
-      locale: "en",
+      locale: "es",
       setTheme: (theme) => set({ theme }),
       setLocale: (locale) => set({ locale }),
     }),
@@ -48,4 +48,4 @@ export function dateLocaleTag(locale?: Locale): string {
   return l === "es" ? "es-MX" : "en-US";
 }
 
-export const THEME_BOOT_SCRIPT = `(function(){try{var r=localStorage.getItem(${JSON.stringify(PREFS_STORAGE_KEY)});var d=r?JSON.parse(r):{};var s=d.state||d;var t=s.theme||"system";var l=s.locale||"en";var dark=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var el=document.documentElement;el.classList.toggle("dark",!!dark);el.style.colorScheme=dark?"dark":"light";el.lang=l==="es"?"es":"en";}catch(e){}})();`;
+export const THEME_BOOT_SCRIPT = `(function(){try{var r=localStorage.getItem(${JSON.stringify(PREFS_STORAGE_KEY)});var d=r?JSON.parse(r):{};var s=d.state||d;var t=s.theme||"system";var l=s.locale||"es";var dark=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var el=document.documentElement;el.classList.toggle("dark",!!dark);el.style.colorScheme=dark?"dark":"light";el.lang=l==="es"?"es":"en";}catch(e){}})();`;

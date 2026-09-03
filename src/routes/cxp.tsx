@@ -6,6 +6,7 @@ import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
+import { useT } from "@/lib/i18n";
 import {
   cancelSupplierBill,
   listBills,
@@ -25,6 +26,7 @@ function matchTone(m: string) {
 }
 
 function Page() {
+  const t = useT();
   const bills = useAsync(() => listBills(), []);
   const payables = useAsync(() => listGrowerPayables(), []);
   const [pago, setPago] = useState<{ id: number; number: string; saldo: number } | null>(null);
@@ -50,10 +52,10 @@ function Page() {
     try {
       const r = await registerPago({ data: { bill_id: pago.id, amount: Number(amount) } });
       setPago(null);
-      setMsg(`Payment ${r.folio} · remaining ${money(r.remaining)}`);
+      setMsg(`Pago ${r.folio} · restante ${money(r.remaining)}`);
       await bills.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not record payment");
+      setMsg(err instanceof Error ? err.message : "No se pudo registrar el pago");
     } finally {
       setSaving(false);
     }
@@ -90,10 +92,12 @@ function Page() {
         <Kpi label="Receive mismatch" value={String(kpis.descuadre)} tone={kpis.descuadre ? "warn" : "ok"} />
       </div>
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
-      {bills.loading ? <p className="text-sm text-muted">Loading…</p> : null}
+      {bills.loading ? <p className="text-sm text-muted">{t("Loading…")}</p> : null}
       {bills.error ? <p className="text-sm text-danger">{bills.error}</p> : null}
       {rows.length === 0 && !bills.loading ? (
-        <p className="text-sm text-muted">No vendor invoices yet. Receive a purchase and capture its invoice.</p>
+        <p className="text-sm text-muted">
+          {t("No vendor invoices yet. Receive a purchase and capture its invoice.")}
+        </p>
       ) : null}
       <div className="grid gap-3">
         {rows.map((b) => (
@@ -111,7 +115,7 @@ function Page() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Badge tone={matchTone(b.match)}>
-                  {b.match === "cuadrado" ? "Match" : b.match === "faltante" ? "Short vs ordered" : "Over received"}
+                  {b.match === "cuadrado" ? "Matched" : b.match === "faltante" ? "Short vs ordered" : "Over received"}
                 </Badge>
                 <Badge tone={orderTone(b.status)}>{orderLabel(b.status)}</Badge>
                 {b.status !== "cancelled" && b.purchase_order_id ? (
@@ -120,7 +124,7 @@ function Page() {
                   </Button>
                 ) : null}
                 <SendButton
-                  title="Vendor invoice"
+                  title={t("Vendor invoice")}
                   number={b.bill_number}
                   partyName={b.supplier_name}
                   email={b.supplier_email}
@@ -137,23 +141,23 @@ function Page() {
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
               <div>
-                <p className="text-xs text-muted">Ordered</p>
+                <p className="text-xs text-muted">{t("Ordered")}</p>
                 <p className="tabular-nums">{qty(b.ordered_qty)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted">Received</p>
+                <p className="text-xs text-muted">{t("Received")}</p>
                 <p className="tabular-nums">{qty(b.received_qty)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted">Invoiced</p>
+                <p className="text-xs text-muted">{t("Invoiced")}</p>
                 <p className="tabular-nums font-medium">{money(b.total)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted">Paid</p>
+                <p className="text-xs text-muted">{t("Amount paid")}</p>
                 <p className="tabular-nums">{money(b.paid)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted">Balance</p>
+                <p className="text-xs text-muted">{t("Balance")}</p>
                 <p className="tabular-nums font-semibold">{money(b.saldo)}</p>
               </div>
             </div>
@@ -247,7 +251,7 @@ function Page() {
 
       {cancelBill ? (
         <CancelDialog
-          title={`Cancel bill ${cancelBill.number}`}
+          title={`Cancelar factura ${cancelBill.number}`}
           subtitle="This does not touch inventory — it only voids the payable document."
           onClose={() => setCancelBill(null)}
           onConfirm={async (reason) => {
@@ -259,9 +263,9 @@ function Page() {
       ) : null}
 
       {pago ? (
-        <Modal title={`Pay ${pago.number}`} onClose={() => setPago(null)}>
+        <Modal title={`Pagar ${pago.number}`} onClose={() => setPago(null)}>
           <form className="grid gap-3" onSubmit={pagar}>
-            <p className="text-sm text-muted">Balance {money(pago.saldo)}</p>
+            <p className="text-sm text-muted">Saldo {money(pago.saldo)}</p>
             <Field label="Amount">
               <Input required type="number" min="0.01" step="0.01" max={pago.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
             </Field>

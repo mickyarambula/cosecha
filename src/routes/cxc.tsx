@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
+import { useT } from "@/lib/i18n";
 import { cancelInvoice, listCustomers, listInvoices, registerCustomerPayment } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { aging30, fecha, money, PAY_METHODS, todayISO } from "@/lib/utils";
@@ -21,6 +22,7 @@ export const Route = createFileRoute("/cxc")({
 });
 
 function Page() {
+  const t = useT();
   const { tab } = Route.useSearch();
   const inv = useAsync(() => listInvoices(), []);
   const customers = useAsync(() => listCustomers(), []);
@@ -71,21 +73,21 @@ function Page() {
         <div className="mt-3 flex flex-wrap gap-6 text-sm">
           <span>
             <span className="mr-2 inline-block size-2 rounded-sm bg-subtle" />
-            Sales to terms customers {money(0)}
+            {t("Sales to terms customers")} {money(0)}
           </span>
           <span>
             <span className="mr-2 inline-block size-2 rounded-sm bg-action" />
-            Sales to cash customers {money(salesTotal)}
+            {t("Sales to cash customers")} {money(salesTotal)}
           </span>
           <span>
             <span className="mr-2 inline-block size-2 rounded-sm bg-danger" />
-            Credits {money(creditTotal)}
+            {t("Credits")} {money(creditTotal)}
           </span>
           <span>
             <span className="mr-2 inline-block size-2 rounded-sm bg-warn" />
-            Opening {money(openingTotal)}
+            {t("Opening")} {money(openingTotal)}
           </span>
-          <span className="ml-auto font-medium">AR Total {money(salesTotal + creditTotal + openingTotal)}</span>
+          <span className="ml-auto font-medium">{t("AR Total")} {money(salesTotal + creditTotal + openingTotal)}</span>
         </div>
         <div className="mt-3 h-4 overflow-hidden rounded-sm bg-surface-2">
           <div className="h-full bg-action" style={{ width: salesTotal + creditTotal ? `${(salesTotal / (salesTotal + Math.abs(creditTotal) || 1)) * 100}%` : "0%" }} />
@@ -94,13 +96,13 @@ function Page() {
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
-                <th className="px-3 py-2">Date</th>
-                <th className="px-3 py-2 text-right">Sales to Terms Customers</th>
-                <th className="px-3 py-2 text-right">Sales to Cash Customers</th>
-                <th className="px-3 py-2 text-right">Credits</th>
-                <th className="px-3 py-2 text-right">AR Day Total</th>
-                <th className="px-3 py-2 text-right">Payments</th>
-                <th className="px-3 py-2 text-right">AR Balance</th>
+                <th className="px-3 py-2">{t("Date")}</th>
+                <th className="px-3 py-2 text-right">{t("Sales to Terms Customers")}</th>
+                <th className="px-3 py-2 text-right">{t("Sales to Cash Customers")}</th>
+                <th className="px-3 py-2 text-right">{t("Credits")}</th>
+                <th className="px-3 py-2 text-right">{t("AR Day Total")}</th>
+                <th className="px-3 py-2 text-right">{t("Payments")}</th>
+                <th className="px-3 py-2 text-right">{t("AR Balance")}</th>
               </tr>
             </thead>
             <tbody>
@@ -156,11 +158,11 @@ function Page() {
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
               <tr>
-                <th className="px-3 py-2">Customer</th>
-                <th className="px-3 py-2">Statement delivery</th>
-                <th className="px-3 py-2">Terms</th>
-                <th className="px-3 py-2 text-right">Overdue</th>
-                <th className="px-3 py-2 text-right">Balance</th>
+                <th className="px-3 py-2">{t("Customer")}</th>
+                <th className="px-3 py-2">{t("Statement delivery")}</th>
+                <th className="px-3 py-2">{t("Terms")}</th>
+                <th className="px-3 py-2 text-right">{t("Overdue")}</th>
+                <th className="px-3 py-2 text-right">{t("Balance")}</th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>
@@ -168,13 +170,13 @@ function Page() {
               {list.map(([name, v]) => (
                 <tr key={name} className="border-b border-border">
                   <td className="px-3 py-2">{name}</td>
-                  <td className="px-3 py-2 text-muted">Email: {v.email || "—"}</td>
+                  <td className="px-3 py-2 text-muted">{t("Email")}: {v.email || "—"}</td>
                   <td className="px-3 py-2">{v.terms}</td>
                   <td className="px-3 py-2 text-right text-warn">{money(v.overdue)}</td>
                   <td className="px-3 py-2 text-right">{money(v.balance)}</td>
                   <td className="px-3 py-2">
                     <SendButton
-                      title="Statement"
+                      title={t("Statement")}
                       number={name}
                       partyName={name}
                       email={v.email}
@@ -198,11 +200,11 @@ function Page() {
       <div className="p-5">
         <TabActions>
           <Button size="sm" onClick={() => setPayOpen(true)}>
-            Record payment
+            {t("Record payment")}
           </Button>
         </TabActions>
         <p className="text-sm text-muted">
-          Customer receipts post here after you record a payment against invoices. Cash, check, card and ACH are supported.
+          {t("Customer receipts post here after you record a payment against invoices. Cash, check, card and ACH are supported.")}
         </p>
         {payOpen ? (
           <CustomerPayModal
@@ -225,11 +227,11 @@ function Page() {
         <table className="w-full min-w-[800px] text-left text-sm">
           <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
             <tr>
-              <th className="px-3 py-2">Inv #</th>
-              <th className="px-3 py-2">Customer</th>
-              <th className="px-3 py-2">Date</th>
-              <th className="px-3 py-2 text-right">Total</th>
-              <th className="px-3 py-2">Status</th>
+              <th className="px-3 py-2">{t("Inv #")}</th>
+              <th className="px-3 py-2">{t("Customer")}</th>
+              <th className="px-3 py-2">{t("Date")}</th>
+              <th className="px-3 py-2 text-right">{t("Total")}</th>
+              <th className="px-3 py-2">{t("Status")}</th>
             </tr>
           </thead>
           <tbody>
@@ -244,14 +246,14 @@ function Page() {
                 <td className="px-3 py-2">{fecha(c.issue_date)}</td>
                 <td className="px-3 py-2 text-right text-danger">{money(c.total)}</td>
                 <td className="px-3 py-2">
-                  <Badge tone="unpaid">{c.paid ? "Applied" : "Unused"}</Badge>
+                  <Badge tone="unpaid">{c.paid ? t("Applied") : t("Unused")}</Badge>
                 </td>
               </tr>
             ))}
             {credits.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-3 py-8 text-muted">
-                  No credit invoices yet. Create one from a sales order.
+                  {t("No credit invoices yet. Create one from a sales order.")}
                 </td>
               </tr>
             ) : null}
@@ -275,13 +277,13 @@ function Page() {
         <table className="w-full min-w-[800px] text-left text-sm">
           <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
             <tr>
-              <th className="px-3 py-2">Customer</th>
-              <th className="px-3 py-2 text-right">Current</th>
+              <th className="px-3 py-2">{t("Customer")}</th>
+              <th className="px-3 py-2 text-right">{t("Current")}</th>
               <th className="px-3 py-2 text-right">1-30</th>
               <th className="px-3 py-2 text-right">31-60</th>
               <th className="px-3 py-2 text-right">61-90</th>
               <th className="px-3 py-2 text-right">91+</th>
-              <th className="px-3 py-2 text-right">Total</th>
+              <th className="px-3 py-2 text-right">{t("Total")}</th>
             </tr>
           </thead>
           <tbody>
@@ -306,22 +308,22 @@ function Page() {
     <div>
       <TabActions>
         <Button size="sm" onClick={() => setPayOpen(true)}>
-          Record payment
+          {t("Record payment")}
         </Button>
       </TabActions>
       <FilterRow>
         <FilterField label="Status">
           <Select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All statuses</option>
-            <option value="unpaid">Unpaid</option>
-            <option value="paid">Paid</option>
-            <option value="credit">Credit</option>
-            <option value="opening">Opening</option>
+            <option value="">{t("All statuses")}</option>
+            <option value="unpaid">{t("Unpaid")}</option>
+            <option value="paid">{t("Paid")}</option>
+            <option value="credit">{t("Credit")}</option>
+            <option value="opening">{t("Opening")}</option>
           </Select>
         </FilterField>
         <FilterField label="Customer">
           <Select value={customerFilter} onChange={(e) => setCustomerFilter(e.target.value)}>
-            <option value="">All customers</option>
+            <option value="">{t("All customers")}</option>
             {(customers.data ?? []).map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -341,18 +343,18 @@ function Page() {
         <table className="w-full min-w-[1100px] text-left text-sm">
           <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
             <tr>
-              <th className="px-3 py-2">Inv #</th>
-              <th className="px-3 py-2">C PO #</th>
-              <th className="px-3 py-2">Rep</th>
-              <th className="px-3 py-2">Type</th>
-              <th className="px-3 py-2">Customer</th>
-              <th className="px-3 py-2">Reqs. date</th>
-              <th className="px-3 py-2">Due</th>
-              <th className="px-3 py-2">Terms</th>
-              <th className="px-3 py-2 text-right">Total</th>
-              <th className="px-3 py-2 text-right">Paid in</th>
-              <th className="px-3 py-2 text-right">Rem. balance</th>
-              <th className="px-3 py-2">Status</th>
+              <th className="px-3 py-2">{t("Inv #")}</th>
+              <th className="px-3 py-2">{t("C PO #")}</th>
+              <th className="px-3 py-2">{t("Rep")}</th>
+              <th className="px-3 py-2">{t("Type")}</th>
+              <th className="px-3 py-2">{t("Customer")}</th>
+              <th className="px-3 py-2">{t("Reqs. date")}</th>
+              <th className="px-3 py-2">{t("Due")}</th>
+              <th className="px-3 py-2">{t("Terms")}</th>
+              <th className="px-3 py-2 text-right">{t("Total")}</th>
+              <th className="px-3 py-2 text-right">{t("Paid in")}</th>
+              <th className="px-3 py-2 text-right">{t("Rem. balance")}</th>
+              <th className="px-3 py-2">{t("Status")}</th>
               <th className="px-3 py-2" />
             </tr>
           </thead>
@@ -372,13 +374,13 @@ function Page() {
                   ) : i.invoice_type === "opening" ? (
                     <Badge tone="warn">Opening</Badge>
                   ) : (
-                    "Delivery"
+                    t("Delivery")
                   )}
                 </td>
                 <td className="px-3 py-2">{i.customer_name}</td>
                 <td className="px-3 py-2">{fecha(i.issue_date)}</td>
                 <td className="px-3 py-2">{fecha(i.due_date)}</td>
-                <td className="px-3 py-2">{i.payment_terms || "Cash"}</td>
+                <td className="px-3 py-2">{i.payment_terms || t("Cash")}</td>
                 <td className={`px-3 py-2 text-right ${i.total < 0 ? "text-danger" : ""}`}>{money(i.total)}</td>
                 <td className="px-3 py-2 text-right">{money(i.paid)}</td>
                 <td className="px-3 py-2 text-right">{money(i.saldo)}</td>
@@ -395,7 +397,7 @@ function Page() {
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-2">
                     <SendButton
-                      title={i.invoice_type === "credit" ? "Credit" : "Invoice"}
+                      title={i.invoice_type === "credit" ? t("Credit") : t("Invoice")}
                       number={i.invoice_number}
                       partyName={i.customer_name}
                       email={i.customer_email}
@@ -434,7 +436,7 @@ function Page() {
       ) : null}
       {cancelInv ? (
         <CancelDialog
-          title={`Cancel invoice ${cancelInv.invoice_number}`}
+          title={`Cancelar factura ${cancelInv.invoice_number}`}
           subtitle="Inventory is not touched — invoicing doesn't move stock. This only voids the billing document."
           onClose={() => setCancelInv(null)}
           onConfirm={async (reason) => {
@@ -449,9 +451,10 @@ function Page() {
 }
 
 function Mini({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  const t = useT();
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2">
-      <p className="label-caps">{label}</p>
+      <p className="label-caps">{t(label)}</p>
       <p className={`text-lg font-semibold tabular-nums ${warn ? "text-warn" : ""}`}>{value}</p>
     </div>
   );
@@ -479,6 +482,7 @@ function CustomerPayModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const withBal = invoices.filter((i) => i.invoice_type !== "credit" && i.saldo > 0);
   const [cid, setCid] = useState(String(withBal[0]?.customer_id ?? customers[0]?.id ?? ""));
   const rows = invoices.filter((i) => String(i.customer_id) === cid && i.invoice_type !== "credit" && i.saldo > 0);
@@ -497,7 +501,7 @@ function CustomerPayModal({
       .filter(([, a]) => a > 0)
       .map(([id, a]) => ({ invoice_id: Number(id), amount: a }));
     if (!apps.length) {
-      setErr("Select at least one invoice");
+      setErr(t("Select at least one invoice"));
       return;
     }
     setSaving(true);
@@ -507,7 +511,7 @@ function CustomerPayModal({
       });
       onSaved();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not record");
+      setErr(e instanceof Error ? e.message : t("Could not record"));
     } finally {
       setSaving(false);
     }
@@ -537,7 +541,9 @@ function CustomerPayModal({
           <Field label="Method">
             <Select value={method} onChange={(e) => setMethod(e.target.value)}>
               {PAY_METHODS.map((m) => (
-                <option key={m}>{m}</option>
+                <option key={m} value={m}>
+                  {t(m)}
+                </option>
               ))}
             </Select>
           </Field>
@@ -547,11 +553,11 @@ function CustomerPayModal({
             <thead className="text-[11px] uppercase text-muted">
               <tr>
                 <th className="px-2 py-2" />
-                <th className="px-2 py-2">Inv #</th>
-                <th className="px-2 py-2">Requested</th>
-                <th className="px-2 py-2 text-right">Amount</th>
-                <th className="px-2 py-2">Status</th>
-                <th className="px-3 py-2 text-right">Amt to apply</th>
+                <th className="px-2 py-2">{t("Inv #")}</th>
+                <th className="px-2 py-2">{t("Requested")}</th>
+                <th className="px-2 py-2 text-right">{t("Amount")}</th>
+                <th className="px-2 py-2">{t("Status")}</th>
+                <th className="px-3 py-2 text-right">{t("Amt to apply")}</th>
               </tr>
             </thead>
             <tbody>
@@ -574,7 +580,7 @@ function CustomerPayModal({
                     <td className="px-2 py-2">{r.invoice_number.replace(/^PP-\d+-/, "")}</td>
                     <td className="px-2 py-2">{fecha(r.issue_date)}</td>
                     <td className="px-2 py-2 text-right">{money(r.total)}</td>
-                    <td className="px-2 py-2">{r.saldo > 0 ? "Unpaid" : "Paid"}</td>
+                    <td className="px-2 py-2">{r.saldo > 0 ? t("Unpaid") : t("Paid")}</td>
                     <td className="px-2 py-2 text-right">
                       {on ? (
                         <Input className="ml-auto w-24" value={String(checks[r.id])} onChange={(e) => setChecks({ ...checks, [r.id]: Number(e.target.value) || 0 })} />
@@ -590,15 +596,15 @@ function CustomerPayModal({
         </div>
       </div>
       {over > 0.009 ? (
-        <p className="mt-3 text-sm text-warn">Customer is overpaying {money(over)}. An overpayment tag will be created.</p>
+        <p className="mt-3 text-sm text-warn">{t("Customer is overpaying {amount}. An overpayment tag will be created.", { amount: money(over) })}</p>
       ) : null}
       {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button disabled={saving || applied <= 0} onClick={() => void submit()}>
-          Record payment
+          {t("Record payment")}
         </Button>
       </div>
     </Modal>

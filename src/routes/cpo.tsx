@@ -20,6 +20,7 @@ import {
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { fecha, money, qty, skuLabel, todayISO } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 export const Route = createFileRoute("/cpo")({ component: Page });
 
@@ -112,6 +113,7 @@ function RejectDialog({
 }
 
 function Page() {
+  const t = useT();
   const cpos = useAsync(() => listCustomerPOs(), []);
   const customers = useAsync(() => listCustomers(), []);
   const products = useAsync(() => listProducts(), []);
@@ -280,7 +282,7 @@ function Page() {
       if (file) fd.append("file", file);
       const r = await createCustomerPO({ data: fd });
       closeCreate();
-      setMsg(`Customer PO ${r.cpo_number} capturado`);
+      setMsg(`PO de cliente ${r.cpo_number} capturado`);
       await cpos.reload();
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : "No se pudo crear");
@@ -296,10 +298,10 @@ function Page() {
     try {
       const r = await convertCustomerPOToSO({ data: { customer_po_id: id } });
       setDetail(null);
-      setMsg(`${r.cpo_number} converted to ${r.so_number}`);
+      setMsg(`${r.cpo_number} convertido a ${r.so_number}`);
       await cpos.reload();
     } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : "Could not convert");
+      setErr(e2 instanceof Error ? e2.message : "No se pudo convertir");
     } finally {
       setSaving(false);
     }
@@ -318,7 +320,7 @@ function Page() {
       <PageHeader
         title="Online orders"
         subtitle="Capture the customer PO and convert it to a sales order."
-        action={<Button onClick={() => setOpen(true)}>New customer PO</Button>}
+        action={<Button onClick={() => setOpen(true)}>{t("New customer PO")}</Button>}
       />
       <div className="mb-5 grid grid-cols-3 gap-3">
         <Kpi label="Open CPOs" value={String(kpis.abiertos)} tone={kpis.abiertos ? "warn" : "ok"} />
@@ -327,15 +329,15 @@ function Page() {
       </div>
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
       {err && !open && !detail ? <p className="mb-3 text-sm text-danger">{err}</p> : null}
-      {cpos.loading ? <p className="text-sm text-muted">Loading…</p> : null}
+      {cpos.loading ? <p className="text-sm text-muted">{t("Loading…")}</p> : null}
       {cpos.error ? <p className="text-sm text-danger">{cpos.error}</p> : null}
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Select className="max-w-44" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="all">All statuses</option>
-          <option value="open">Open</option>
-          <option value="converted">Converted</option>
-          <option value="rejected">Rejected</option>
+          <option value="all">{t("All statuses")}</option>
+          <option value="open">{t("Open")}</option>
+          <option value="converted">{t("Converted")}</option>
+          <option value="rejected">{t("Rejected")}</option>
         </Select>
         <Input
           className="max-w-sm"
@@ -344,7 +346,7 @@ function Page() {
           onChange={(e) => setQ(e.target.value)}
         />
         <span className="ml-auto text-xs text-subtle">
-          {filtered.length} de {list.length} customer PO
+          {filtered.length} de {list.length} PO de cliente
         </span>
       </div>
 
@@ -352,14 +354,14 @@ function Page() {
         <table className="w-full min-w-[860px] text-left text-sm">
           <thead className="border-b border-border text-xs uppercase tracking-wide text-muted">
             <tr>
-              <th className="px-4 py-3 font-medium">Folio</th>
-              <th className="px-4 py-3 font-medium">Customer</th>
-              <th className="px-4 py-3 font-medium">Customer PO #</th>
-              <th className="px-4 py-3 font-medium">PO date</th>
-              <th className="px-4 py-3 font-medium">Delivery</th>
-              <th className="px-4 py-3 font-medium">Currency</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">Attachment</th>
+              <th className="px-4 py-3 font-medium">{t("Folio")}</th>
+              <th className="px-4 py-3 font-medium">{t("Customer")}</th>
+              <th className="px-4 py-3 font-medium">{t("Customer PO #")}</th>
+              <th className="px-4 py-3 font-medium">{t("PO date")}</th>
+              <th className="px-4 py-3 font-medium">{t("Delivery")}</th>
+              <th className="px-4 py-3 font-medium">{t("Currency")}</th>
+              <th className="px-4 py-3 font-medium">{t("Status")}</th>
+              <th className="px-4 py-3 font-medium">{t("Attachment")}</th>
             </tr>
           </thead>
           <tbody>
@@ -404,7 +406,7 @@ function Page() {
             {filtered.length === 0 && !cpos.loading ? (
               <tr>
                 <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted">
-                  No hay Customer PO con ese filtro.
+                  No hay PO de cliente con ese filtro.
                 </td>
               </tr>
             ) : null}
@@ -516,7 +518,7 @@ function Page() {
               </Field>
             </div>
             <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Lines</p>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">{t("Lines")}</p>
               <div className="space-y-3">
                 {lines.map((line, i) => (
                   <div key={i} className="relative grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-4">
@@ -581,7 +583,7 @@ function Page() {
                 className="mt-2 text-xs font-medium text-primary underline-offset-2 hover:underline"
                 onClick={() => setLines((prev) => [...prev, emptyLine()])}
               >
-                + Add line
+                {t("+ Add line")}
               </button>
             </div>
             <Field label="Nota">
@@ -590,7 +592,7 @@ function Page() {
             {err && open ? <p className="text-sm text-danger">{err}</p> : null}
             <div className="flex flex-wrap gap-2">
               <Button type="submit" disabled={saving}>
-                {saving ? "Saving…" : "Create customer PO"}
+                {saving ? t("Saving…") : t("Create customer PO")}
               </Button>
               <Button type="button" variant="outline" onClick={closeCreate}>
                 Cancelar
@@ -618,13 +620,13 @@ function Page() {
       {selected ? (
         <Modal
           wide
-          title={`Customer PO ${selected.cpo_number}`}
+          title={`PO de cliente ${selected.cpo_number}`}
           subtitle={selected.customer_name}
           onClose={() => setDetail(null)}
         >
           <div className="grid gap-3 sm:grid-cols-3">
             <Panel className="p-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Customer</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">{t("Customer")}</p>
               <p className="mt-1 text-sm font-medium">{selected.customer_name}</p>
             </Panel>
             <Panel className="p-3">
@@ -726,7 +728,7 @@ function Page() {
             {selected.status === "open" ? (
               <>
                 <Button disabled={saving} onClick={() => void convertir(selected.id)}>
-                  {saving ? "Converting…" : "Convert to sales order"}
+                  {saving ? t("Converting…") : t("Convert to sales order")}
                 </Button>
                 <Button variant="outline" disabled={saving} onClick={() => setRejecting(true)}>
                   Rechazar
@@ -755,14 +757,14 @@ function Page() {
                 }))}
                 total={selected.lines.reduce((s, l) => s + l.quantity * (l.unit_price || 0), 0)}
                 pdf={{
-                  kindLabel: selected.status === "rejected" ? "Customer PO — Rejected" : "Customer PO — Confirmed",
+                  kindLabel: selected.status === "rejected" ? "PO de Cliente — Rechazado" : "PO de Cliente — Confirmado",
                   number: selected.cpo_number,
                   date: selected.po_date,
                   due: selected.requested_date,
-                  dueLabel: "Delivery",
+                  dueLabel: "Entrega",
                   terms: null,
                   reference: selected.so_number,
-                  partyTitle: "Customer",
+                  partyTitle: "Cliente",
                   party: { name: selected.customer_name, lines: [selectedCustomer?.email, selectedCustomer?.phone].filter((x): x is string => Boolean(x)) },
                   shipTitle: null,
                   ship: null,

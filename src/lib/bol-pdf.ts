@@ -186,8 +186,8 @@ function buildBolPdf(
     [s.ship_to_city, s.ship_to_state, s.ship_to_zip].filter(Boolean).join(", "),
   ];
   y = Math.max(
-    party(M, y, "Shipper", legal, [address || "", [city, country].filter(Boolean).join(", "), phone || ""]),
-    party(M + colW + 18, y, "Consignee", s.customer_name, consigneeLines),
+    party(M, y, "Embarcador", legal, [address || "", [city, country].filter(Boolean).join(", "), phone || ""]),
+    party(M + colW + 18, y, "Consignatario", s.customer_name, consigneeLines),
   );
   y += 16;
 
@@ -330,7 +330,7 @@ function buildBolPdf(
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(10);
   pdf.setTextColor(...INK);
-  pdf.text(`Set point: ${setPoint ?? "no capturado"}`, M, y);
+  pdf.text(`Punto de ajuste: ${setPoint ?? "no capturado"}`, M, y);
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(9);
   pdf.setTextColor(...MUTED);

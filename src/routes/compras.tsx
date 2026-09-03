@@ -274,11 +274,11 @@ function Page() {
         },
       });
       setLines([]);
-      setMsg(`PO ${r.po_number} placed`);
+      setMsg(t("PO {n} placed", { n: r.po_number }));
       await orders.reload();
       navigate({ to: "/compras", search: { tab: "all" } });
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not place order");
+      setMsg(err instanceof Error ? err.message : t("Could not place order"));
     } finally {
       setSaving(false);
     }
@@ -313,7 +313,7 @@ function Page() {
       setExpenseFor(null);
       await orders.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not create expense");
+      setMsg(err instanceof Error ? err.message : t("Could not create expense"));
     } finally {
       setSaving(false);
     }
@@ -344,7 +344,7 @@ function Page() {
       })
       .filter((l) => l.pendiente > 0.0001);
     if (!pending.length) {
-      setMsg("This purchase has nothing left to receive.");
+      setMsg(t("This purchase has nothing left to receive."));
       return;
     }
     setWarn(null);
@@ -365,7 +365,7 @@ function Page() {
     if (!po) return;
     const activas = recLines.filter((l) => l.resultado);
     if (!activas.length) {
-      setWarn("Choose a result on at least one line.");
+      setWarn(t("Choose a result on at least one line."));
       return;
     }
     for (const l of activas) {
@@ -381,7 +381,7 @@ function Page() {
       }
     }
     if (!rec.location_id) {
-      setWarn("Choose a destination.");
+      setWarn(t("Choose a destination."));
       return;
     }
     setSaving(true);
@@ -413,10 +413,10 @@ function Page() {
         },
       });
       setRecvPo(null);
-      setMsg(`Received ${r.po_number}`);
+      setMsg(t("Received {n}", { n: r.po_number }));
       await orders.reload();
     } catch (err) {
-      setWarn(err instanceof Error ? err.message : "Could not receive");
+      setWarn(err instanceof Error ? err.message : t("Could not receive"));
     } finally {
       setSaving(false);
     }
@@ -426,10 +426,10 @@ function Page() {
     setSaving(true);
     try {
       const r = await createBillFromPO({ data: { purchase_order_id: poId } });
-      setMsg(`Vendor bill ${r.bill_number} for ${money(r.total)}`);
+      setMsg(t("Vendor bill {n} for {amount}", { n: r.bill_number, amount: money(r.total) }));
       await orders.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not bill");
+      setMsg(err instanceof Error ? err.message : t("Could not bill"));
     } finally {
       setSaving(false);
     }
@@ -445,7 +445,7 @@ function Page() {
             label="Vendor"
             action={
               <Link to="/proveedores" className="text-xs text-link">
-                Add new
+                {t("Add new")}
               </Link>
             }
           >
@@ -463,7 +463,7 @@ function Page() {
                 });
               }}
             >
-              <option value="">Search your vendors</option>
+              <option value="">{t("Search your vendors")}</option>
               {(suppliers.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
@@ -480,7 +480,7 @@ function Page() {
                 if (deal_type !== "firme") setLines((p) => p.map((l) => ({ ...l, cost: "" })));
               }}
             >
-              <option value="">Select</option>
+              <option value="">{t("Select")}</option>
               <option value="firme">Firme (precio cerrado)</option>
               <option value="consignacion">Consignación (PAS)</option>
               <option value="comision">Comisión pura</option>
@@ -493,7 +493,7 @@ function Page() {
                   value={draft.commission_type}
                   onChange={(e) => setDraft({ ...draft, commission_type: e.target.value })}
                 >
-                  <option value="">Select</option>
+                  <option value="">{t("Select")}</option>
                   <option value="per_unit">Por caja ($)</option>
                   <option value="gross_pct">% venta bruta</option>
                   <option value="net_pct">% sobre neto</option>
@@ -512,9 +512,9 @@ function Page() {
               value={draft.order_type}
               onChange={(e) => setDraft({ ...draft, order_type: e.target.value })}
             >
-              <option>Delivery by vendor</option>
-              <option>Pickup</option>
-              <option>Will-call</option>
+              <option value="Delivery by vendor">{t("Delivery by vendor")}</option>
+              <option value="Pickup">{t("Pickup")}</option>
+              <option value="Will-call">{t("Will-call")}</option>
             </Select>
           </MetaCard>
           <MetaCard label="Requested date">
@@ -532,7 +532,7 @@ function Page() {
                 className="text-xs text-link"
                 onClick={() => setExpenseFor("draft")}
               >
-                Add new
+                {t("Add new")}
               </button>
             }
           >
@@ -542,9 +542,9 @@ function Page() {
             <div className="flex items-end justify-between">
               <span>{money(merch)}</span>
               <span className="text-[11px] font-normal text-subtle">
-                Items: {lines.length}
+                {t("Items")}: {lines.length}
                 <br />
-                Units: {units}
+                {t("Units")}: {units}
               </span>
             </div>
           </MetaCard>
@@ -552,13 +552,13 @@ function Page() {
 
         <div className="flex flex-wrap items-center gap-2 px-4">
           <Button size="sm" disabled={!draft.supplier_id} onClick={() => setPicker(true)}>
-            + Add item
+            {t("+ Add item")}
           </Button>
           <Button size="sm" variant="outline" disabled>
-            Templates
+            {t("Templates")}
           </Button>
           <Button size="sm" variant="outline" disabled>
-            Previous order
+            {t("Previous order")}
           </Button>
           <div className="ml-auto flex flex-wrap gap-2">
             <Field label="Vendor invoice #">
@@ -587,18 +587,18 @@ function Page() {
 
         {lines.length ? (
           <div className="mt-4 overflow-x-auto px-4">
-            <p className="mb-2 text-sm font-semibold">Inventory Items</p>
+            <p className="mb-2 text-sm font-semibold">{t("Inventory Items")}</p>
             <table className="w-full min-w-[960px] text-left text-sm">
               <thead className="bg-surface-2 text-xs text-muted">
                 <tr>
-                  <th className="px-3 py-2 font-medium">Item</th>
-                  <th className="px-3 py-2 font-medium">Lot detail</th>
-                  <th className="px-3 py-2 font-medium">Pallet details</th>
-                  <th className="px-3 py-2 font-medium">Quantity</th>
-                  <th className="px-3 py-2 font-medium">Cost</th>
-                  <th className="px-3 py-2 font-medium">B/E</th>
+                  <th className="px-3 py-2 font-medium">{t("Item")}</th>
+                  <th className="px-3 py-2 font-medium">{t("Lot detail")}</th>
+                  <th className="px-3 py-2 font-medium">{t("Pallet details")}</th>
+                  <th className="px-3 py-2 font-medium">{t("Quantity")}</th>
+                  <th className="px-3 py-2 font-medium">{t("Cost")}</th>
+                  <th className="px-3 py-2 font-medium">{t("B/E")}</th>
                   {draft.deal_type === "firme" ? (
-                    <th className="px-3 py-2 font-medium">$ Markup</th>
+                    <th className="px-3 py-2 font-medium">{t("$ Markup")}</th>
                   ) : null}
                   <th className="w-10 px-3 py-2" />
                 </tr>
@@ -633,15 +633,15 @@ function Page() {
                             }
                           />
                           <label className="flex items-center gap-1">
-                            <input type="checkbox" className="size-3.5 accent-action" /> Organic
+                            <input type="checkbox" className="size-3.5 accent-action" /> {t("Organic")}
                           </label>
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-xs text-muted">Auto-generated</td>
+                      <td className="px-3 py-3 text-xs text-muted">{t("Auto-generated")}</td>
                       <td className="px-3 py-3">
                         <div className="grid w-40 grid-cols-2 gap-1">
                           <Input
-                            title="Pallets"
+                            title={t("Pallets")}
                             placeholder="Pallets"
                             value={l.pallets}
                             onChange={(e) =>
@@ -653,7 +653,7 @@ function Page() {
                             }
                           />
                           <Input
-                            title="Cases per pallet"
+                            title={t("Cases per pallet")}
                             placeholder="Cases/plt"
                             value={l.unitsPerPallet}
                             onChange={(e) =>
@@ -672,7 +672,7 @@ function Page() {
                           />
                         </div>
                         <div className="mt-1 text-[11px] text-muted">
-                          Weight {weight != null ? qty(weight, l.weightUnit) : "—"}
+                          {t("Weight")} {weight != null ? qty(weight, l.weightUnit) : "—"}
                         </div>
                       </td>
                       <td className="px-3 py-3">
@@ -758,7 +758,7 @@ function Page() {
             className="mx-4 mt-3 h-9 rounded-md border border-border px-3 text-sm"
             onClick={() => setPicker(true)}
           >
-            + Add non-inventory item
+            {t("+ Add non-inventory item")}
           </button>
           <div className="grid gap-3 p-4 lg:grid-cols-3">
             <label className="flex items-start gap-2 text-sm">
@@ -769,7 +769,7 @@ function Page() {
                 onChange={(e) => setDraft({ ...draft, noteVendor: e.target.checked })}
               />
               <span>
-                <span className="text-link">Add note to vendor</span>
+                <span className="text-link">{t("Add note to vendor")}</span>
                 <Textarea
                   className="mt-2"
                   value={draft.notes}
@@ -779,8 +779,8 @@ function Page() {
             </label>
             <div className="space-y-2 text-sm text-muted">
               <label className="flex items-center gap-2">
-                <input type="checkbox" className="size-4 accent-action" /> Share vendor portal to{" "}
-                {vendorName ? "contacts" : "0 contacts"}
+                <input type="checkbox" className="size-4 accent-action" />{" "}
+                {vendorName ? t("Share vendor portal to contacts") : t("Share vendor portal to 0 contacts")}
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -789,22 +789,22 @@ function Page() {
                   checked={draft.print}
                   onChange={(e) => setDraft({ ...draft, print: e.target.checked })}
                 />
-                Print order when placed
+                {t("Print order when placed")}
               </label>
             </div>
             <div className="flex flex-col items-end justify-end gap-1 text-sm">
               <div className="text-muted">
-                Total items: {lines.length} · Total units: {units} · Total pallets: {pallets}
+                {t("Total items")}: {lines.length} · {t("Total units")}: {units} · {t("Total pallets")}: {pallets}
               </div>
               <div className="flex items-center gap-4">
                 <span>
-                  Expenses: $0.00 · Order total: <strong>{money(merch)}</strong>
+                  {t("Expenses")}: $0.00 · {t("Order total")}: <strong>{money(merch)}</strong>
                 </span>
                 <Button
                   disabled={saving || !draft.supplier_id || !draft.deal_type || !lines.length}
                   onClick={() => void placeOrder()}
                 >
-                  Place order
+                  {t("Place order")}
                 </Button>
               </div>
             </div>
@@ -844,21 +844,21 @@ function Page() {
         </FilterField>
         <FilterField label="Buyer">
           <Select defaultValue="all">
-            <option value="all">All users</option>
+            <option value="all">{t("All users")}</option>
             <option>{COMPANY.userName}</option>
           </Select>
         </FilterField>
         <FilterField label="Order status">
           <Select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All order statuses</option>
-            <option value="confirmed">Confirmed</option>
-            <option value="partial">Partial</option>
-            <option value="completed">Fulfilled</option>
+            <option value="">{t("All order statuses")}</option>
+            <option value="confirmed">{t("Confirmed")}</option>
+            <option value="partial">{t("Partial")}</option>
+            <option value="completed">{t("Fulfilled")}</option>
           </Select>
         </FilterField>
         <FilterField label="Vendors">
           <Select value={vendor} onChange={(e) => setVendor(e.target.value)}>
-            <option value="">All vendors</option>
+            <option value="">{t("All vendors")}</option>
             {(suppliers.data ?? []).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -867,7 +867,7 @@ function Page() {
           </Select>
         </FilterField>
         <button type="button" className="h-9 rounded-md border border-border px-3 text-sm">
-          Filters
+          {t("Filters")}
         </button>
         <button
           type="button"
@@ -878,11 +878,11 @@ function Page() {
             setVendor("");
           }}
         >
-          Reset filters
+          {t("Reset filters")}
         </button>
       </FilterRow>
 
-      {orders.loading ? <p className="p-6 text-sm text-muted">Loading…</p> : null}
+      {orders.loading ? <p className="p-6 text-sm text-muted">{t("Loading…")}</p> : null}
       {orders.error ? <p className="p-6 text-sm text-danger">{orders.error}</p> : null}
 
       {!orders.loading && filtered.length === 0 ? (
@@ -893,17 +893,17 @@ function Page() {
             <thead className="border-y border-border bg-surface-2 text-[11px] font-medium uppercase tracking-wide text-muted">
               <tr>
                 <th className="w-10 px-3 py-2" />
-                <th className="px-3 py-2">PO #</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Vendor</th>
-                <th className="px-3 py-2">Requested date</th>
-                <th className="px-3 py-2">Received date</th>
-                <th className="px-3 py-2">Invoice #</th>
-                <th className="px-3 py-2">BOL #</th>
-                <th className="px-3 py-2">Type</th>
-                <th className="px-3 py-2 text-right"># of inv. units</th>
-                <th className="px-3 py-2 text-right">Total</th>
-                <th className="px-3 py-2">Sign-off</th>
+                <th className="px-3 py-2">{t("PO #")}</th>
+                <th className="px-3 py-2">{t("Status")}</th>
+                <th className="px-3 py-2">{t("Vendor")}</th>
+                <th className="px-3 py-2">{t("Requested date")}</th>
+                <th className="px-3 py-2">{t("Received date")}</th>
+                <th className="px-3 py-2">{t("Invoice #")}</th>
+                <th className="px-3 py-2">{t("BOL #")}</th>
+                <th className="px-3 py-2">{t("Type")}</th>
+                <th className="px-3 py-2 text-right">{t("# of inv. units")}</th>
+                <th className="px-3 py-2 text-right">{t("Total")}</th>
+                <th className="px-3 py-2">{t("Sign-off")}</th>
               </tr>
             </thead>
             <tbody>
@@ -954,7 +954,7 @@ function Page() {
                       </td>
                       <td className="px-3 py-2">{row.bol || "—"}</td>
                       <td className="px-3 py-2">
-                        {row.order_type === "entrega" ? "Delivery" : row.order_type}
+                        {row.order_type === "entrega" ? t("Delivery") : t(row.order_type)}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">{unitsN}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
@@ -1015,7 +1015,7 @@ function Page() {
                   value={rec.location_id}
                   onChange={(e) => setRec({ ...rec, location_id: e.target.value })}
                 >
-                  <option value="">Select</option>
+                  <option value="">{t("Select")}</option>
                   {(locations.data ?? []).map((l) => (
                     <option key={l.id} value={l.id}>
                       {l.name}
@@ -1069,7 +1069,7 @@ function Page() {
               {recLines.map((l, i) => (
                 <div key={l.line_id} className="rounded-lg border border-border p-3">
                   <p className="text-sm font-medium">
-                    {l.product_name} · pending {qty(l.pendiente, l.unit)}
+                    {l.product_name} · {t("pending")} {qty(l.pendiente, l.unit)}
                   </p>
                   {l.sku_code ? <p className="text-xs text-subtle">{l.sku_code}</p> : null}
                   <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -1084,7 +1084,7 @@ function Page() {
                           )
                         }
                       >
-                        <option value="">Select</option>
+                        <option value="">{t("Select")}</option>
                         {RESULTADOS_REC.map((r) => (
                           <option key={r} value={r}>
                             {r}
@@ -1125,9 +1125,9 @@ function Page() {
                           )
                         }
                       >
-                        <option value="">Select</option>
+                        <option value="">{t("Select")}</option>
                         {GRUPOS.map(([k, lab]) => (
-                          <optgroup key={k} label={lab}>
+                          <optgroup key={k} label={t(lab)}>
                             {DEFECTOS[k].map((d) => (
                               <option key={d} value={`${k}::${d}`}>
                                 {d}
@@ -1142,7 +1142,7 @@ function Page() {
               ))}
             </div>
             <Button type="submit" disabled={saving}>
-              {saving ? "Saving…" : t("Receive")}
+              {saving ? t("Saving…") : t("Receive")}
             </Button>
           </form>
         </Modal>
@@ -1164,15 +1164,15 @@ function Page() {
       ) : null}
 
       {sharePo ? (
-        <Modal title="Share Vendor Portal to Contacts" onClose={() => setShareId(null)}>
+        <Modal title={t("Share Vendor Portal to Contacts")} onClose={() => setShareId(null)}>
           <p className="text-sm font-medium">{sharePo.supplier_name}</p>
           <div className="mt-2 flex justify-between text-sm text-muted">
-            <span>PO {poShort(sharePo.po_number)}</span>
-            <span>Order total {money(sharePo.order_total)}</span>
+            <span>{t("PO")} {poShort(sharePo.po_number)}</span>
+            <span>{t("Order total")} {money(sharePo.order_total)}</span>
           </div>
           <div className="mt-4 rounded-lg bg-action px-3 py-3 text-action-fg">
             <p className="text-[11px] uppercase tracking-wide text-white/80">
-              Share info with selected contacts using link
+              {t("Share info with selected contacts using link")}
             </p>
             <div className="mt-2 flex items-center gap-2 rounded-md bg-white/15 px-2 py-1.5">
               <code className="flex-1 truncate text-xs">{`/portal/${sharePo.share_token}`}</code>
@@ -1185,12 +1185,12 @@ function Page() {
                   )
                 }
               >
-                <Copy className="size-3.5" /> Copy link
+                <Copy className="size-3.5" /> {t("Copy link")}
               </Button>
             </div>
           </div>
           <div className="mt-4 rounded-md border border-border p-3 text-sm">
-            <p className="mb-2 font-medium">What information do you want to share?</p>
+            <p className="mb-2 font-medium">{t("What information do you want to share?")}</p>
             {(
               [
                 ["po", "PO", "PO level information with items, prices, and PO total."],
@@ -1214,14 +1214,14 @@ function Page() {
                   onChange={() => setShareLevel(val)}
                 />
                 <span>
-                  <span className="font-medium">{title}</span>
-                  <span className="block text-xs text-muted">{body}</span>
+                  <span className="font-medium">{t(title)}</span>
+                  <span className="block text-xs text-muted">{t(body)}</span>
                 </span>
               </label>
             ))}
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="outline" onClick={() => setShareId(null)}>
-                Go back
+                {t("Go back")}
               </Button>
               <Button
                 onClick={() => {
@@ -1234,7 +1234,7 @@ function Page() {
                   });
                 }}
               >
-                Update
+                {t("Update")}
               </Button>
             </div>
           </div>
@@ -1266,7 +1266,7 @@ function Page() {
       ) : null}
       {cancelPo ? (
         <CancelDialog
-          title={`Cancel order ${poShort(cancelPo.po_number)}`}
+          title={t("Cancel order {n}", { n: poShort(cancelPo.po_number) })}
           subtitle="Blocked if it already has a vendor invoice, or if a received lot was already sold, wasted or repacked."
           onClose={() => setCancelPo(null)}
           onConfirm={async (reason) => {
@@ -1326,16 +1326,16 @@ function PoDetail({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">PO #{poShort(row.po_number)}</h2>
+            <h2 className="text-lg font-semibold">{t("PO #")}{poShort(row.po_number)}</h2>
             <Badge tone={orderTone(row.status === "completed" ? "received" : row.status)}>
               {row.status === "completed" ? "Received" : orderLabel(row.status)}
             </Badge>
           </div>
-          <p className="text-xs text-muted">Placed on {fecha(row.order_date)}</p>
+          <p className="text-xs text-muted">{t("Placed on")} {fecha(row.order_date)}</p>
           <CancelledNote by={row.cancelled_by} at={row.cancelled_at} reason={row.cancel_reason} />
         </div>
         <Button size="sm" onClick={onEdit}>
-          Edit order
+          {t("Edit order")}
         </Button>
       </div>
 
@@ -1354,7 +1354,7 @@ function PoDetail({
           ) : null}
         </MetaCard>
         <MetaCard label="Order type">
-          {row.order_type === "entrega" ? "Delivery by vendor" : row.order_type}
+          {row.order_type === "entrega" ? t("Delivery by vendor") : t(row.order_type)}
         </MetaCard>
         <MetaCard label="Requested date">{fecha(row.expected_date || row.order_date)}</MetaCard>
         <MetaCard label="BOL #">{row.bol || ""}</MetaCard>
@@ -1364,7 +1364,7 @@ function PoDetail({
           label="Expenses"
           action={
             <button type="button" className="text-xs text-link" onClick={onExpense}>
-              Add new
+              {t("Add new")}
             </button>
           }
         >
@@ -1379,7 +1379,7 @@ function PoDetail({
               </div>
             ) : (
               <div className="text-[11px] font-normal text-subtle">
-                Items: {row.lines.length} · Units: {units}
+                {t("Items")}: {row.lines.length} · {t("Units")}: {units}
               </div>
             )}
           </div>
@@ -1389,19 +1389,19 @@ function PoDetail({
         <MetaCard label="Buyer">{COMPANY.userName}</MetaCard>
       </div>
 
-      <p className="mt-5 mb-2 text-sm font-semibold">Inventory Items</p>
+      <p className="mt-5 mb-2 text-sm font-semibold">{t("Inventory Items")}</p>
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[800px] text-left text-sm">
           <thead className="bg-surface-2 text-xs text-muted">
             <tr>
-              <th className="px-3 py-2 font-medium">Item</th>
-              <th className="px-3 py-2 font-medium">Lot detail</th>
-              <th className="px-3 py-2 font-medium">Pallet details</th>
-              <th className="px-3 py-2 font-medium">Quantity</th>
-              <th className="px-3 py-2 font-medium">Cost</th>
-              <th className="px-3 py-2 font-medium">B/E</th>
+              <th className="px-3 py-2 font-medium">{t("Item")}</th>
+              <th className="px-3 py-2 font-medium">{t("Lot detail")}</th>
+              <th className="px-3 py-2 font-medium">{t("Pallet details")}</th>
+              <th className="px-3 py-2 font-medium">{t("Quantity")}</th>
+              <th className="px-3 py-2 font-medium">{t("Cost")}</th>
+              <th className="px-3 py-2 font-medium">{t("B/E")}</th>
               {row.deal_type === "firme" ? (
-                <th className="px-3 py-2 font-medium">$ Markup</th>
+                <th className="px-3 py-2 font-medium">{t("$ Markup")}</th>
               ) : null}
             </tr>
           </thead>
@@ -1429,9 +1429,9 @@ function PoDetail({
                       ?.lot_sano || "—"}
                   </td>
                   <td className="px-3 py-3 text-xs text-muted">
-                    Pallets {l.pallets || 1}
+                    {t("Pallets")} {l.pallets || 1}
                     <br />
-                    Weight {lineWeight != null ? qty(lineWeight, l.weight_unit) : "—"}
+                    {t("Weight")} {lineWeight != null ? qty(lineWeight, l.weight_unit) : "—"}
                   </td>
                   <td className="px-3 py-3 tabular-nums">{l.quantity_ordered}</td>
                   <td className="px-3 py-3">
@@ -1439,13 +1439,13 @@ function PoDetail({
                       <div>
                         {money(l.unit_cost)}
                         <div className="text-xs text-muted">
-                          Total {money(l.quantity_ordered * l.unit_cost)}
+                          {t("Total")} {money(l.quantity_ordered * l.unit_cost)}
                         </div>
                       </div>
                     ) : (
                       <div>
                         <div className="text-xs font-medium text-danger">PAS</div>
-                        <div className="text-xs text-muted">Total {money(0)}</div>
+                        <div className="text-xs text-muted">{t("Total")} {money(0)}</div>
                       </div>
                     )}
                   </td>
@@ -1466,15 +1466,15 @@ function PoDetail({
 
       {row.expenses.length ? (
         <>
-          <p className="mt-4 mb-2 text-sm font-semibold">Non-Inventory Items</p>
+          <p className="mt-4 mb-2 text-sm font-semibold">{t("Non-Inventory Items")}</p>
           <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full text-left text-sm">
               <thead className="bg-surface-2 text-xs text-muted">
                 <tr>
-                  <th className="px-3 py-2 font-medium">Item</th>
-                  <th className="px-3 py-2 font-medium">Quantity</th>
-                  <th className="px-3 py-2 font-medium">Cost</th>
-                  <th className="px-3 py-2 font-medium">Total</th>
+                  <th className="px-3 py-2 font-medium">{t("Item")}</th>
+                  <th className="px-3 py-2 font-medium">{t("Quantity")}</th>
+                  <th className="px-3 py-2 font-medium">{t("Cost")}</th>
+                  <th className="px-3 py-2 font-medium">{t("Total")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1508,51 +1508,51 @@ function PoDetail({
             params={{ tipo: "oc", id: row.share_token }}
             className="flex items-center gap-2 text-link"
           >
-            <Printer className="size-3.5" /> Print purchase order
+            <Printer className="size-3.5" /> {t("Print purchase order")}
           </Link>
           <Link
             to="/etiquetas/lotes/$poId"
             params={{ poId: String(row.id) }}
             className="mt-2 block text-link"
           >
-            Print lot labels
+            {t("Print lot labels")}
           </Link>
           <Link
             to="/etiquetas/pallets/$poId"
             params={{ poId: String(row.id) }}
             className="mt-2 block text-link"
           >
-            Print pallet labels
+            {t("Print pallet labels")}
           </Link>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
-          <p className="text-link">Audit log</p>
-          <p className="mt-2 text-subtle">Return to shipper</p>
+          <p className="text-link">{t("Audit log")}</p>
+          <p className="mt-2 text-subtle">{t("Return to shipper")}</p>
           <button type="button" className="mt-2 text-link" onClick={onShare}>
-            Share vendor portal to contacts
+            {t("Share vendor portal to contacts")}
           </button>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-muted">Pallets</span>
+            <span className="text-muted">{t("Pallets")}</span>
             <span>{pallets || row.lines.length}</span>
           </div>
           <div className="mt-1 flex justify-between">
-            <span className="text-muted">Weight</span>
+            <span className="text-muted">{t("Weight")}</span>
             <span>{hasWeight ? qty(totalWeight, weightUnit) : "—"}</span>
           </div>
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-muted">Inventory item total</span>
+            <span className="text-muted">{t("Inventory item total")}</span>
             <span>{money(row.merch_total)}</span>
           </div>
           <div className="mt-1 flex justify-between">
-            <span className="text-muted">Non-inventory item total</span>
+            <span className="text-muted">{t("Non-inventory item total")}</span>
             <span>{money(row.expense_total)}</span>
           </div>
           <div className="mt-2 flex justify-between font-semibold">
-            <span>Order total</span>
+            <span>{t("Order total")}</span>
             <span>{money(row.order_total)}</span>
           </div>
         </div>
@@ -1571,22 +1571,22 @@ function PoDetail({
         ) : null}
         {received && row.status !== "cancelled" ? (
           <Button size="sm" onClick={onSettle}>
-            Calculate settlement
+            {t("Calculate settlement")}
           </Button>
         ) : null}
         <Button size="sm" variant="outline" onClick={onShare}>
-          Share vendor portal
+          {t("Share vendor portal")}
         </Button>
         {row.status !== "cancelled" ? (
           <Button size="sm" variant="outline" onClick={onCancel}>
-            Cancel order
+            {t("Cancel order")}
           </Button>
         ) : null}
         <span className="ml-auto text-xs text-muted">
-          Payment status: {row.bill?.status === "paid" ? "Paid" : "Unpaid"}
+          {t("Payment status")}: {row.bill?.status === "paid" ? t("Paid") : t("Unpaid")}
         </span>
       </div>
-      <p className="mt-3 text-xs text-muted">Attachments · No attached files.</p>
+      <p className="mt-3 text-xs text-muted">{t("Attachments · No attached files.")}</p>
     </div>
   );
 }
@@ -1609,6 +1609,7 @@ function EditOrderModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const billed = !!row.bill;
   const received = row.lines.some((l) => l.quantity_received > 0);
   const locked = billed;
@@ -1713,7 +1714,7 @@ function EditOrderModal({
 
   return (
     <Modal
-      title={`Edit PO #${poShort(row.po_number)}`}
+      title={t("Edit PO #{n}", { n: poShort(row.po_number) })}
       subtitle={row.supplier_name}
       onClose={onClose}
       wide
@@ -1818,10 +1819,10 @@ function EditOrderModal({
       </Field>
 
       <div className="mt-4 flex items-center justify-between">
-        <p className="text-sm font-semibold">Inventory Items</p>
+        <p className="text-sm font-semibold">{t("Inventory Items")}</p>
         {canEditStructure ? (
           <Button size="sm" variant="outline" onClick={() => setPicker(true)}>
-            + Add item
+            {t("+ Add item")}
           </Button>
         ) : null}
       </div>
@@ -1829,11 +1830,11 @@ function EditOrderModal({
         <table className="w-full min-w-[820px] text-left text-sm">
           <thead className="bg-surface-2 text-xs text-muted">
             <tr>
-              <th className="px-3 py-2 font-medium">Item</th>
-              <th className="px-3 py-2 font-medium">Origin</th>
-              <th className="px-3 py-2 font-medium">Pallets / cases per pallet</th>
-              <th className="px-3 py-2 font-medium">Quantity</th>
-              <th className="px-3 py-2 font-medium">Cost</th>
+              <th className="px-3 py-2 font-medium">{t("Item")}</th>
+              <th className="px-3 py-2 font-medium">{t("Origin")}</th>
+              <th className="px-3 py-2 font-medium">{t("Pallets / cases per pallet")}</th>
+              <th className="px-3 py-2 font-medium">{t("Quantity")}</th>
+              <th className="px-3 py-2 font-medium">{t("Cost")}</th>
               {canEditStructure ? <th className="px-3 py-2" /> : null}
             </tr>
           </thead>
@@ -1923,7 +1924,7 @@ function EditOrderModal({
                       className="cursor-pointer text-xs text-danger"
                       onClick={() => setLines((p) => p.filter((_, j) => j !== i))}
                     >
-                      Remove
+                      {t("Remove")}
                     </button>
                   </td>
                 ) : null}
@@ -1984,10 +1985,10 @@ function EditOrderModal({
 
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button disabled={saving || !lines.length} onClick={() => void save()}>
-          Save changes
+          {t("Save changes")}
         </Button>
       </div>
       {picker ? (
@@ -2023,8 +2024,9 @@ function ExpenseModal({
   saving: boolean;
   msg?: string | null;
 }) {
+  const t = useT();
   return (
-    <Modal title="Create Expense and Connect to Order" onClose={onClose} wide>
+    <Modal title={t("Create Expense and Connect to Order")} onClose={onClose} wide>
       {msg ? <p className="mb-3 text-sm text-danger">{msg}</p> : null}
       <div className="grid gap-3 sm:grid-cols-4">
         <Field label="Type *">
@@ -2048,7 +2050,7 @@ function ExpenseModal({
             value={form.supplier_id}
             onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
           >
-            <option value="">Search vendors</option>
+            <option value="">{t("Search vendors")}</option>
             {suppliers.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -2101,7 +2103,7 @@ function ExpenseModal({
         />
       </Field>
       <div className="mt-4">
-        <p className="mb-2 text-sm font-medium">Distribute expense by:</p>
+        <p className="mb-2 text-sm font-medium">{t("Distribute expense by:")}</p>
         <label className="flex items-start gap-2 text-sm">
           <input
             type="radio"
@@ -2110,10 +2112,9 @@ function ExpenseModal({
             onChange={() => setForm({ ...form, by: "pallet" })}
           />
           <span>
-            <strong>Pallet</strong>
+            <strong>{t("Pallet")}</strong>
             <span className="block text-xs text-muted">
-              Distributes the expense proportionally among order items based on each item's number
-              of pallets.
+              {t("Distributes the expense proportionally among order items based on each item's number of pallets.")}
             </span>
           </span>
         </label>
@@ -2125,10 +2126,9 @@ function ExpenseModal({
             onChange={() => setForm({ ...form, by: "unit" })}
           />
           <span>
-            <strong>Unit</strong>
+            <strong>{t("Unit")}</strong>
             <span className="block text-xs text-muted">
-              Distributes the expense proportionally among order items based on each item's
-              quantity.
+              {t("Distributes the expense proportionally among order items based on each item's quantity.")}
             </span>
           </span>
         </label>
@@ -2166,10 +2166,10 @@ function ExpenseModal({
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button disabled={saving} onClick={onSave}>
-          Create expense
+          {t("Create expense")}
         </Button>
       </div>
     </Modal>
@@ -2185,6 +2185,7 @@ function SettlementModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const data = useAsync(() => getSettlement({ data: { purchase_order_id: poId } }), [poId]);
   const [target, setTarget] = useState("");
   const [ctype, setCtype] = useState("");
@@ -2260,7 +2261,7 @@ function SettlementModal({
       await data.reload();
       setMsg(`Recuperados ${money(r.applied)} contra ${r.bill_number}`);
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not apply recovery");
+      setMsg(err instanceof Error ? err.message : t("Could not apply recovery"));
     } finally {
       setSaving(false);
     }
@@ -2277,9 +2278,9 @@ function SettlementModal({
         },
       });
       await data.reload();
-      setMsg("Lot costs updated");
+      setMsg(t("Lot costs updated"));
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not settle");
+      setMsg(err instanceof Error ? err.message : t("Could not settle"));
     } finally {
       setSaving(false);
     }
@@ -2298,7 +2299,7 @@ function SettlementModal({
       });
       await data.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not save commission");
+      setMsg(err instanceof Error ? err.message : t("Could not save commission"));
     } finally {
       setSaving(false);
     }
@@ -2313,7 +2314,7 @@ function SettlementModal({
       });
       await data.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not update expense");
+      setMsg(err instanceof Error ? err.message : t("Could not update expense"));
     } finally {
       setSaving(false);
     }
@@ -2322,13 +2323,13 @@ function SettlementModal({
   return (
     <Modal
       wide
-      title={`Settlement Calculator for PO #${s ? poShort(s.po_number) : poId}`}
+      title={t("Settlement Calculator for PO #{n}", { n: s ? poShort(s.po_number) : poId })}
       subtitle={
-        s ? `${s.supplier_name} · ${DEAL_TYPE_LABEL[s.deal_type] ?? s.deal_type}` : undefined
+        s ? `${s.supplier_name} · ${t(DEAL_TYPE_LABEL[s.deal_type] ?? s.deal_type)}` : undefined
       }
       onClose={onClose}
     >
-      {data.loading ? <p className="text-sm text-muted">Loading…</p> : null}
+      {data.loading ? <p className="text-sm text-muted">{t("Loading…")}</p> : null}
       {data.error ? <p className="text-sm text-danger">{data.error}</p> : null}
       {s ? (
         <>
@@ -2360,7 +2361,7 @@ function SettlementModal({
                 disabled={saving || !target}
                 onClick={() => void apply(Number(target))}
               >
-                Apply
+                {t("Apply")}
               </Button>
               <Button
                 size="sm"
@@ -2368,7 +2369,7 @@ function SettlementModal({
                 disabled={saving}
                 onClick={() => void apply(undefined)}
               >
-                Clear target
+                {t("Clear target")}
               </Button>
               <p className="ml-auto max-w-sm text-xs text-muted">
                 Trato en firme: el costo ya está cerrado. El target % es solo una herramienta de
@@ -2405,7 +2406,7 @@ function SettlementModal({
                   disabled={saving || (!!ctype && !(Number(crate) > 0))}
                   onClick={() => void saveCommission()}
                 >
-                  Save
+                  {t("Save")}
                 </Button>
                 <p className="ml-auto max-w-sm text-xs text-muted">
                   Ingreso − gastos del productor − comisión de Plein = neto al productor.
@@ -2618,7 +2619,7 @@ function SettlementModal({
                     "Profit %",
                   ].map((h) => (
                     <th key={h} className="px-2 py-2 font-medium">
-                      {h}
+                      {t(h)}
                     </th>
                   ))}
                 </tr>
@@ -2634,7 +2635,7 @@ function SettlementModal({
                           : l.status.toUpperCase()}
                       </Badge>
                     </td>
-                    <td className="px-2 py-2 text-xs text-danger">Unpaid</td>
+                    <td className="px-2 py-2 text-xs text-danger">{t("Unpaid")}</td>
                     <td className="px-2 py-2">
                       {l.product_name}
                       {l.pack_name ? ` — ${l.pack_name}` : ""}
@@ -2664,7 +2665,7 @@ function SettlementModal({
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="outline" onClick={onClose}>
-              Go back
+              {t("Go back")}
             </Button>
             {s.deal_type !== "comision" ? (
               <Button
@@ -2679,7 +2680,7 @@ function SettlementModal({
                   ).then(onSaved)
                 }
               >
-                Update lot costs
+                {t("Update lot costs")}
               </Button>
             ) : null}
           </div>
@@ -2700,9 +2701,10 @@ function MiniKpi({
   hint?: string;
   tone?: "ok" | "danger";
 }) {
+  const t = useT();
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2">
-      <p className="text-[10px] uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[10px] uppercase tracking-wide text-muted">{t(label)}</p>
       <p
         className={`text-lg font-semibold tabular-nums ${tone === "ok" ? "text-ok" : tone === "danger" ? "text-danger" : ""}`}
       >
