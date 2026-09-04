@@ -228,6 +228,7 @@ function Page() {
           <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
             <tr>
               <th className="px-3 py-2">{t("Inv #")}</th>
+              <th className="px-3 py-2">Sobre factura</th>
               <th className="px-3 py-2">{t("Customer")}</th>
               <th className="px-3 py-2">{t("Date")}</th>
               <th className="px-3 py-2 text-right">{t("Total")}</th>
@@ -242,6 +243,7 @@ function Page() {
                     {c.invoice_number}
                   </Link>
                 </td>
+                <td className="px-3 py-2 font-mono text-xs">{c.parent_invoice_number || "—"}</td>
                 <td className="px-3 py-2">{c.customer_name}</td>
                 <td className="px-3 py-2">{fecha(c.issue_date)}</td>
                 <td className="px-3 py-2 text-right text-danger">{money(c.total)}</td>
@@ -252,7 +254,7 @@ function Page() {
             ))}
             {credits.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-3 py-8 text-muted">
+                <td colSpan={6} className="px-3 py-8 text-muted">
                   {t("No credit invoices yet. Create one from a sales order.")}
                 </td>
               </tr>
@@ -370,7 +372,12 @@ function Page() {
                 <td className="px-3 py-2">{i.sales_rep || COMPANY.userName}</td>
                 <td className="px-3 py-2">
                   {i.invoice_type === "credit" ? (
-                    <Badge tone="unpaid">Credit</Badge>
+                    <div>
+                      <Badge tone="unpaid">Credit</Badge>
+                      {i.parent_invoice_number ? (
+                        <div className="mt-0.5 text-[11px] text-muted">sobre {i.parent_invoice_number}</div>
+                      ) : null}
+                    </div>
                   ) : i.invoice_type === "opening" ? (
                     <Badge tone="warn">Opening</Badge>
                   ) : (
