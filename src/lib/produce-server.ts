@@ -121,17 +121,41 @@ export type PayableRow = {
 function n(v) {
   return num(v);
 }
+function regexEscape(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+/**
+ * Folio por serie (folio_counters, 0033). La serie es el prefijo completo, así
+ * PP-2026- y PP-2026-CR- son contadores distintos. Si la serie no existe
+ * todavía se siembra con el número más alto ya emitido con el patrón anclado
+ * ^PREFIJO\d+$ — nunca "el último por id": el BOL se numera al imprimir, no al
+ * capturar. El incremento es un solo update ... returning, así que dos capturas
+ * al mismo tiempo reciben números distintos. Antes de devolver se comprueba que
+ * el folio no exista (un dato viejo con formato irregular se salta). El número
+ * que consume una captura que luego falla queda como hueco: un hueco es
+ * aceptable, dos documentos con el mismo folio no.
+ */
 async function nextCode(sql, table, column, prefix, pad = 3) {
-  const match = (
-    (
-      await sql.query(
-        `select ${column} as c from ${table} where ${column} like $1 order by id desc limit 1`,
-        [`${prefix}%`],
-      )
-    )[0]?.c ?? ""
-  ).match(/(\d+)$/);
-  const next = (match ? Number(match[1]) : 0) + 1;
-  return `${prefix}${String(next).padStart(pad, "0")}`;
+  const pattern = `^${regexEscape(prefix)}(\\d+)$`;
+  await sql.query(
+    `insert into folio_counters (series, last_value)
+     select $1, coalesce(max(substring(${column} from $2)::bigint), 0) from ${table}
+     on conflict (series) do nothing`,
+    [prefix, pattern],
+  );
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const [row] = await sql.query(
+      `update folio_counters set last_value = last_value + 1, updated_at = now()
+       where series = $1 returning last_value::text`,
+      [prefix],
+    );
+    const candidate = `${prefix}${String(n(row.last_value)).padStart(pad, "0")}`;
+    const [taken] = await sql.query(`select 1 as x from ${table} where ${column} = $1`, [
+      candidate,
+    ]);
+    if (!taken) return candidate;
+  }
+  throw new Error(`No se pudo asignar un folio libre en la serie ${prefix}.`);
 }
 function lotPrefix() {
   const d = /* @__PURE__ */ new Date();
@@ -151,11 +175,9 @@ async function nextLotNumber(sql, poId, productId) {
   const [prod] = await sql.query(`select sku from products where id = $1`, [productId]);
   if (!po) return nextCode(sql, "lots", "lot_number", lotPrefix());
   const stem = `${poShortNum(po.po_number)}-${(prod?.sku.split("-")[0] || "LOT").slice(0, 3).toUpperCase()}-`;
-  const [last] = await sql.query(
-    `select lot_number as c from lots where lot_number like $1 order by id desc limit 1`,
-    [`${stem}%`],
-  );
-  return `${stem}${last?.c ? Number(last.c.match(/(\d+)$/)?.[1] || 0) + 1 : 1}`;
+  // Misma serie por carga y producto que hoy (22-PAP-1, 22-PAP-2), sin relleno
+  // de ceros, pero con el contador compartido en vez de "el último por id".
+  return nextCode(sql, "lots", "lot_number", stem, 1);
 }
 async function insertLot(sql, args) {
   const lot_number = await nextLotNumber(sql, args.poId, args.product_id);
@@ -4193,8 +4215,16 @@ export const listSalesOrders = createServerFn({ method: "GET" })
     left join lots on lots.id = l.lot_id
     left join pack_styles ps on ps.id = l.pack_style_id
   `);
+    // "La factura" de la venta es solo la de tipo venta; las notas de crédito
+    // van aparte para que la pantalla las muestre como lo que son.
     const invoices = await sql.query(
-      `select id, sales_order_id, invoice_number, status from invoices where sales_order_id is not null`,
+      `select id, sales_order_id, invoice_number, status from invoices
+       where sales_order_id is not null and coalesce(invoice_type,'sale') = 'sale'`,
+    );
+    const credits = await sql.query(
+      `select id, sales_order_id, invoice_number, total::text from invoices
+       where sales_order_id is not null and coalesce(invoice_type,'sale') = 'credit' and status <> 'cancelled'
+       order by id`,
     );
     const purchased = await sql.query(`
     select po.sales_order_id, l.product_id, l.pack_style_id, coalesce(sum(l.quantity_ordered), 0)::text as qty
@@ -4209,6 +4239,9 @@ export const listSalesOrders = createServerFn({ method: "GET" })
     return orders.map((o) => ({
       ...o,
       invoice: invoices.find((i) => i.sales_order_id === o.id && i.status !== "cancelled") ?? null,
+      credits: credits
+        .filter((c) => c.sales_order_id === o.id)
+        .map((c) => ({ ...c, total: n(c.total) })),
       purchases: linkedPos.filter((p) => p.sales_order_id === o.id),
       lines: lines
         .filter((l) => l.sales_order_id === o.id)
@@ -4794,8 +4827,11 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
+    // Solo cuenta la factura de venta: una nota de crédito también cuelga de
+    // la OV y no debe bloquear ni suplantar a la factura.
     const [existing] = await sql.query(
-      `select invoice_number from invoices where sales_order_id = $1 and status <> 'cancelled'`,
+      `select invoice_number from invoices
+       where sales_order_id = $1 and status <> 'cancelled' and coalesce(invoice_type,'sale') = 'sale'`,
       [data.sales_order_id],
     );
     if (existing) throw new Error(`Esta venta ya tiene factura ${existing.invoice_number}`);
@@ -4948,6 +4984,16 @@ export const cancelInvoice = createServerFn({ method: "POST" })
       throw new Error(`La factura ${inv.invoice_number} ya está cancelada`);
     if (inv.invoice_type === "opening")
       throw new Error("Es una factura del corte de apertura — no se puede cancelar");
+    // Una factura cancelada con notas de crédito colgando deja el saldo del
+    // cliente mal: las notas restan contra algo que ya no existe.
+    const liveCredits = await sql.query(
+      `select invoice_number from invoices where parent_invoice_id = $1 and status <> 'cancelled' order by id`,
+      [inv.id],
+    );
+    if (liveCredits.length)
+      throw new Error(
+        `Esta factura tiene notas de crédito vivas (${liveCredits.map((c) => c.invoice_number).join(", ")}). Cancélalas primero.`,
+      );
     if (n(inv.paid) > 0.009) {
       const folios = await findPaymentFolios(sql, "invoice", inv.id);
       throw new Error(
@@ -5158,10 +5204,12 @@ export const listInvoices = createServerFn({ method: "GET" })
            c.phone as customer_phone, c.email as customer_email,
            i.status, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.paid::text, i.notes,
            coalesce(i.invoice_type,'sale') as invoice_type, c.payment_terms, i.sales_rep,
+           i.parent_invoice_id, p.invoice_number as parent_invoice_number,
            i.cancelled_at::text, i.cancelled_by, i.cancel_reason
     from invoices i
     join customers c on c.id = i.customer_id
     left join sales_orders so on so.id = i.sales_order_id
+    left join invoices p on p.id = i.parent_invoice_id
     order by i.id desc
   `);
     const lines = await sql.query(
@@ -5609,10 +5657,12 @@ export const getPrintDoc = createServerFn({ method: "GET" })
     ) {
       const [inv] = await sql.query(
         `select i.id, i.invoice_number, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.notes,
+                coalesce(i.invoice_type,'sale') as invoice_type, p.invoice_number as parent_invoice_number,
                 so.so_number, c.name as customer_name, c.contact_name, c.phone, c.email, c.city, c.payment_terms
          from invoices i
          join customers c on c.id = i.customer_id
          left join sales_orders so on so.id = i.sales_order_id
+         left join invoices p on p.id = i.parent_invoice_id
          where i.share_token = $1`,
         [data.token],
       );
@@ -5639,22 +5689,25 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         email: inv.email,
         city: inv.city,
       });
-      let showPaca = true;
+      // La nota de crédito se imprime con su nombre, referencia a la factura
+      // que corrige, sin términos de pago y sin la leyenda PACA (no es venta).
+      const isCredit = inv.invoice_type === "credit";
+      let showPaca = !isCredit;
       try {
         const [paca] = await sql.query(
           `select value from app_settings where key = 'paca_on_invoices'`,
         );
-        if (paca) showPaca = paca.value !== "false";
+        if (paca && !isCredit) showPaca = paca.value !== "false";
       } catch {}
       return {
         id: inv.id,
         tipo: "factura",
-        kindLabel: "Factura",
+        kindLabel: isCredit ? "Nota de crédito" : "Factura",
         number: inv.invoice_number,
         date: inv.issue_date,
         due: inv.due_date,
-        terms: inv.payment_terms,
-        reference: inv.so_number,
+        terms: isCredit ? null : inv.payment_terms,
+        reference: isCredit ? inv.parent_invoice_number || inv.so_number : inv.so_number,
         partyTitle: "Facturar a",
         party,
         shipTitle: "Enviar a",
@@ -6062,79 +6115,218 @@ export const registerCustomerPayment = createServerFn({ method: "POST" })
       id: movId,
     };
   });
+// ---- Notas de crédito (fix-facturacion-creditos, hallazgos 1 y 46) ---------
+// La nota de crédito corrige una FACTURA, no una venta: cuelga de la factura
+// viva de la OV (parent_invoice_id), acredita exactamente lo capturado y nunca
+// más de lo facturado menos lo ya acreditado. El tope es por producto y en
+// dinero, así un ajuste de precio sobre 800 cajas y una devolución posterior
+// de 20 caben mientras no rebasen lo facturado de ese producto.
+const CREDIT_TYPE_LABEL: Record<string, string> = {
+  devolucion: "Devolución",
+  merma: "Merma / rechazo",
+  precio: "Ajuste de precio",
+};
+/** Factura viva de la venta, sus líneas y lo ya acreditado — lo que el modal necesita. */
+async function loadSaleInvoiceForCredit(sql, sales_order_id: number) {
+  const [inv] = await sql.query(
+    `select i.id, i.invoice_number, i.issue_date::text, i.total::text, i.customer_id,
+            so.so_number, c.name as customer_name, cpo.customer_po_number
+     from invoices i
+     join sales_orders so on so.id = i.sales_order_id
+     join customers c on c.id = i.customer_id
+     left join customer_pos cpo on cpo.id = so.customer_po_id
+     where i.sales_order_id = $1 and coalesce(i.invoice_type,'sale') = 'sale' and i.status <> 'cancelled'
+     order by i.id desc limit 1`,
+    [sales_order_id],
+  );
+  if (!inv) return null;
+  const lines = await sql.query(
+    `select il.product_id, il.description, il.quantity::text, il.unit, il.unit_price::text, il.amount::text
+     from invoice_lines il where il.invoice_id = $1 order by il.id`,
+    [inv.id],
+  );
+  const credited = await sql.query(
+    `select il.product_id, coalesce(sum(il.quantity),0)::text as qty, coalesce(sum(-il.amount),0)::text as amount
+     from invoice_lines il join invoices i on i.id = il.invoice_id
+     where i.parent_invoice_id = $1 and coalesce(i.invoice_type,'sale') = 'credit' and i.status <> 'cancelled'
+     group by il.product_id`,
+    [inv.id],
+  );
+  const credits = await sql.query(
+    `select id, invoice_number, issue_date::text, total::text from invoices
+     where parent_invoice_id = $1 and status <> 'cancelled' order by id`,
+    [inv.id],
+  );
+  const creditedMap = new Map<number, { qty: number; amount: number }>(
+    credited.map((r) => [r.product_id, { qty: n(r.qty), amount: n(r.amount) }]),
+  );
+  // Agrupado por producto: dos líneas del mismo producto en la factura son un
+  // solo tope; el crédito por unidad se compara contra el mayor precio facturado.
+  const byProduct = new Map<
+    number,
+    { product_id: number; description: string; unit: string; quantity: number; unit_price: number; amount: number }
+  >();
+  for (const l of lines) {
+    const cur = byProduct.get(l.product_id) ?? {
+      product_id: l.product_id,
+      description: l.description || "",
+      unit: l.unit || "",
+      quantity: 0,
+      unit_price: 0,
+      amount: 0,
+    };
+    cur.quantity += n(l.quantity);
+    cur.unit_price = Math.max(cur.unit_price, n(l.unit_price));
+    cur.amount += n(l.amount);
+    byProduct.set(l.product_id, cur);
+  }
+  const credited_total = credits.reduce((s, c) => s + Math.abs(n(c.total)), 0);
+  return {
+    invoice: {
+      id: inv.id,
+      invoice_number: inv.invoice_number,
+      issue_date: inv.issue_date,
+      total: n(inv.total),
+      customer_id: inv.customer_id,
+      customer_name: inv.customer_name,
+      so_number: inv.so_number,
+      customer_po_number: inv.customer_po_number,
+      credited_total,
+    },
+    lines: [...byProduct.values()].map((l) => {
+      const c = creditedMap.get(l.product_id) ?? { qty: 0, amount: 0 };
+      return { ...l, credited_qty: c.qty, credited_amount: c.amount };
+    }),
+    credits: credits.map((c) => ({ ...c, total: n(c.total) })),
+  };
+}
+export const getInvoiceForCredit = createServerFn({ method: "GET" })
+  .validator(z.object({ sales_order_id: z.number() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    return (
+      (await loadSaleInvoiceForCredit(sql, data.sales_order_id)) ?? {
+        invoice: null,
+        lines: [],
+        credits: [],
+      }
+    );
+  });
 export const createCreditInvoice = createServerFn({ method: "POST" })
   .validator(
     z.object({
       sales_order_id: z.number(),
-      customer_po: z.string().optional(),
       internal_note: z.string().optional(),
       customer_note: z.string().optional(),
       lines: z
         .array(
           z.object({
-            product_id: z.number().optional(),
-            description: z.string(),
-            qty: z.number(),
-            credit_per_unit: z.number(),
+            product_id: z.number(),
+            credit_type: z.enum(["devolucion", "merma", "precio"]),
+            qty: z.number().positive(),
+            credit_per_unit: z.number().positive(),
           }),
         )
         .min(1),
     }),
   )
   .middleware([moduleMiddleware("finance")])
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
     const sql = await getSql();
-    const [so] = await sql.query(
-      `select id, so_number, customer_id from sales_orders where id = $1`,
-      [data.sales_order_id],
-    );
-    if (!so) throw new Error("Sales order not found");
-    const creditTotal = data.lines.reduce((s, l) => s + l.qty * l.credit_per_unit, 0);
-    if (creditTotal <= 0) throw new Error("Credit total must be greater than zero");
+    const base = await loadSaleInvoiceForCredit(sql, data.sales_order_id);
+    if (!base)
+      throw new Error(
+        "Esta venta no tiene factura viva. Factura la venta primero y después acredita.",
+      );
+    const { invoice } = base;
+    const byProduct = new Map(base.lines.map((l) => [l.product_id, l]));
+    // Misma regla que la pantalla, aplicada aquí aunque alguien llame directo.
+    const perProduct = new Map<number, number>();
+    for (const l of data.lines) {
+      const inv = byProduct.get(l.product_id);
+      if (!inv)
+        throw new Error(`Ese producto no está en la factura ${invoice.invoice_number}.`);
+      if (l.qty > inv.quantity + 1e-9)
+        throw new Error(
+          `${inv.description}: solo se facturaron ${qtyText(inv.quantity)} ${inv.unit} — no se pueden acreditar ${qtyText(l.qty)}.`,
+        );
+      if (l.credit_per_unit > inv.unit_price + 1e-6)
+        throw new Error(
+          `${inv.description}: el crédito por unidad (${money2(l.credit_per_unit)}) no puede ser mayor al precio facturado (${money2(inv.unit_price)}).`,
+        );
+      perProduct.set(l.product_id, (perProduct.get(l.product_id) ?? 0) + l.qty * l.credit_per_unit);
+    }
+    for (const [productId, amount] of perProduct) {
+      const inv = byProduct.get(productId)!;
+      const remaining = inv.amount - inv.credited_amount;
+      if (amount > remaining + 0.009)
+        throw new Error(
+          `${inv.description}: ya hay ${money2(inv.credited_amount)} acreditados de ${money2(inv.amount)} — máximo acreditable ${money2(Math.max(remaining, 0))}.`,
+        );
+    }
+    const creditTotal = [...perProduct.values()].reduce((s, v) => s + v, 0);
+    if (creditTotal <= 0.009) throw new Error("La nota de crédito debe ser mayor a cero.");
+    const invoiceRemaining = invoice.total - invoice.credited_total;
+    if (creditTotal > invoiceRemaining + 0.009)
+      throw new Error(
+        `La factura ${invoice.invoice_number} ya tiene ${money2(invoice.credited_total)} acreditados — máximo acreditable ${money2(Math.max(invoiceRemaining, 0))}.`,
+      );
+    const salesRep = await staffNameFor(sql, context.userId);
+    const issue = todayISO();
+    const notes =
+      [
+        data.internal_note?.trim(),
+        data.customer_note?.trim(),
+        invoice.customer_po_number ? `PO cliente ${invoice.customer_po_number}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || `Nota de crédito sobre ${invoice.invoice_number}`;
     const invoice_number = await nextCode(
       sql,
       "invoices",
       "invoice_number",
-      `PP-${todayISO().slice(0, 4)}-CR-`,
+      `PP-${issue.slice(0, 4)}-CR-`,
       3,
     );
     const id = (
       await sql.query(
-        `insert into invoices (invoice_number, sales_order_id, customer_id, status, issue_date, due_date, subtotal, total, paid, notes, invoice_type, sales_rep)
-         values ($1,$2,$3,'open',$4,null,$5,$5,0,$6,'credit','Miguel') returning id`,
+        `insert into invoices (invoice_number, sales_order_id, customer_id, status, issue_date, due_date, subtotal, total, paid, notes, invoice_type, sales_rep, parent_invoice_id)
+         values ($1,$2,$3,'open',$4,null,$5,$5,0,$6,'credit',$7,$8) returning id`,
         [
           invoice_number,
-          so.id,
-          so.customer_id,
-          todayISO(),
+          data.sales_order_id,
+          invoice.customer_id,
+          issue,
           -creditTotal,
-          [
-            data.internal_note,
-            data.customer_note,
-            data.customer_po ? `CPO ${data.customer_po}` : null,
-          ]
-            .filter(Boolean)
-            .join(" · ") || `Credit of ${so.so_number}`,
+          notes,
+          salesRep,
+          invoice.id,
         ],
       )
     )[0].id;
-    for (const l of data.lines)
+    for (const l of data.lines) {
+      const inv = byProduct.get(l.product_id)!;
       await sql.query(
-        `insert into invoice_lines (invoice_id, product_id, description, quantity, unit, unit_price, amount)
-         values ($1,$2,$3,$4,'ea',$5,$6)`,
+        `insert into invoice_lines (invoice_id, product_id, description, quantity, unit, unit_price, amount, credit_type)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [
           id,
-          l.product_id ?? null,
-          l.description,
+          l.product_id,
+          `${inv.description} — ${CREDIT_TYPE_LABEL[l.credit_type]}`,
           l.qty,
+          inv.unit,
           -l.credit_per_unit,
           -(l.qty * l.credit_per_unit),
+          l.credit_type,
         ],
       );
+    }
     return {
       id,
       invoice_number,
       total: -creditTotal,
+      parent_invoice_number: invoice.invoice_number,
     };
   });
 export const listGlAccounts = createServerFn({ method: "GET" })
@@ -7119,6 +7311,10 @@ async function wipeLiveActivity(sql: any) {
   }
   await sql.query(`delete from customer_po_lines`);
   await sql.query(`delete from customer_pos`);
+  // Contadores de folio: se borran todos y nextCode los vuelve a sembrar desde
+  // lo que quede en cada tabla (catálogo incluido). Así las series vaciadas
+  // arrancan otra vez en 001, igual que antes de tener contador.
+  await sql.query(`delete from folio_counters`);
 }
 
 export const previewLiveWipe = createServerFn({ method: "GET" })

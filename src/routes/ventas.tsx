@@ -19,6 +19,7 @@ import {
   createInvoiceFromSO,
   createPurchaseFromSO,
   createSalesOrder,
+  getInvoiceForCredit,
   listCustomerLocations,
   listCustomers,
   listLots,
@@ -29,7 +30,7 @@ import {
   shipSalesLine,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { fecha, money, qty, todayISO } from "@/lib/utils";
+import { errorMessage, fecha, money, qty, todayISO } from "@/lib/utils";
 
 type Search = { tab?: "all" | "new" };
 
@@ -125,7 +126,6 @@ function Page() {
     );
   }, [list, q]);
 
-  const selected = list.find((o) => o.id === openId) ?? list.find((o) => o.id === credit) ?? null;
   const draftLocations = useMemo(
     () => (locations.data ?? []).filter((l) => l.customer_id === Number(draft.customer_id)),
     [locations.data, draft.customer_id],
@@ -870,97 +870,18 @@ function Page() {
         </Modal>
       ) : null}
 
-      {credit && selected ? (
-        <Modal title="Create Credit Invoice" wide onClose={() => setCredit(null)}>
-          <div className="grid gap-3 sm:grid-cols-4">
-            <MetaCard label="Customer">{selected.customer_name}</MetaCard>
-            <MetaCard label="SO #">{poShort(selected.so_number)}</MetaCard>
-            <MetaCard label="Order total">
-              {money(selected.lines.reduce((s, l) => s + l.quantity_ordered * l.unit_price, 0))}
-            </MetaCard>
-            <MetaCard label="Customer PO #">{selected.customer_po_number || ""}</MetaCard>
-          </div>
-          <p className="mt-4 text-sm text-muted">
-            {t("Select the items to credit, the credit type, and the amount to credit per unit.")}
-          </p>
-          <div className="mt-3 overflow-x-auto rounded-md border border-border">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-surface-2 text-xs text-muted">
-                <tr>
-                  <th className="px-3 py-2">{t("Item")}</th>
-                  <th className="px-3 py-2">{t("Sold")}</th>
-                  <th className="px-3 py-2">{t("Type")}</th>
-                  <th className="px-3 py-2">{t("Qty to credit")}</th>
-                  <th className="px-3 py-2">{t("Credit/unit")}</th>
-                  <th className="px-3 py-2">{t("Credit total")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {selected.lines.map((l) => (
-                  <tr key={l.id} className="border-t border-border">
-                    <td className="px-3 py-2">{l.product_name}</td>
-                    <td className="px-3 py-2">{l.quantity_ordered}</td>
-                    <td className="px-3 py-2">
-                      <Select defaultValue="Restock">
-                        <option value="Restock">{t("Restock")}</option>
-                        <option value="Loss">{t("Loss")}</option>
-                        <option value="Price Adjustment">{t("Price Adjustment")}</option>
-                      </Select>
-                    </td>
-                    <td className="px-3 py-2">
-                      <Input defaultValue={String(-l.quantity_ordered)} />
-                    </td>
-                    <td className="px-3 py-2">{money(l.unit_price)}</td>
-                    <td className="px-3 py-2 text-danger">
-                      {money(-l.quantity_ordered * l.unit_price)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <Field label="Internal note">
-              <Textarea placeholder="Add your internal note…" />
-            </Field>
-            <Field label="Note to customer">
-              <Textarea placeholder="Add your customer note…" />
-            </Field>
-          </div>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setCredit(null)}>
-              {t("Cancel")}
-            </Button>
-            <Button
-              onClick={async () => {
-                if (!selected) return;
-                setSaving(true);
-                try {
-                  await createCreditInvoice({
-                    data: {
-                      sales_order_id: selected.id,
-                      lines: selected.lines.map((l) => ({
-                        product_id: l.product_id,
-                        description: l.product_name,
-                        qty: l.quantity_ordered,
-                        credit_per_unit: l.unit_price,
-                      })),
-                    },
-                  });
-                  setCredit(null);
-                  setMsg("Nota de crédito creada");
-                  await orders.reload();
-                } catch (err) {
-                  setMsg(err instanceof Error ? err.message : "No se pudo crear el crédito");
-                } finally {
-                  setSaving(false);
-                }
-              }}
-            >
-              {t("Create credit")}
-            </Button>
-          </div>
-        </Modal>
+      {credit ? (
+        <CreditNoteModal
+          soId={credit}
+          onClose={() => setCredit(null)}
+          onSaved={async (r) => {
+            setCredit(null);
+            setMsg(
+              `Nota de crédito ${r.invoice_number} por ${money(Math.abs(r.total))} sobre la factura ${r.parent_invoice_number}`,
+            );
+            await orders.reload();
+          }}
+        />
       ) : null}
       {cancelSo ? (
         <CancelDialog
@@ -1136,6 +1057,16 @@ function SoDetail({
           {row.payment_terms || row.customer_payment_terms || "—"}
         </MetaCard>
         <MetaCard label="SO invoice #">{row.invoice?.invoice_number || "—"}</MetaCard>
+        {row.credits?.length ? (
+          <MetaCard label="Notas de crédito">
+            {row.credits.map((c: { id: number; invoice_number: string; total: number }) => (
+              <div key={c.id} className="text-sm">
+                {c.invoice_number}{" "}
+                <span className="tabular-nums text-danger">{money(c.total)}</span>
+              </div>
+            ))}
+          </MetaCard>
+        ) : null}
         <MetaCard label="Customer PO #">{row.customer_po_number || "—"}</MetaCard>
         <MetaCard label="Order total">
           {money(total)}
@@ -1282,5 +1213,257 @@ function SoDetail({
         ) : null}
       </div>
     </div>
+  );
+}
+
+// ---- Nota de crédito (fix-facturacion-creditos, hallazgo 1) -----------------
+// Antes el modal mostraba tipo, cantidad y notas sin estado y mandaba la orden
+// completa. Ahora todo está ligado, se arma desde la FACTURA viva de la venta
+// (no desde lo pedido) y no deja acreditar más de lo facturado menos lo ya
+// acreditado — la misma regla que valida el servidor.
+const CREDIT_TYPE_LABEL: Record<CreditType, string> = {
+  devolucion: "Devolución",
+  merma: "Merma / rechazo",
+  precio: "Ajuste de precio",
+};
+type CreditType = "devolucion" | "merma" | "precio";
+type CreditDraft = { credit_type: CreditType; qty: string; per_unit: string };
+type CreditLine = Awaited<ReturnType<typeof getInvoiceForCredit>>["lines"][number];
+
+function CreditNoteModal({
+  soId,
+  onClose,
+  onSaved,
+}: {
+  soId: number;
+  onClose: () => void;
+  onSaved: (r: {
+    invoice_number: string;
+    total: number;
+    parent_invoice_number: string;
+  }) => Promise<void>;
+}) {
+  const data = useAsync(() => getInvoiceForCredit({ data: { sales_order_id: soId } }), [soId]);
+  const [drafts, setDrafts] = useState<Record<number, CreditDraft>>({});
+  const [internalNote, setInternalNote] = useState("");
+  const [customerNote, setCustomerNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const inv = data.data?.invoice ?? null;
+  const lines: CreditLine[] = data.data?.lines ?? [];
+  const priorCredits = data.data?.credits ?? [];
+
+  // Sin estado inicial que sincronizar: cada línea arranca en cero y con el
+  // precio facturado hasta que el usuario la toca.
+  const draftFor = (l: CreditLine): CreditDraft =>
+    drafts[l.product_id] ?? { credit_type: "devolucion", qty: "", per_unit: String(l.unit_price) };
+  const patch = (l: CreditLine, p: Partial<CreditDraft>) =>
+    setDrafts((prev) => ({ ...prev, [l.product_id]: { ...draftFor(l), ...p } }));
+
+  const rows = lines.map((l) => {
+    const d = draftFor(l);
+    const qtyN = Number(d.qty) || 0;
+    const cpu = Number(d.per_unit) || 0;
+    const amount = qtyN * cpu;
+    const remaining = Math.max(l.amount - l.credited_amount, 0);
+    const problems: string[] = [];
+    if (qtyN > l.quantity + 1e-9) problems.push(`solo se facturaron ${qty(l.quantity, l.unit)}`);
+    if (cpu > l.unit_price + 1e-6) problems.push(`el precio facturado fue ${money(l.unit_price)}`);
+    if (qtyN > 0 && amount > remaining + 0.009) problems.push(`máximo acreditable ${money(remaining)}`);
+    return { l, d, qtyN, cpu, amount, remaining, problems };
+  });
+  const total = rows.reduce((s, r) => s + (r.qtyN > 0 ? r.amount : 0), 0);
+  const invRemaining = inv ? Math.max(inv.total - inv.credited_total, 0) : 0;
+  const overInvoice = total > invRemaining + 0.009;
+  const invalid =
+    total <= 0 || overInvoice || rows.some((r) => r.qtyN > 0 && r.problems.length > 0);
+
+  async function submit() {
+    if (!inv || invalid) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await createCreditInvoice({
+        data: {
+          sales_order_id: soId,
+          internal_note: internalNote.trim() || undefined,
+          customer_note: customerNote.trim() || undefined,
+          lines: rows
+            .filter((r) => r.qtyN > 0)
+            .map((r) => ({
+              product_id: r.l.product_id,
+              credit_type: r.d.credit_type,
+              qty: r.qtyN,
+              credit_per_unit: r.cpu,
+            })),
+        },
+      });
+      await onSaved(r);
+    } catch (e) {
+      setErr(errorMessage(e, "No se pudo crear la nota de crédito."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      wide
+      title="Nota de crédito"
+      subtitle={inv ? `Sobre la factura ${inv.invoice_number} · ${inv.customer_name}` : undefined}
+      onClose={onClose}
+    >
+      {data.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {data.error ? <p className="text-sm text-danger">{data.error}</p> : null}
+      {!data.loading && !data.error && !inv ? (
+        <div>
+          <p className="text-sm text-muted">
+            Esta venta no tiene factura viva. Factura la venta primero y después acredita lo que
+            corresponda: la nota de crédito siempre corrige una factura.
+          </p>
+          <div className="mt-4 flex justify-end">
+            <Button variant="outline" onClick={onClose}>
+              Cerrar
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {inv ? (
+        <>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <MetaCard label="Factura">
+              {inv.invoice_number}
+              <div className="text-[11px] font-normal text-subtle">{fecha(inv.issue_date)}</div>
+            </MetaCard>
+            <MetaCard label="Facturado">{money(inv.total)}</MetaCard>
+            <MetaCard label="Créditos previos">{money(inv.credited_total)}</MetaCard>
+            <MetaCard label="Máximo acreditable">{money(invRemaining)}</MetaCard>
+          </div>
+          <p className="mt-4 text-sm text-muted">
+            Captura solo lo que se acredita: cantidad, tipo y crédito por unidad. Las líneas en
+            cero no entran a la nota.
+          </p>
+          <div className="mt-3 overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[820px] text-left text-sm">
+              <thead className="bg-surface-2 text-xs text-muted">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Artículo</th>
+                  <th className="px-3 py-2 font-medium">Facturado</th>
+                  <th className="px-3 py-2 font-medium">Ya acreditado</th>
+                  <th className="px-3 py-2 font-medium">Tipo</th>
+                  <th className="px-3 py-2 font-medium">Cantidad</th>
+                  <th className="px-3 py-2 font-medium">Crédito / unidad</th>
+                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(({ l, d, qtyN, amount, problems }) => (
+                  <tr key={l.product_id} className="border-t border-border align-top">
+                    <td className="px-3 py-2">{l.description}</td>
+                    <td className="px-3 py-2 tabular-nums">
+                      {qty(l.quantity, l.unit)}
+                      <div className="text-xs text-muted">{money(l.unit_price)} / {l.unit}</div>
+                    </td>
+                    <td className="px-3 py-2 tabular-nums">
+                      {l.credited_qty > 0 ? qty(l.credited_qty, l.unit) : "—"}
+                      {l.credited_amount > 0 ? (
+                        <div className="text-xs text-muted">{money(l.credited_amount)}</div>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2">
+                      <Select
+                        value={d.credit_type}
+                        onChange={(e) => patch(l, { credit_type: e.target.value as CreditType })}
+                      >
+                        {(Object.keys(CREDIT_TYPE_LABEL) as CreditType[]).map((k) => (
+                          <option key={k} value={k}>
+                            {CREDIT_TYPE_LABEL[k]}
+                          </option>
+                        ))}
+                      </Select>
+                    </td>
+                    <td className="px-3 py-2">
+                      <Input
+                        className="w-24"
+                        inputMode="decimal"
+                        placeholder="0"
+                        value={d.qty}
+                        onChange={(e) => patch(l, { qty: e.target.value })}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <Input
+                        className="w-28"
+                        inputMode="decimal"
+                        value={d.per_unit}
+                        onChange={(e) => patch(l, { per_unit: e.target.value })}
+                      />
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {qtyN > 0 ? (
+                        <span className={problems.length ? "text-danger" : ""}>−{money(amount)}</span>
+                      ) : (
+                        <span className="text-subtle">—</span>
+                      )}
+                      {qtyN > 0 && problems.length ? (
+                        <div className="text-xs text-danger">{problems.join(" · ")}</div>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {priorCredits.length ? (
+            <p className="mt-2 text-xs text-muted">
+              Notas previas sobre esta factura:{" "}
+              {priorCredits
+                .map((c: { invoice_number: string; total: number }) => `${c.invoice_number} (${money(c.total)})`)
+                .join(", ")}
+            </p>
+          ) : null}
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <Field label="Nota interna">
+              <Textarea
+                value={internalNote}
+                onChange={(e) => setInternalNote(e.target.value)}
+                placeholder="Solo para Plein — por qué se acredita"
+              />
+            </Field>
+            <Field label="Nota al cliente">
+              <Textarea
+                value={customerNote}
+                onChange={(e) => setCustomerNote(e.target.value)}
+                placeholder="Sale impresa en la nota de crédito"
+              />
+            </Field>
+          </div>
+          {err ? (
+            <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">
+              {err}
+            </p>
+          ) : null}
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
+            <p className="mr-auto text-sm">
+              Total de la nota:{" "}
+              <strong className={`tabular-nums ${overInvoice ? "text-danger" : ""}`}>
+                {total > 0 ? `−${money(total)}` : money(0)}
+              </strong>
+              {overInvoice ? (
+                <span className="ml-2 text-xs text-danger">
+                  rebasa el máximo acreditable {money(invRemaining)}
+                </span>
+              ) : null}
+            </p>
+            <Button variant="outline" onClick={onClose}>
+              Cancelar
+            </Button>
+            <Button disabled={saving || invalid} onClick={() => void submit()}>
+              {saving ? "Guardando…" : "Crear nota de crédito"}
+            </Button>
+          </div>
+        </>
+      ) : null}
+    </Modal>
   );
 }
