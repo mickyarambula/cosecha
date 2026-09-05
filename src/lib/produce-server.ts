@@ -2483,7 +2483,9 @@ type ShrinkRow = {
   pack_out_id: number;
   pack_number: string;
   pack_date: string | null;
+  /** Lotes que el productor entregó de verdad — se resuelve la cadena hasta la raíz, nunca un reempaque intermedio. */
   source_lots: string;
+  source_lots_error: string | null;
   child_lots: string;
   shrink_qty: number;
   shrink_unit: string;
@@ -2551,6 +2553,23 @@ async function loadShrinkRows(
     );
     const lotIds = [...ins.map((i) => i.lot_id), ...outs.map((o) => o.lot_id)];
     const [sales] = await sql.query(`${SALES_AGG_SQL} where a.lot_id = any($1::int[])`, [lotIds]);
+    // Al productor se le nombra el lote que ÉL entregó, no un reempaque
+    // intermedio (ins.lot_number puede ser otro RPK). Misma resolución de
+    // cadena que la tabla de lotes: mismo tope de saltos, mismo candado de
+    // ciclos, y si no se resuelve nunca cae al folio interno — se bloquea la
+    // emisión con un error visible (issueGrowerSettlement via origin_errors).
+    let source_lots = ins.map((i) => i.lot_number).join(", ");
+    let source_lots_error: string | null = null;
+    try {
+      const roots = new Map<number, string>();
+      for (const i of ins) {
+        const resolved = await resolveLotOrigins(sql, i.lot_id);
+        for (const r of resolved.roots) roots.set(r.lot_id, r.lot_number);
+      }
+      if (roots.size) source_lots = [...roots.values()].join(", ");
+    } catch (e) {
+      source_lots_error = `No se pudo resolver el lote de origen de la merma del reempaque ${h.pack_number}: ${e instanceof Error ? e.message : String(e)}.`;
+    }
     const shrink_unit = h.shrink_unit === "lb" ? "lb" : "caja";
     const avg_price =
       shrink_unit === "lb"
@@ -2569,7 +2588,8 @@ async function loadShrinkRows(
       pack_out_id: h.id,
       pack_number: h.pack_number,
       pack_date: h.pack_date,
-      source_lots: ins.map((i) => i.lot_number).join(", "),
+      source_lots,
+      source_lots_error,
       child_lots: outs.map((o) => o.lot_number).join(", "),
       shrink_qty,
       shrink_unit,
@@ -2732,9 +2752,10 @@ async function loadSettlement(
     shrink_reference: shrink.reference,
     // Lotes de reempaque cuyo origen no se pudo resolver: la pantalla los
     // muestra en rojo y la emisión se niega. Nunca se adivina el producto.
-    origin_errors: lotsRaw
-      .filter((l) => l.origin_error)
-      .map((l) => String(l.origin_error)),
+    origin_errors: [
+      ...lotsRaw.filter((l) => l.origin_error).map((l) => String(l.origin_error)),
+      ...shrink.rows.filter((r) => r.source_lots_error).map((r) => String(r.source_lots_error)),
+    ],
     settlement: settlementRow
       ? {
           id: settlementRow.id,
@@ -5812,7 +5833,9 @@ export const getPrintDoc = createServerFn({ method: "GET" })
           const boxesWord = (v: number) => (v === 1 ? "caja" : "cajas");
           const equivBoxes = childLb ? Math.round((n(r.shrink_qty) / childLb) * 100) / 100 : null;
           const qtyLabel = isLb
-            ? `${qtyText(n(r.shrink_qty))} lb${equivBoxes != null ? ` (≈ ${qtyText(equivBoxes)} ${boxesWord(equivBoxes)} de ${qtyText(childLb as number)} lb)` : ""}`
+            // "≈" no está en la fuente helvetica estándar de jsPDF y sale como
+            // basura en el PDF (mismo motivo que el guion ASCII de más abajo).
+            ? `${qtyText(n(r.shrink_qty))} lb${equivBoxes != null ? ` (~ ${qtyText(equivBoxes)} ${boxesWord(equivBoxes)} de ${qtyText(childLb as number)} lb)` : ""}`
             : `${qtyText(n(r.shrink_qty))} ${boxesWord(n(r.shrink_qty))}`;
           return {
             sku: "MERMA",

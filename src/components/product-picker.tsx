@@ -31,7 +31,7 @@ export function ProductPicker({
   const rows = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return skus.slice(0, 80);
-    return skus.filter((x) => `${x.product_name} ${x.variety ?? ""} ${x.empaque ?? ""} ${x.calibre ?? ""} ${x.unit}`.toLowerCase().includes(s)).slice(0, 80);
+    return skus.filter((x) => `${x.sku_code ?? ""} ${x.product_name} ${x.variety ?? ""} ${x.empaque ?? ""} ${x.calibre ?? ""} ${x.unit}`.toLowerCase().includes(s)).slice(0, 80);
   }, [skus, q]);
 
   return (
