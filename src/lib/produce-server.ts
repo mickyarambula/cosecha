@@ -3,6 +3,7 @@ import { authMiddleware, moduleMiddleware } from "@/lib/auth/middleware";
 import { z } from "zod";
 import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
+import { convertWeight } from "@/lib/units";
 import { addDaysISO, num, SHIPMENT_STATUSES, skuCodeOf, termsDays, todayISO } from "@/lib/utils";
 
 // Intentionally `Promise<any>`, not `Promise<Sql>` — every one of this file's
@@ -2316,6 +2317,13 @@ function computeSettlementLots(
       unit: l.unit,
       unit_cost: l.unit_cost,
       pas: pas && targetPct == null && netToGrower == null,
+      calibre: l.calibre ?? null,
+      sku_code: l.sku_code ?? null,
+      is_repack: Boolean(l.is_repack),
+      packed_as: l.packed_as ?? null,
+      repacked_from: l.repacked_from ?? null,
+      repacked_out_qty: l.repacked_out_qty ?? 0,
+      origin_error: l.origin_error ?? null,
     };
   });
 }
@@ -2325,7 +2333,7 @@ function computeSettlementLots(
  * − comisión de Plein = neto al productor. Devuelve el desglose completo
  * para que la liquidación se pueda leer y defender (documento PACA).
  */
-function computeCommissionBreakdown(po, lotsRaw, expenseRows) {
+function computeCommissionBreakdown(po, lotsRaw, expenseRows, shrinkRows: ShrinkRow[] = []) {
   if (!po.commission_type || po.deal_type === "firme") return null;
   const revenue = lotsRaw.reduce((s, l) => s + l.revenue, 0);
   const soldUnits = lotsRaw.reduce((s, l) => s + l.sold, 0);
@@ -2334,6 +2342,12 @@ function computeCommissionBreakdown(po, lotsRaw, expenseRows) {
   const plein_expenses = expenseRows
     .filter((e) => e.charged_to !== "grower")
     .reduce((s, e) => s + n(e.amount), 0);
+  // Merma de reempaque que absorbe Plein: el productor cobra esas cajas al
+  // promedio realizado de esa fruta. No es venta: no entra a la base de la
+  // comisión ni a soldUnits. La que absorbe el productor vale 0 aquí.
+  const shrink_compensation = shrinkRows
+    .filter((r) => r.charged_to === "plein")
+    .reduce((s, r) => s + n(r.amount), 0);
   const rate = n(po.commission_rate);
   let commission = 0;
   let commission_base = 0;
@@ -2362,12 +2376,15 @@ function computeCommissionBreakdown(po, lotsRaw, expenseRows) {
     plein_expenses,
     commission_base,
     commission,
-    net_to_grower: revenue - grower_expenses - commission,
+    shrink_rows: shrinkRows,
+    shrink_compensation,
+    net_to_grower: revenue - grower_expenses - commission + shrink_compensation,
   };
 }
 async function loadPoLots(sql, poId) {
   const lots = await sql.query(
     `select l.id, l.lot_number, l.status, p.name as product_name, ps.name as pack_name,
+            ps.calibre, ps.sku_code, l.pack_out_id,
             l.origin_country as origin, l.original_qty::text, l.current_qty::text,
             coalesce(l.waste_qty,0)::text, coalesce(l.rts_qty,0)::text, l.pallets::text,
             l.unit, l.unit_cost::text
@@ -2378,6 +2395,16 @@ async function loadPoLots(sql, poId) {
      order by l.id`,
     [poId],
   );
+  // Cajas que salieron de cada lote a reempaque: el renglón del account of
+  // sales debe cuadrar (total = vendido + merma + reempacado + remanente).
+  const repacked = await sql.query(
+    `select pl.lot_id, coalesce(sum(pl.qty),0)::text as qty
+     from pack_out_lines pl join lots l on l.id = pl.lot_id
+     where pl.direction = 'in' and l.purchase_order_id = $1
+     group by pl.lot_id`,
+    [poId],
+  );
+  const repackedMap = new Map<number, number>(repacked.map((r) => [r.lot_id, n(r.qty)]));
   const sold = await sql.query(
     `select a.lot_id, coalesce(sum(a.quantity),0)::text as qty,
             coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as revenue
@@ -2397,17 +2424,20 @@ async function loadPoLots(sql, poId) {
       },
     ]),
   );
-  return lots.map((l) => {
+  const out: any[] = [];
+  for (const l of lots) {
     const s = soldMap.get(l.id) ?? {
       qty: 0,
       revenue: 0,
     };
-    return {
+    const row: any = {
       id: l.id,
       lot_number: l.lot_number,
       status: l.status,
       product_name: l.product_name,
       pack_name: l.pack_name,
+      calibre: l.calibre ?? null,
+      sku_code: l.sku_code ?? null,
       origin: l.origin,
       original_qty: n(l.original_qty),
       current_qty: n(l.current_qty),
@@ -2418,15 +2448,157 @@ async function loadPoLots(sql, poId) {
       unit_cost: n(l.unit_cost),
       sold: s.qty,
       revenue: s.revenue,
+      repacked_out_qty: repackedMap.get(l.id) ?? 0,
+      is_repack: l.pack_out_id != null,
+      packed_as: null as string | null,
+      repacked_from: null as string | null,
+      origin_error: null as string | null,
     };
-  });
+    if (l.pack_out_id != null) {
+      // Al productor se le reporta lo que ÉL entregó: producto y calibre del
+      // origen; el SKU del hijo queda como dato informativo. Si el origen no
+      // se resuelve, el error viaja en la fila y la liquidación no se emite.
+      try {
+        const { roots, chain } = await resolveLotOrigins(sql, l.id);
+        row.packed_as = [l.product_name, l.calibre || l.sku_code || l.pack_name]
+          .filter(Boolean)
+          .join(" · ");
+        row.product_name = [...new Set(roots.map((r) => r.product_name))].join(" + ");
+        row.calibre = uniqueOrNull<string>(roots.map((r) => r.calibre));
+        row.repacked_from = `${roots
+          .map(
+            (r) =>
+              `${r.lot_number}${r.calibre ? ` (${r.calibre})` : ""}${r.qty > 0 ? ` ${qtyText(r.qty)}` : ""}`,
+          )
+          .join(" + ")} vía ${chain.join(", ")}`;
+      } catch (e) {
+        row.origin_error = `No se pudo resolver el origen del lote ${l.lot_number}: ${e instanceof Error ? e.message : String(e)}.`;
+      }
+    }
+    out.push(row);
+  }
+  return out;
+}
+type ShrinkRow = {
+  pack_out_id: number;
+  pack_number: string;
+  pack_date: string | null;
+  source_lots: string;
+  child_lots: string;
+  shrink_qty: number;
+  shrink_unit: string;
+  charged_to: "grower" | "plein";
+  reason: string | null;
+  /** Promedio realizado de esa fruta (origen + hijos de ese reempaque), o null si no vendió. */
+  avg_price: number | null;
+  /** Precio usado: el promedio si existe; si no, el capturado a mano. */
+  unit_price: number | null;
+  manual: boolean;
+  needs_price: boolean;
+  amount: number;
+  /** Merma en libras expresada en cajas del SKU hijo, para que el productor cuadre. */
+  equiv_boxes: number | null;
+  equiv_box_weight_lb: number | null;
+};
+const SALES_AGG_SQL = `
+    select coalesce(sum(a.quantity),0)::text as qty,
+           coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as revenue,
+           coalesce(sum(a.quantity * case when ps.weight_unit = 'kg' then ps.net_weight * 2.20462 else ps.net_weight end),0)::text as lb,
+           coalesce(bool_or(ps.net_weight is null), false) as missing_weight
+    from sale_line_allocations a
+    join sales_order_lines sol on sol.id = a.sales_order_line_id
+    join lots l on l.id = a.lot_id
+    left join pack_styles ps on ps.id = l.pack_style_id`;
+/**
+ * Merma de los reempaques de una carga, valuada. La que absorbe Plein se le
+ * paga al productor al promedio realizado de ESA fruta: ventas del lote
+ * origen más las de sus hijos de ese reempaque (el origen normalmente vende
+ * cero porque se consumió entero). Sin ventas → precio a mano (`prices`),
+ * obligatorio para emitir. La que absorbe el productor no lleva monto.
+ * `reference` es el promedio realizado de toda la carga, por caja y por
+ * libra, para avisar cuando un precio a mano se sale de rango.
+ */
+async function loadShrinkRows(
+  sql,
+  purchase_order_id: number,
+  prices: Map<number, number>,
+): Promise<{ rows: ShrinkRow[]; reference: { caja: number | null; lb: number | null } }> {
+  const heads = await sql.query(
+    `select id, pack_number, pack_date::text, shrink_qty::text, shrink_unit, shrink_charged_to, shrink_reason
+     from pack_outs where purchase_order_id = $1 and coalesce(shrink_qty, 0) > 0 order by id`,
+    [purchase_order_id],
+  );
+  const [ref] = await sql.query(`${SALES_AGG_SQL} where l.purchase_order_id = $1`, [
+    purchase_order_id,
+  ]);
+  const reference = {
+    caja: n(ref?.qty) > 0 ? n(ref.revenue) / n(ref.qty) : null,
+    lb: n(ref?.lb) > 0 && !ref?.missing_weight ? n(ref.revenue) / n(ref.lb) : null,
+  };
+  const rows: ShrinkRow[] = [];
+  for (const h of heads) {
+    const ins = await sql.query(
+      `select pl.lot_id, l.lot_number from pack_out_lines pl join lots l on l.id = pl.lot_id
+       where pl.pack_out_id = $1 and pl.direction = 'in' order by pl.id`,
+      [h.id],
+    );
+    const outs = await sql.query(
+      `select pl.lot_id, l.lot_number, ps.net_weight::text, ps.weight_unit
+       from pack_out_lines pl join lots l on l.id = pl.lot_id
+       left join pack_styles ps on ps.id = pl.pack_style_id
+       where pl.pack_out_id = $1 and pl.direction = 'out' order by pl.id`,
+      [h.id],
+    );
+    const lotIds = [...ins.map((i) => i.lot_id), ...outs.map((o) => o.lot_id)];
+    const [sales] = await sql.query(`${SALES_AGG_SQL} where a.lot_id = any($1::int[])`, [lotIds]);
+    const shrink_unit = h.shrink_unit === "lb" ? "lb" : "caja";
+    const avg_price =
+      shrink_unit === "lb"
+        ? n(sales?.lb) > 0 && !sales?.missing_weight
+          ? n(sales.revenue) / n(sales.lb)
+          : null
+        : n(sales?.qty) > 0
+          ? n(sales.revenue) / n(sales.qty)
+          : null;
+    const charged_to: "grower" | "plein" = h.shrink_charged_to === "plein" ? "plein" : "grower";
+    const manualPrice = prices.get(h.id) ?? null;
+    const unit_price = charged_to === "plein" ? (avg_price ?? manualPrice) : null;
+    const shrink_qty = n(h.shrink_qty);
+    const childLb = packWeightLb(outs[0]?.net_weight, outs[0]?.weight_unit);
+    rows.push({
+      pack_out_id: h.id,
+      pack_number: h.pack_number,
+      pack_date: h.pack_date,
+      source_lots: ins.map((i) => i.lot_number).join(", "),
+      child_lots: outs.map((o) => o.lot_number).join(", "),
+      shrink_qty,
+      shrink_unit,
+      charged_to,
+      reason: h.shrink_reason ?? null,
+      avg_price,
+      unit_price,
+      manual: avg_price == null && manualPrice != null,
+      needs_price: charged_to === "plein" && unit_price == null,
+      amount:
+        charged_to === "plein" && unit_price != null
+          ? Math.round(shrink_qty * unit_price * 100) / 100
+          : 0,
+      equiv_boxes: shrink_unit === "lb" && childLb ? shrink_qty / childLb : null,
+      equiv_box_weight_lb: childLb,
+    });
+  }
+  return { rows, reference };
 }
 /**
  * Shared by `getSettlement` (authenticated, finance-only) and `getVendorPortal`
  * (public, gated by the PO's `share_token` instead). Neither calls the other's
  * server fn — this plain function is the one place the math lives.
  */
-async function loadSettlement(sql, purchase_order_id: number) {
+async function loadSettlement(
+  sql,
+  purchase_order_id: number,
+  shrinkPrices: Map<number, number> = new Map(),
+) {
   const [po] = await sql.query(
     `select po.id, po.po_number, po.supplier_id, s.name as supplier_name, po.status,
               coalesce(po.costing_mode,'pas') as costing_mode, po.target_profit_pct::text,
@@ -2448,9 +2620,10 @@ async function loadSettlement(sql, purchase_order_id: number) {
   const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
   const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
   const lotsRaw = await loadPoLots(sql, purchase_order_id);
+  const shrink = await loadShrinkRows(sql, purchase_order_id, shrinkPrices);
   // La liquidación por comisión (la secuencia real de Plein) manda; el
   // target % queda solo como camino legado cuando no hay comisión definida.
-  const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses);
+  const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows);
   const target = breakdown == null && po.target_profit_pct != null ? n(po.target_profit_pct) : null;
   const lots = computeSettlementLots(
     lotsRaw,
@@ -2510,7 +2683,7 @@ async function loadSettlement(sql, purchase_order_id: number) {
   // cálculo vivo — reimprimir devuelve exactamente lo mismo.
   const [settlementRow] = await sql.query(
     `select id, settlement_number, issue_date::text, share_token,
-            revenue::text, grower_expenses::text, commission::text,
+            revenue::text, grower_expenses::text, commission::text, shrink_compensation::text,
             net_to_grower::text, advance_recovered::text, final_payment::text
      from grower_settlements where purchase_order_id = $1`,
     [purchase_order_id],
@@ -2555,6 +2728,13 @@ async function loadSettlement(sql, purchase_order_id: number) {
       : null,
     recoveries,
     recovered_total,
+    shrink_rows: shrink.rows,
+    shrink_reference: shrink.reference,
+    // Lotes de reempaque cuyo origen no se pudo resolver: la pantalla los
+    // muestra en rojo y la emisión se niega. Nunca se adivina el producto.
+    origin_errors: lotsRaw
+      .filter((l) => l.origin_error)
+      .map((l) => String(l.origin_error)),
     settlement: settlementRow
       ? {
           id: settlementRow.id,
@@ -2564,6 +2744,7 @@ async function loadSettlement(sql, purchase_order_id: number) {
           revenue: n(settlementRow.revenue),
           grower_expenses: n(settlementRow.grower_expenses),
           commission: n(settlementRow.commission),
+          shrink_compensation: n(settlementRow.shrink_compensation),
           net_to_grower: n(settlementRow.net_to_grower),
           advance_recovered: n(settlementRow.advance_recovered),
           final_payment: n(settlementRow.final_payment),
@@ -2597,12 +2778,30 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
     z.object({
       purchase_order_id: z.number(),
       recover_amount: z.number().min(0).optional(),
+      // Precio a mano para la merma que absorbe Plein cuando esa fruta no
+      // tuvo ventas (sin promedio realizado). Se ignora si hay promedio.
+      shrink_prices: z
+        .array(z.object({ pack_out_id: z.number(), unit_price: z.number().positive() }))
+        .optional(),
     }),
   )
   .middleware([moduleMiddleware("finance")])
   .handler(async ({ data, context }) => {
     const sql = await getSql();
-    const s = await loadSettlement(sql, data.purchase_order_id);
+    const prices = new Map<number, number>(
+      (data.shrink_prices ?? []).map((p) => [p.pack_out_id, p.unit_price]),
+    );
+    const s = await loadSettlement(sql, data.purchase_order_id, prices);
+    // Un lote reempacado cuyo origen no se resuelve NO se liquida con el SKU
+    // del hijo: se niega la emisión y se dice cuál lote es.
+    if (s.origin_errors.length) throw new Error(s.origin_errors.join(" "));
+    const pendingPrice = s.shrink_rows.filter((r) => r.needs_price);
+    if (pendingPrice.length)
+      throw new Error(
+        `Captura el precio de la merma que absorbe Plein en ${pendingPrice
+          .map((r) => r.pack_number)
+          .join(", ")} antes de emitir: esa fruta no tuvo ventas para tomar el promedio.`,
+      );
     if (s.deal_type === "firme")
       throw new Error(
         "La liquidación al productor aplica a consignación y comisión pura — una carga en firme se paga contra su factura.",
@@ -2640,8 +2839,8 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
         `insert into grower_settlements
          (settlement_number, purchase_order_id, supplier_id, deal_type, commission_type, commission_rate,
           issue_date, sold_units, revenue, grower_expenses, commission, net_to_grower,
-          advance_recovered, final_payment, created_by)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`,
+          advance_recovered, final_payment, created_by, shrink_compensation)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
         [
           settlement_number,
           data.purchase_order_id,
@@ -2658,6 +2857,7 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
           advance_recovered,
           final_payment,
           context.userId ?? null,
+          s.breakdown.shrink_compensation,
         ],
       )
     )[0].id;
@@ -2667,33 +2867,51 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
          values ($1,$2,$3,$4)`,
         [sp.id, settlementId, data.purchase_order_id, sp.take],
       );
-    // Desglose por lote congelado, con calibre del SKU y texto copiado (una
-    // edición futura del catálogo no reescribe un documento ya entregado).
-    const calibres = new Map<number, string | null>(
-      (
-        await sql.query(
-          `select l.id, ps.calibre from lots l left join pack_styles ps on ps.id = l.pack_style_id
-           where l.purchase_order_id = $1`,
-          [data.purchase_order_id],
-        )
-      ).map((r) => [r.id, r.calibre]),
-    );
+    // Desglose por lote congelado con texto copiado (una edición futura del
+    // catálogo no reescribe un documento ya entregado). En lotes reempacados
+    // product_name/calibre son los del ORIGEN (lo que el productor entregó);
+    // packed_as guarda el SKU del hijo solo como referencia.
     for (const lot of s.lots)
       await sql.query(
         `insert into grower_settlement_lots
-         (settlement_id, lot_id, lot_number, product_name, calibre, sold_qty, unit, unit_price, revenue, remaining_qty)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         (settlement_id, lot_id, lot_number, product_name, calibre, sold_qty, unit, unit_price, revenue, remaining_qty,
+          repacked_out_qty, repacked_from, packed_as)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [
           settlementId,
           lot.id,
           lot.lot_number,
           lot.product_name,
-          calibres.get(lot.id) ?? null,
+          lot.calibre ?? null,
           lot.sold,
           lot.unit,
           lot.sold > 0 ? lot.revenue / lot.sold : null,
           lot.revenue,
           lot.remaining,
+          lot.repacked_out_qty ?? 0,
+          lot.repacked_from ?? null,
+          lot.packed_as ?? null,
+        ],
+      );
+    // Merma de reempaque congelada: cantidad, motivo y quién la absorbe.
+    // Con monto solo cuando la absorbe Plein (se le paga al productor).
+    for (const r of s.shrink_rows)
+      await sql.query(
+        `insert into grower_settlement_shrinks
+         (settlement_id, pack_out_id, pack_number, pack_date, source_lots, shrink_qty, shrink_unit, charged_to, reason, unit_price, amount)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          settlementId,
+          r.pack_out_id,
+          r.pack_number,
+          r.pack_date,
+          r.source_lots,
+          r.shrink_qty,
+          r.shrink_unit,
+          r.charged_to,
+          r.reason,
+          r.charged_to === "plein" ? r.unit_price : null,
+          r.charged_to === "plein" ? r.amount : 0,
         ],
       );
     for (const e of s.breakdown.grower_expense_rows)
@@ -2777,9 +2995,24 @@ export const applySettlement = createServerFn({ method: "POST" })
     const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
     const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
     const lotsRaw = await loadPoLots(sql, data.purchase_order_id);
+    // La merma que absorbe Plein entra al neto (y por tanto al costo de los
+    // lotes / bill de consignación). Si ya hay liquidación emitida se usan
+    // sus precios congelados para que la bill cuadre con el documento.
+    const frozenPrices = new Map<number, number>(
+      (
+        await sql.query(
+          `select gss.pack_out_id, gss.unit_price::text
+           from grower_settlement_shrinks gss
+           join grower_settlements gs on gs.id = gss.settlement_id
+           where gs.purchase_order_id = $1 and gss.unit_price is not null and gss.pack_out_id is not null`,
+          [data.purchase_order_id],
+        )
+      ).map((r) => [r.pack_out_id, n(r.unit_price)]),
+    );
+    const shrink = await loadShrinkRows(sql, data.purchase_order_id, frozenPrices);
     // Si la OC tiene comisión definida, esa es la liquidación que se escribe;
     // el target % es solo el camino legado sin comisión.
-    const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses);
+    const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows);
     const computed = computeSettlementLots(
       lotsRaw,
       expense_total,
@@ -5509,7 +5742,8 @@ export const getPrintDoc = createServerFn({ method: "GET" })
       );
       if (!liq) throw new Error("Liquidación no encontrada");
       const lots = await sql.query(
-        `select lot_number, product_name, calibre, sold_qty::text, unit, unit_price::text, revenue::text, remaining_qty::text
+        `select lot_number, product_name, calibre, sold_qty::text, unit, unit_price::text, revenue::text, remaining_qty::text,
+                coalesce(repacked_out_qty, 0)::text as repacked_out_qty, repacked_from, packed_as
          from grower_settlement_lots where settlement_id = $1 order by id`,
         [liq.id],
       );
@@ -5518,6 +5752,20 @@ export const getPrintDoc = createServerFn({ method: "GET" })
          where settlement_id = $1 order by id`,
         [liq.id],
       );
+      // El peso del SKU hijo solo sirve para imprimir la equivalencia en
+      // cajas de una merma en libras; el monto congelado no depende de él.
+      const shrinks = await sql.query(
+        `select gss.pack_number, gss.pack_date::text, gss.source_lots, gss.shrink_qty::text, gss.shrink_unit,
+                gss.charged_to, gss.reason, gss.unit_price::text, gss.amount::text,
+                (select ps.net_weight::text from pack_out_lines pl join pack_styles ps on ps.id = pl.pack_style_id
+                  where pl.pack_out_id = gss.pack_out_id and pl.direction = 'out' order by pl.id limit 1) as child_net_weight,
+                (select ps.weight_unit from pack_out_lines pl join pack_styles ps on ps.id = pl.pack_style_id
+                  where pl.pack_out_id = gss.pack_out_id and pl.direction = 'out' order by pl.id limit 1) as child_weight_unit
+         from grower_settlement_shrinks gss where gss.settlement_id = $1 order by gss.id`,
+        [liq.id],
+      );
+      const dmyLiq = (iso: string | null) =>
+        iso ? iso.slice(0, 10).split("-").reverse().join("/") : "";
       const commissionLabel =
         liq.commission_type === "per_unit"
           ? `${money2(n(liq.commission_rate))} por caja × ${n(liq.sold_units)} cajas`
@@ -5529,12 +5777,52 @@ export const getPrintDoc = createServerFn({ method: "GET" })
           .filter((l) => n(l.sold_qty) > 0)
           .map((l) => ({
             sku: l.lot_number,
-            description: [l.product_name, l.calibre].filter(Boolean).join(" · "),
+            // Producto de ORIGEN (lo que entregó el productor); el SKU del
+            // hijo va como nota, nunca como el producto de la línea.
+            description: [
+              [l.product_name, l.calibre].filter(Boolean).join(" · "),
+              l.packed_as ? `reempacado como ${l.packed_as}` : null,
+              l.repacked_from ? `origen: ${l.repacked_from}` : null,
+            ]
+              .filter(Boolean)
+              .join(" — "),
             qty: n(l.sold_qty),
             unit: l.unit || "",
             unit_price: n(l.unit_price),
             amount: n(l.revenue),
           })),
+        // Cajas que salieron de un lote a reempaque: no se vendieron desde
+        // este lote, pero el productor las entregó y deben cuadrar.
+        ...lots
+          .filter((l) => n(l.repacked_out_qty) > 0)
+          .map((l) => ({
+            sku: l.lot_number,
+            description: `Enviado a reempaque — ${[l.product_name, l.calibre].filter(Boolean).join(" · ")} (se liquida en el lote reempacado)`,
+            qty: n(l.repacked_out_qty),
+            unit: l.unit || "",
+            unit_price: 0,
+            amount: 0,
+          })),
+        // Merma de reempaque (PACA: cantidad perdida, fecha y justificación).
+        // Con monto solo cuando la absorbe Plein.
+        ...shrinks.map((r) => {
+          const plein = r.charged_to === "plein";
+          const isLb = r.shrink_unit === "lb";
+          const childLb = isLb ? packWeightLb(r.child_net_weight, r.child_weight_unit) : null;
+          const boxesWord = (v: number) => (v === 1 ? "caja" : "cajas");
+          const equivBoxes = childLb ? Math.round((n(r.shrink_qty) / childLb) * 100) / 100 : null;
+          const qtyLabel = isLb
+            ? `${qtyText(n(r.shrink_qty))} lb${equivBoxes != null ? ` (≈ ${qtyText(equivBoxes)} ${boxesWord(equivBoxes)} de ${qtyText(childLb as number)} lb)` : ""}`
+            : `${qtyText(n(r.shrink_qty))} ${boxesWord(n(r.shrink_qty))}`;
+          return {
+            sku: "MERMA",
+            description: `Merma por reempaque ${r.pack_number} del ${dmyLiq(r.pack_date)}${r.source_lots ? ` (lotes ${r.source_lots})` : ""}: ${qtyLabel}${r.reason ? ` — ${r.reason}` : ""} — ${plein ? "la absorbe Plein (se paga al productor)" : "la absorbe el productor"}`,
+            qty: n(r.shrink_qty),
+            unit: r.shrink_unit === "lb" ? "lb" : r.shrink_unit || "",
+            unit_price: plein ? n(r.unit_price) : 0,
+            amount: plein ? n(r.amount) : 0,
+          };
+        }),
         ...expenses.map((e) => ({
           sku: "GASTO",
           description: `Gasto del productor — ${e.category}${e.notes ? ` (${e.notes})` : ""}`,
@@ -5590,7 +5878,7 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         total: n(liq.final_payment),
         // Guion ASCII a propósito: la helvetica de jsPDF no trae el signo menos
         // tipográfico (U+2212) y lo imprime como comillas.
-        notes: `Ingreso bruto ${money2(n(liq.revenue))} - gastos del productor ${money2(n(liq.grower_expenses))} - comisión Plein ${money2(n(liq.commission))} = neto al productor ${money2(n(liq.net_to_grower))}. Adelantos recuperados: ${money2(n(liq.advance_recovered))}. Pago final al productor: ${money2(n(liq.final_payment))}.`,
+        notes: `Ingreso bruto ${money2(n(liq.revenue))} - gastos del productor ${money2(n(liq.grower_expenses))} - comisión Plein ${money2(n(liq.commission))}${n(liq.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(liq.shrink_compensation))}` : ""} = neto al productor ${money2(n(liq.net_to_grower))}. Adelantos recuperados: ${money2(n(liq.advance_recovered))}. Pago final al productor: ${money2(n(liq.final_payment))}.`,
         warning: missing.length ? `LIQUIDACIÓN INCOMPLETA — ${missing.join("; ")}.` : null,
         showPaca: false,
         company,
@@ -6856,13 +7144,114 @@ export const grantStaff = createServerFn({ method: "POST" })
     ]);
     return { ok: true };
   });
+// ---- Reempaque (bloque A, hallazgo 5) ---------------------------------------
+// PACA 7 CFR 46: el reempaque de fruta consignada es re-sorting /
+// reconditioning. Un reempaque lleva fruta de UNA sola carga (el servidor lo
+// exige aunque la pantalla ya lo filtre), el lote hijo hereda la carga y lo que
+// los orígenes sabían de sí mismos, y la diferencia entre lo que entró y lo
+// que salió queda registrada con quién la absorbe y por qué. Nada se adivina.
+
+/** Peso neto de un SKU en libras, o null si el catálogo no lo trae. */
+function packWeightLb(net_weight, weight_unit): number | null {
+  if (net_weight == null || !(n(net_weight) > 0)) return null;
+  return convertWeight(n(net_weight), weight_unit || "lb", "lb");
+}
+function uniqueOrNull<T>(vals: (T | null | undefined)[]): T | null {
+  const set = new Set(vals.filter((v) => v != null) as T[]);
+  return set.size === 1 ? [...set][0] : null;
+}
+function earliestDate(vals: (string | null | undefined)[]): string | null {
+  const ok = vals.filter((v): v is string => Boolean(v)).sort();
+  return ok[0] ?? null;
+}
+type LotOrigin = {
+  lot_id: number;
+  lot_number: string;
+  product_name: string;
+  calibre: string | null;
+  sku_code: string | null;
+  qty: number;
+};
+/**
+ * Sube la cadena de reempaque de un lote hasta los lotes recibidos (sin
+ * pack_out_id) por pack_out_lines(direction='in'). Tope de 10 saltos y
+ * detección de ciclo por rama. Si algo no cuadra LANZA con el lote y el
+ * reempaque que no pudo resolver — nunca cae al SKU del hijo.
+ */
+async function resolveLotOrigins(
+  sql,
+  lotId: number,
+): Promise<{ roots: LotOrigin[]; chain: string[] }> {
+  const roots = new Map<number, LotOrigin>();
+  const chain: string[] = [];
+  let frontier: { lot_id: number; qty: number; ancestors: Set<number> }[] = [
+    { lot_id: lotId, qty: 0, ancestors: new Set() },
+  ];
+  for (let depth = 0; frontier.length; depth++) {
+    if (depth > 10)
+      throw new Error("la cadena de reempaque pasa de 10 saltos y no se resolvió");
+    const next: typeof frontier = [];
+    for (const f of frontier) {
+      if (f.ancestors.has(f.lot_id)) throw new Error("la cadena de reempaque tiene un ciclo");
+      const [lot] = await sql.query(
+        `select l.id, l.lot_number, l.pack_out_id, p.name as product_name, ps.calibre, ps.sku_code
+         from lots l join products p on p.id = l.product_id
+         left join pack_styles ps on ps.id = l.pack_style_id
+         where l.id = $1`,
+        [f.lot_id],
+      );
+      if (!lot) throw new Error(`el lote con id ${f.lot_id} no existe`);
+      if (lot.pack_out_id == null) {
+        const prev = roots.get(lot.id);
+        roots.set(lot.id, {
+          lot_id: lot.id,
+          lot_number: lot.lot_number,
+          product_name: lot.product_name,
+          calibre: lot.calibre ?? null,
+          sku_code: lot.sku_code ?? null,
+          qty: (prev?.qty ?? 0) + f.qty,
+        });
+        continue;
+      }
+      const [head] = await sql.query(`select pack_number from pack_outs where id = $1`, [
+        lot.pack_out_id,
+      ]);
+      const ins = await sql.query(
+        `select lot_id, qty::text from pack_out_lines where pack_out_id = $1 and direction = 'in' order by id`,
+        [lot.pack_out_id],
+      );
+      if (!head || !ins.length)
+        throw new Error(
+          `el reempaque ${head?.pack_number ?? `#${lot.pack_out_id}`} del lote ${lot.lot_number} no tiene lotes origen registrados`,
+        );
+      if (!chain.includes(head.pack_number)) chain.push(head.pack_number);
+      const ancestors = new Set(f.ancestors);
+      ancestors.add(lot.id);
+      for (const i of ins) next.push({ lot_id: i.lot_id, qty: n(i.qty), ancestors });
+    }
+    frontier = next;
+  }
+  if (!roots.size) throw new Error("no se encontró ningún lote recibido al final de la cadena");
+  return { roots: [...roots.values()], chain };
+}
 export const listPackOuts = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async () => {
     const sql = await getSql();
-    const heads =
-      await sql.query(`select po.id, po.pack_number, po.pack_date::text, loc.name as location_name, po.notes
-       from pack_outs po left join locations loc on loc.id = po.location_id order by po.id desc`);
+    const heads = (
+      await sql.query(`select po.id, po.pack_number, po.pack_date::text, loc.name as location_name, po.notes,
+           po.purchase_order_id, o.po_number, po.consumed_qty::text, po.produced_qty::text,
+           po.shrink_qty::text, po.shrink_unit, po.shrink_charged_to, po.shrink_reason
+       from pack_outs po
+       left join locations loc on loc.id = po.location_id
+       left join purchase_orders o on o.id = po.purchase_order_id
+       order by po.id desc`)
+    ).map((h) => ({
+      ...h,
+      consumed_qty: h.consumed_qty == null ? null : n(h.consumed_qty),
+      produced_qty: h.produced_qty == null ? null : n(h.produced_qty),
+      shrink_qty: n(h.shrink_qty),
+    }));
     const lines =
       await sql.query(`select l.pack_out_id, l.direction, lot.lot_number, p.name as product_name, ps.sku_code, l.qty::text, l.unit
        from pack_out_lines l
@@ -6903,68 +7292,163 @@ export const createPackOut = createServerFn({ method: "POST" })
         .min(1),
       dest_pack_style_id: z.number(),
       dest_qty: z.number().positive(),
+      // Merma: quién la absorbe y por qué — obligatorios cuando hay merma.
+      // shrink_manual_lb solo se usa cuando cambió la presentación y el
+      // catálogo no trae peso neto para calcularla.
+      shrink_charged_to: z.enum(["grower", "plein"]).optional(),
+      shrink_reason: z.string().optional(),
+      shrink_manual_lb: z.number().min(0).optional(),
     }),
   )
   .handler(async ({ data, context }) => {
     const sql = await getSql();
     const pack_date = data.pack_date || todayISO();
     const [dest] = await sql.query(
-      `select id, product_id, sku_code, unit_of_measure from pack_styles where id = $1`,
+      `select ps.id, ps.product_id, ps.sku_code, ps.unit_of_measure, ps.net_weight::text, ps.weight_unit,
+              p.name as product_name
+       from pack_styles ps join products p on p.id = ps.product_id where ps.id = $1`,
       [data.dest_pack_style_id],
     );
-    if (!dest) throw new Error("Destination SKU not found");
+    if (!dest) throw new Error("SKU destino no encontrado");
     let value = 0;
-    const srcLots: {
-      id: number;
-      current_qty: string;
-      unit_cost: string;
-      unit: string;
-      supplier_id: number;
-      origin_country: string | null;
-      lot_number: string;
-      product_id: number;
-      held: boolean;
-      status: string;
-    }[] = [];
+    const srcLots: any[] = [];
     for (const src of data.sources) {
       const [lot] = await sql.query(
-        `select id, current_qty::text, unit_cost::text, unit, supplier_id, origin_country, lot_number, product_id,
-                coalesce(held,false) as held, status from lots where id = $1`,
+        `select l.id, l.lot_number, l.current_qty::text, l.unit_cost::text, l.unit, l.supplier_id, l.origin_country,
+                l.product_id, l.pack_style_id, l.purchase_order_id, l.purchase_order_line_id, l.grade, l.origin_farm,
+                l.best_by_date::text, l.received_date::text, coalesce(l.held,false) as held, l.status,
+                ps.sku_code, ps.net_weight::text, ps.weight_unit, o.po_number
+         from lots l
+         left join pack_styles ps on ps.id = l.pack_style_id
+         left join purchase_orders o on o.id = l.purchase_order_id
+         where l.id = $1`,
         [src.lot_id],
       );
-      if (!lot) throw new Error("Source lot not found");
-      if (lot.held) throw new Error(`Lot ${lot.lot_number} is on hold`);
-      if (lot.status !== "active") throw new Error(`Lot ${lot.lot_number} is not active`);
+      if (!lot) throw new Error("Lote origen no encontrado");
+      // Bloqueo por hold (lots.held), no por calidad: un lote retenido o
+      // castigado por inspección SÍ se reempaca — eso es reacondicionar.
+      if (lot.held) throw new Error(`El lote ${lot.lot_number} está en hold — libéralo antes de reempacar.`);
+      if (lot.status !== "active") throw new Error(`El lote ${lot.lot_number} no está activo.`);
       if (src.qty > n(lot.current_qty) + 1e-9)
-        throw new Error(`Lot ${lot.lot_number} only has ${lot.current_qty}`);
+        throw new Error(
+          `El lote ${lot.lot_number} solo tiene ${qtyText(n(lot.current_qty))} ${lot.unit}.`,
+        );
+      if (lot.purchase_order_id == null)
+        throw new Error(
+          `El lote ${lot.lot_number} no está ligado a ninguna carga — no se puede reempacar.`,
+        );
       value += src.qty * n(lot.unit_cost);
-      srcLots.push(lot);
+      srcLots.push({ ...lot, qty: src.qty });
     }
+    // Regla PACA: un reempaque lleva fruta de UNA sola carga. Mezclar lotes de
+    // la misma OC sí se permite.
+    const byPo = new Map<number, { po_number: string; lots: string[] }>();
+    for (const l of srcLots) {
+      const cur = byPo.get(l.purchase_order_id) ?? { po_number: l.po_number, lots: [] as string[] };
+      cur.lots.push(l.lot_number);
+      byPo.set(l.purchase_order_id, cur);
+    }
+    if (byPo.size > 1) {
+      const parts = [...byPo.values()].map((g) => `${g.lots.join(", ")} (${g.po_number})`);
+      throw new Error(
+        `Los lotes ${parts.join(" y ")} son de cargas distintas. Un reempaque solo puede llevar fruta de una misma carga.`,
+      );
+    }
+    const purchase_order_id = srcLots[0].purchase_order_id as number;
+    // Herencia: lo que todos los orígenes comparten se hereda; si difieren,
+    // queda vacío. Las fechas heredan la más temprana: la fruta no rejuvenece.
+    const purchase_order_line_id = uniqueOrNull<number>(srcLots.map((l) => l.purchase_order_line_id));
+    const grade = uniqueOrNull<string>(srcLots.map((l) => l.grade));
+    const origin_farm = uniqueOrNull<string>(srcLots.map((l) => l.origin_farm));
+    const best_by_date = earliestDate(srcLots.map((l) => l.best_by_date));
+    const received_date = earliestDate(srcLots.map((l) => l.received_date)) ?? pack_date;
+    // Merma: mismo SKU → en cajas; cambio de presentación → en libras con los
+    // pesos del catálogo (o a mano si falta alguno, nombrando cuál).
+    const consumed = srcLots.reduce((s, l) => s + l.qty, 0);
+    const produced = data.dest_qty;
+    const sameSku = srcLots.every((l) => l.pack_style_id === dest.id);
+    let shrink_qty = 0;
+    let shrink_unit = "caja";
+    if (sameSku) {
+      shrink_qty = consumed - produced;
+      if (shrink_qty < -1e-9)
+        throw new Error(
+          `Salen ${qtyText(produced)} cajas y entraron ${qtyText(consumed)}: un reempaque del mismo SKU no puede producir más cajas de las que consume.`,
+        );
+    } else {
+      shrink_unit = "lb";
+      const missing: string[] = [];
+      const destLb = packWeightLb(dest.net_weight, dest.weight_unit);
+      if (destLb == null) missing.push(dest.sku_code || dest.product_name);
+      let consumedLb = 0;
+      for (const l of srcLots) {
+        const w = packWeightLb(l.net_weight, l.weight_unit);
+        if (w == null) missing.push(l.sku_code || l.lot_number);
+        else consumedLb += l.qty * w;
+      }
+      if (missing.length) {
+        if (data.shrink_manual_lb == null)
+          throw new Error(
+            `No se puede calcular la merma por peso: ${[...new Set(missing)].join(", ")} no tiene peso neto en el catálogo. Captúralo en Productos & SKUs, o captura la merma a mano en libras.`,
+          );
+        shrink_qty = data.shrink_manual_lb;
+      } else {
+        shrink_qty = consumedLb - produced * (destLb as number);
+        if (shrink_qty < -0.5)
+          throw new Error(
+            `Salen ${qtyText(produced * (destLb as number))} lb y entraron ${qtyText(consumedLb)} lb: un reempaque no puede producir más peso del que consume. Revisa cantidades o los pesos netos del catálogo.`,
+          );
+        if (shrink_qty < 0) shrink_qty = 0;
+      }
+    }
+    shrink_qty = Math.round(shrink_qty * 1000) / 1000;
+    const hasShrink = shrink_qty > 0.0005;
+    if (hasShrink && !data.shrink_charged_to)
+      throw new Error(
+        `Hay merma de ${qtyText(shrink_qty)} ${shrink_unit}: indica quién la absorbe (productor o Plein).`,
+      );
+    if (hasShrink && !data.shrink_reason?.trim())
+      throw new Error(
+        `Hay merma de ${qtyText(shrink_qty)} ${shrink_unit}: escribe el motivo. PACA exige justificar la pérdida.`,
+      );
     const pack_number = await nextCode(sql, "pack_outs", "pack_number", "RPK-", 3);
     const [head] = await sql.query(
-      `insert into pack_outs (pack_number, pack_date, location_id, notes, created_by) values ($1,$2,$3,$4,$5) returning id`,
-      [pack_number, pack_date, data.location_id, data.notes || null, context.userId],
+      `insert into pack_outs (pack_number, pack_date, location_id, notes, created_by, purchase_order_id,
+                              consumed_qty, produced_qty, shrink_qty, shrink_unit, shrink_charged_to, shrink_reason)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
+      [
+        pack_number,
+        pack_date,
+        data.location_id,
+        data.notes || null,
+        context.userId,
+        purchase_order_id,
+        consumed,
+        produced,
+        hasShrink ? shrink_qty : 0,
+        hasShrink ? shrink_unit : null,
+        hasShrink ? data.shrink_charged_to : null,
+        hasShrink ? data.shrink_reason!.trim() : null,
+      ],
     );
-    for (let i = 0; i < data.sources.length; i += 1) {
-      const src = data.sources[i];
-      const lot = srcLots[i];
+    for (const lot of srcLots) {
       await sql.query(
         `update lots set current_qty = current_qty - $1, status = case when current_qty - $1 <= 0 then 'depleted' else status end where id = $2`,
-        [src.qty, src.lot_id],
+        [lot.qty, lot.id],
       );
       await sql.query(
         `update inventory set quantity = greatest(quantity - $1, 0) where lot_id = $2`,
-        [src.qty, src.lot_id],
+        [lot.qty, lot.id],
       );
       await sql.query(
         `insert into inventory_movements (lot_id, location_id, movement_type, quantity, unit, reference_type, reference_id, notes)
          values ($1,$2,'repack_out',$3,$4,'pack_out',$5,$6)`,
-        [src.lot_id, data.location_id, -src.qty, lot.unit, head.id, pack_number],
+        [lot.id, data.location_id, -lot.qty, lot.unit, head.id, pack_number],
       );
       await sql.query(
         `insert into pack_out_lines (pack_out_id, direction, lot_id, product_id, pack_style_id, qty, unit, unit_cost)
-         values ($1,'in',$2,$3,(select pack_style_id from lots where id=$2),$4,$5,(select unit_cost from lots where id=$2))`,
-        [head.id, src.lot_id, lot.product_id, src.qty, lot.unit],
+         values ($1,'in',$2,$3,$4,$5,$6,$7)`,
+        [head.id, lot.id, lot.product_id, lot.pack_style_id, lot.qty, lot.unit, n(lot.unit_cost)],
       );
     }
     const unit_cost = data.dest_qty > 0 ? value / data.dest_qty : 0;
@@ -6979,18 +7463,25 @@ export const createPackOut = createServerFn({ method: "POST" })
     const first = srcLots[0];
     const destLotId = (
       await sql.query(
-        `insert into lots (lot_number, product_id, supplier_id, pack_style_id, original_qty, current_qty, unit, unit_cost,
-                           received_date, pack_date, origin_country, status, quality_state, pack_out_id)
-         values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$8,$9,'active','sano',$10) returning id`,
+        `insert into lots (lot_number, product_id, supplier_id, pack_style_id, purchase_order_id, purchase_order_line_id,
+                           original_qty, current_qty, unit, unit_cost, received_date, pack_date, best_by_date, grade, origin_farm,
+                           origin_country, status, quality_state, pack_out_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,$14,$15,'active','sano',$16) returning id`,
         [
           lot_number,
           dest.product_id,
           first.supplier_id,
           dest.id,
+          purchase_order_id,
+          purchase_order_line_id,
           data.dest_qty,
           unit,
           unit_cost,
+          received_date,
           pack_date,
+          best_by_date,
+          grade,
+          origin_farm,
           first.origin_country,
           head.id,
         ],
@@ -7016,6 +7507,8 @@ export const createPackOut = createServerFn({ method: "POST" })
       pack_number,
       lot_number,
       unit_cost,
+      shrink_qty: hasShrink ? shrink_qty : 0,
+      shrink_unit: hasShrink ? shrink_unit : null,
     };
   });
 export const listBankAccounts = createServerFn({ method: "GET" })
@@ -7250,6 +7743,7 @@ async function wipeLiveActivity(sql: any) {
   // Orden por FK: payables → detalle de liquidación → liquidaciones (que a su
   // vez apuntan a las OCs que se borran más abajo).
   await sql.query(`delete from grower_payables`);
+  await sql.query(`delete from grower_settlement_shrinks`);
   await sql.query(`delete from grower_settlement_expenses`);
   await sql.query(`delete from grower_settlement_lots`);
   await sql.query(`delete from grower_settlements`);
@@ -7258,6 +7752,9 @@ async function wipeLiveActivity(sql: any) {
   await sql.query(`delete from pallets`);
   await sql.query(`delete from expense_po_links`);
   await sql.query(`delete from pack_out_lines`);
+  // Los lotes hijos apuntan al reempaque (lots.pack_out_id) y se borran más
+  // abajo: soltar la referencia primero o el borrado truena por FK.
+  await sql.query(`update lots set pack_out_id = null where pack_out_id is not null`);
   await sql.query(`delete from pack_outs`);
   await sql.query(`delete from waste_events`);
   await sql.query(`delete from inventory_movements`);

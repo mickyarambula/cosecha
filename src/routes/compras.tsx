@@ -2194,9 +2194,42 @@ function SettlementModal({
   const [commissionInit, setCommissionInit] = useState(false);
   const [liqRecover, setLiqRecover] = useState("");
   const [liqInit, setLiqInit] = useState(false);
+  // Precio a mano por reempaque (solo merma que absorbe Plein sin ventas).
+  const [shrinkPrices, setShrinkPrices] = useState<Record<number, string>>({});
+  const [confirmDeviation, setConfirmDeviation] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const s = data.data;
+
+  // Merma de reempaque en vivo: la que absorbe Plein se paga al promedio
+  // realizado de esa fruta; si no vendió, al precio capturado aquí. Un precio
+  // a mano fuera de ±50% del promedio de la carga avisa y pide confirmación.
+  const shrinkView = (s?.shrink_rows ?? []).map((r) => {
+    const manualRaw = r.avg_price == null && r.charged_to === "plein" ? Number(shrinkPrices[r.pack_out_id] || 0) : 0;
+    const manual = manualRaw > 0 ? manualRaw : null;
+    const price = r.avg_price ?? manual;
+    const amount = r.charged_to === "plein" && price != null ? Math.round(r.shrink_qty * price * 100) / 100 : 0;
+    const ref = r.shrink_unit === "lb" ? (s?.shrink_reference.lb ?? null) : (s?.shrink_reference.caja ?? null);
+    const deviates = manual != null && ref != null && ref > 0 && Math.abs(manual - ref) / ref > 0.5;
+    return {
+      ...r,
+      price,
+      manual,
+      amount,
+      ref,
+      deviates,
+      missing_price: r.charged_to === "plein" && price == null,
+    };
+  });
+  const shrinkCompensationLive = shrinkView.reduce((a, v) => a + v.amount, 0);
+  const netLive = s?.breakdown
+    ? s.breakdown.net_to_grower - s.breakdown.shrink_compensation + shrinkCompensationLive
+    : 0;
+  const anyDeviation = shrinkView.some((v) => v.deviates);
+  const anyMissingPrice = shrinkView.some((v) => v.missing_price);
+  const originErrors = s?.origin_errors ?? [];
+  const canEmit = !saving && !anyMissingPrice && originErrors.length === 0 && (!anyDeviation || confirmDeviation);
+  const unitWord = (u: string, v: number) => (u === "lb" ? "lb" : v === 1 ? "caja" : "cajas");
 
   // Propuesta de recuperación al emitir (solo comisión pura, donde no hay
   // bill): lo que alcance entre el saldo vivo y el neto de esta liquidación.
@@ -2222,6 +2255,9 @@ function SettlementModal({
         data: {
           purchase_order_id: poId,
           recover_amount: liqRecover ? Number(liqRecover) : undefined,
+          shrink_prices: shrinkView
+            .filter((v) => v.manual != null)
+            .map((v) => ({ pack_out_id: v.pack_out_id, unit_price: v.manual as number })),
         },
       });
       await data.reload();
@@ -2409,9 +2445,19 @@ function SettlementModal({
                   {t("Save")}
                 </Button>
                 <p className="ml-auto max-w-sm text-xs text-muted">
-                  Ingreso − gastos del productor − comisión de Plein = neto al productor.
+                  Ingreso − gastos del productor − comisión de Plein
+                  {shrinkView.some((v) => v.charged_to === "plein") ? " + merma pagada por Plein" : ""} = neto al
+                  productor.
                 </p>
               </div>
+              {originErrors.length ? (
+                <div className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-3 text-sm text-danger">
+                  <p className="font-semibold">No se puede emitir la liquidación.</p>
+                  {originErrors.map((e, i) => (
+                    <p key={i}>{e}</p>
+                  ))}
+                </div>
+              ) : null}
               {s.breakdown ? (
                 <div className="mt-3 rounded-md border border-border bg-surface p-4">
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -2468,14 +2514,88 @@ function SettlementModal({
                       </span>
                       <span className="tabular-nums">−{money(s.breakdown.commission)}</span>
                     </div>
+                    {shrinkView.map((v) => (
+                      <div key={v.pack_out_id} className="border-b border-border py-1.5">
+                        <div className="flex items-start justify-between gap-3">
+                          <span>
+                            Merma por reempaque <span className="font-mono">{v.pack_number}</span>
+                            <span className="ml-2 text-xs text-muted">
+                              {v.shrink_qty} {unitWord(v.shrink_unit, v.shrink_qty)}
+                              {v.equiv_boxes != null
+                                ? ` (≈ ${Math.round(v.equiv_boxes * 100) / 100} cajas de ${v.equiv_box_weight_lb} lb)`
+                                : ""}
+                              {v.source_lots ? ` · lotes ${v.source_lots}` : ""}
+                              {v.reason ? ` · ${v.reason}` : ""}
+                            </span>
+                            <span className={`ml-2 text-[11px] ${v.charged_to === "plein" ? "text-warn" : "text-subtle"}`}>
+                              {v.charged_to === "plein"
+                                ? "la absorbe Plein — se paga al productor"
+                                : "la absorbe el productor — sin monto"}
+                            </span>
+                          </span>
+                          {v.charged_to !== "plein" ? (
+                            <span className="tabular-nums text-subtle">{money(0)}</span>
+                          ) : v.avg_price != null ? (
+                            <span className="text-right">
+                              <span className="tabular-nums">+{money(v.amount)}</span>
+                              <span className="block text-[11px] text-muted">
+                                {money(v.avg_price, 2)} / {v.shrink_unit === "lb" ? "lb" : "caja"} promedio realizado
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-right">
+                              <span className="flex items-center justify-end gap-1 text-xs">
+                                <span className="text-muted">$ /{v.shrink_unit === "lb" ? "lb" : "caja"}</span>
+                                <Input
+                                  className="w-24"
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={shrinkPrices[v.pack_out_id] ?? ""}
+                                  onChange={(e) => {
+                                    setConfirmDeviation(false);
+                                    setShrinkPrices((m) => ({ ...m, [v.pack_out_id]: e.target.value }));
+                                  }}
+                                />
+                              </span>
+                              <span className="block text-[11px] text-warn">
+                                {v.manual != null
+                                  ? `+${money(v.amount)}`
+                                  : "sin ventas de esta fruta: captura el precio"}
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                        {v.deviates && v.ref != null ? (
+                          <p className="mt-1 text-xs text-warn">
+                            Este precio se sale del rango: el promedio realizado de la carga es{" "}
+                            {money(v.ref, 2)} por {v.shrink_unit === "lb" ? "lb" : "caja"}. Revísalo antes de emitir.
+                          </p>
+                        ) : null}
+                      </div>
+                    ))}
+                    {shrinkCompensationLive > 0.009 ? (
+                      <div className="flex justify-between border-b border-border py-1.5">
+                        <span>+ Merma pagada por Plein</span>
+                        <span className="tabular-nums">+{money(shrinkCompensationLive)}</span>
+                      </div>
+                    ) : null}
+                    {anyDeviation ? (
+                      <label className="flex cursor-pointer items-center gap-2 border-b border-border py-1.5 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={confirmDeviation}
+                          onChange={(e) => setConfirmDeviation(e.target.checked)}
+                        />
+                        Revisé el precio a mano y quiero continuar con él.
+                      </label>
+                    ) : null}
                     <div
                       className={`flex justify-between py-2 font-semibold ${s.recovered_total > 0 ? "border-b border-border text-sm" : "text-base"}`}
                     >
                       <span>Neto al productor</span>
-                      <span
-                        className={`tabular-nums ${s.breakdown.net_to_grower < 0 ? "text-danger" : "text-ok"}`}
-                      >
-                        {money(s.breakdown.net_to_grower)}
+                      <span className={`tabular-nums ${netLive < 0 ? "text-danger" : "text-ok"}`}>
+                        {money(netLive)}
                       </span>
                     </div>
                     {s.recovered_total > 0 ? (
@@ -2501,7 +2621,7 @@ function SettlementModal({
                         <div className="flex justify-between py-2 text-base font-semibold">
                           <span>Pago al productor</span>
                           <span className="tabular-nums text-ok">
-                            {money(Math.max(s.breakdown.net_to_grower - s.recovered_total, 0))}
+                            {money(Math.max(netLive - s.recovered_total, 0))}
                           </span>
                         </div>
                       </>
@@ -2545,7 +2665,7 @@ function SettlementModal({
                           />
                         </Field>
                       ) : null}
-                      <Button size="sm" disabled={saving} onClick={() => void emitirLiquidacion()}>
+                      <Button size="sm" disabled={!canEmit} onClick={() => void emitirLiquidacion()}>
                         Emitir liquidación
                       </Button>
                       <p className="ml-auto max-w-md text-xs text-muted">
@@ -2610,6 +2730,7 @@ function SettlementModal({
                     "RTS",
                     "Sold",
                     "Waste",
+                    "A reempaque",
                     "Remaining",
                     "Revenue",
                     "T. cost",
@@ -2637,14 +2758,28 @@ function SettlementModal({
                     </td>
                     <td className="px-2 py-2 text-xs text-danger">{t("Unpaid")}</td>
                     <td className="px-2 py-2">
-                      {l.product_name}
-                      {l.pack_name ? ` — ${l.pack_name}` : ""}
-                      {l.origin ? ` · ${l.origin}` : ""}
+                      {l.origin_error ? (
+                        <span className="text-xs text-danger">{l.origin_error}</span>
+                      ) : (
+                        <>
+                          {l.product_name}
+                          {l.calibre ? ` ${l.calibre}` : ""}
+                          {!l.is_repack && l.pack_name ? ` — ${l.pack_name}` : ""}
+                          {l.origin ? ` · ${l.origin}` : ""}
+                          {l.is_repack ? (
+                            <span className="block text-[11px] text-muted">
+                              reempacado como {l.packed_as}
+                              {l.repacked_from ? ` · origen: ${l.repacked_from}` : ""}
+                            </span>
+                          ) : null}
+                        </>
+                      )}
                     </td>
                     <td className="px-2 py-2 tabular-nums">{l.total}</td>
                     <td className="px-2 py-2 tabular-nums">{l.rts}</td>
                     <td className="px-2 py-2 tabular-nums">{l.sold}</td>
                     <td className="px-2 py-2 tabular-nums">{l.waste}</td>
+                    <td className="px-2 py-2 tabular-nums">{l.repacked_out_qty || 0}</td>
                     <td className="px-2 py-2 tabular-nums">{l.remaining}</td>
                     <td className="px-2 py-2 tabular-nums">{money(l.revenue)}</td>
                     <td className="px-2 py-2 tabular-nums">{l.pas ? "—" : money(l.t_cost)}</td>
