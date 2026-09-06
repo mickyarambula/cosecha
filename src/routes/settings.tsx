@@ -693,6 +693,8 @@ function WipeTests() {
         [t("Pack-outs"), counts.pack_outs],
         [t("Customer POs"), counts.customer_pos],
         [t("Sent log"), counts.send_events],
+        [t("Dispositions"), counts.dispositions],
+        [t("Destruction certificates"), counts.certificates],
       ]
     : [];
 

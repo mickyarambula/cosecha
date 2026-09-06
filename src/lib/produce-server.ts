@@ -2130,9 +2130,9 @@ export const listLots = createServerFn({ method: "GET" })
            l.received_date::text, l.pack_date::text, l.best_by_date::text,
            l.grade, l.origin_farm, l.origin_country, l.status,
            coalesce(l.quality_state, 'sano') as quality_state, l.quality_note,
-           l.purchase_order_id, po.po_number,
+           l.purchase_order_id, po.po_number, l.owner_kind,
            coalesce(l.held, false) as held, l.closed_at::text,
-           coalesce(l.waste_qty,0)::text, coalesce(l.rts_qty,0)::text, l.pallets::text
+           coalesce(l.waste_qty,0)::text as waste_qty, coalesce(l.rts_qty,0)::text as rts_qty, l.pallets::text
     from lots l
     join products p on p.id = l.product_id
     left join suppliers s on s.id = l.supplier_id
@@ -2324,6 +2324,13 @@ function computeSettlementLots(
       repacked_from: l.repacked_from ?? null,
       repacked_out_qty: l.repacked_out_qty ?? 0,
       origin_error: l.origin_error ?? null,
+      destroyed: l.destroyed_qty ?? 0,
+      plein_bought: l.plein_bought_qty ?? 0,
+      pending: l.pending_qty ?? 0,
+      unclassified: l.unclassified_qty ?? 0,
+      waste_reason: l.waste_reason ?? null,
+      origin_factor: l.origin_factor ?? 1,
+      origin_factor_unknown: Boolean(l.origin_factor_unknown),
     };
   });
 }
@@ -2333,7 +2340,13 @@ function computeSettlementLots(
  * − comisión de Plein = neto al productor. Devuelve el desglose completo
  * para que la liquidación se pueda leer y defender (documento PACA).
  */
-function computeCommissionBreakdown(po, lotsRaw, expenseRows, shrinkRows: ShrinkRow[] = []) {
+function computeCommissionBreakdown(
+  po,
+  lotsRaw,
+  expenseRows,
+  shrinkRows: ShrinkRow[] = [],
+  purchaseRows: DispositionRow[] = [],
+) {
   if (!po.commission_type || po.deal_type === "firme") return null;
   const revenue = lotsRaw.reduce((s, l) => s + l.revenue, 0);
   const soldUnits = lotsRaw.reduce((s, l) => s + l.sold, 0);
@@ -2347,6 +2360,13 @@ function computeCommissionBreakdown(po, lotsRaw, expenseRows, shrinkRows: Shrink
   // comisión ni a soldUnits. La que absorbe el productor vale 0 aquí.
   const shrink_compensation = shrinkRows
     .filter((r) => r.charged_to === "plein")
+    .reduce((s, r) => s + n(r.amount), 0);
+  // Cajas que Plein compra del remanente: se le pagan al productor a precio de
+  // mercado y PACA prohíbe cobrar comisión sobre ellas. Nunca pasan por ventas,
+  // así que no están en revenue ni en soldUnits (base de per_unit, gross_pct y
+  // net_pct); aquí solo suman al neto.
+  const plein_purchase_total = purchaseRows
+    .filter((r) => r.kind === "plein_purchase")
     .reduce((s, r) => s + n(r.amount), 0);
   const rate = n(po.commission_rate);
   let commission = 0;
@@ -2378,15 +2398,18 @@ function computeCommissionBreakdown(po, lotsRaw, expenseRows, shrinkRows: Shrink
     commission,
     shrink_rows: shrinkRows,
     shrink_compensation,
-    net_to_grower: revenue - grower_expenses - commission + shrink_compensation,
+    purchase_rows: purchaseRows,
+    plein_purchase_total,
+    net_to_grower: revenue - grower_expenses - commission + shrink_compensation + plein_purchase_total,
   };
 }
 async function loadPoLots(sql, poId) {
   const lots = await sql.query(
     `select l.id, l.lot_number, l.status, p.name as product_name, ps.name as pack_name,
-            ps.calibre, ps.sku_code, l.pack_out_id,
+            ps.calibre, ps.sku_code, l.pack_out_id, l.owner_kind,
+            coalesce(l.destroyed_qty,0)::text as destroyed_qty, coalesce(l.plein_bought_qty,0)::text as plein_bought_qty,
             l.origin_country as origin, l.original_qty::text, l.current_qty::text,
-            coalesce(l.waste_qty,0)::text, coalesce(l.rts_qty,0)::text, l.pallets::text,
+            coalesce(l.waste_qty,0)::text as waste_qty, coalesce(l.rts_qty,0)::text as rts_qty, l.pallets::text,
             l.unit, l.unit_cost::text
      from lots l
      join products p on p.id = l.product_id
@@ -2405,6 +2428,27 @@ async function loadPoLots(sql, poId) {
     [poId],
   );
   const repackedMap = new Map<number, number>(repacked.map((r) => [r.lot_id, n(r.qty)]));
+  // Disposición del remanente (bloque B): "pendiente de venta" no mueve
+  // inventario, así que se cuenta desde las disposiciones vivas; destruida y
+  // comprada por Plein ya bajaron current_qty y viven en los contadores del lote.
+  const pending = await sql.query(
+    `select d.lot_id, coalesce(sum(d.quantity),0)::text as qty
+     from lot_dispositions d
+     where d.purchase_order_id = $1 and d.kind = 'pending_sale' and d.cancelled_at is null
+     group by d.lot_id`,
+    [poId],
+  );
+  const pendingMap = new Map<number, number>(pending.map((r) => [r.lot_id, n(r.qty)]));
+  // Merma de bodega: PACA pide justificar cada caja que no se vendió, así que
+  // los motivos de waste_events viajan al documento.
+  const wasteReasons = await sql.query(
+    `select w.lot_id,
+            string_agg(coalesce(w.reason,'') || case when coalesce(w.notes,'') <> '' then ' (' || w.notes || ')' else '' end, '; ' order by w.id) as reasons
+     from waste_events w join lots l on l.id = w.lot_id
+     where l.purchase_order_id = $1 group by w.lot_id`,
+    [poId],
+  );
+  const wasteReasonMap = new Map<number, string>(wasteReasons.map((r) => [r.lot_id, r.reasons]));
   const sold = await sql.query(
     `select a.lot_id, coalesce(sum(a.quantity),0)::text as qty,
             coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as revenue
@@ -2449,6 +2493,16 @@ async function loadPoLots(sql, poId) {
       sold: s.qty,
       revenue: s.revenue,
       repacked_out_qty: repackedMap.get(l.id) ?? 0,
+      destroyed_qty: n(l.destroyed_qty),
+      plein_bought_qty: n(l.plein_bought_qty),
+      pending_qty: Math.min(pendingMap.get(l.id) ?? 0, n(l.current_qty)),
+      unclassified_qty: Math.max(0, n(l.current_qty) - (pendingMap.get(l.id) ?? 0)),
+      waste_reason: wasteReasonMap.get(l.id) ?? null,
+      owner_kind: l.owner_kind ?? null,
+      // Cajas equivalentes de origen por caja de este lote (1 en un lote
+      // recibido); lo llena computeOriginEquivalence en loadSettlement.
+      origin_factor: 1 as number,
+      origin_factor_unknown: false,
       is_repack: l.pack_out_id != null,
       packed_as: null as string | null,
       repacked_from: null as string | null,
@@ -2614,6 +2668,134 @@ async function loadShrinkRows(
  * (public, gated by the PO's `share_token` instead). Neither calls the other's
  * server fn — this plain function is the one place the math lives.
  */
+type DispositionRow = {
+  id: number;
+  lot_id: number;
+  lot_number: string;
+  product_name: string;
+  calibre: string | null;
+  unit: string;
+  kind: "pending_sale" | "destroyed" | "plein_purchase";
+  quantity: number;
+  reason: string | null;
+  unit_price: number | null;
+  amount: number;
+  origin_equiv_qty: number | null;
+  new_lot_id: number | null;
+  new_lot_number: string | null;
+  created_at: string;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+};
+/** La disposición del remanente aplica donde hay account of sales al productor. */
+const DISPOSITION_DEALS = new Set(["consignacion", "comision"]);
+async function loadDispositions(sql, purchase_order_id: number): Promise<DispositionRow[]> {
+  const rows = await sql.query(
+    `select d.id, d.lot_id, l.lot_number, p.name as product_name, ps.calibre, l.unit,
+            d.kind, d.quantity::text, d.reason, d.unit_price::text, d.amount::text, d.origin_equiv_qty::text,
+            d.new_lot_id, nl.lot_number as new_lot_number, d.created_at::text, d.cancelled_at::text, d.cancel_reason
+     from lot_dispositions d
+     join lots l on l.id = d.lot_id
+     join products p on p.id = l.product_id
+     left join pack_styles ps on ps.id = l.pack_style_id
+     left join lots nl on nl.id = d.new_lot_id
+     where d.purchase_order_id = $1 order by d.id`,
+    [purchase_order_id],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    lot_id: r.lot_id,
+    lot_number: r.lot_number,
+    product_name: r.product_name,
+    calibre: r.calibre ?? null,
+    unit: r.unit,
+    kind: r.kind,
+    quantity: n(r.quantity),
+    reason: r.reason ?? null,
+    unit_price: r.unit_price == null ? null : n(r.unit_price),
+    amount: n(r.amount),
+    origin_equiv_qty: r.origin_equiv_qty == null ? null : n(r.origin_equiv_qty),
+    new_lot_id: r.new_lot_id ?? null,
+    new_lot_number: r.new_lot_number ?? null,
+    created_at: r.created_at,
+    cancelled_at: r.cancelled_at ?? null,
+    cancel_reason: r.cancel_reason ?? null,
+  }));
+}
+/**
+ * Cajas equivalentes en el lote RECIBIDO, para el 5 % de PACA ("del embarque").
+ * Lote de origen: 1 caja = 1. Lote hijo de un reempaque: lo que entró (en
+ * equivalentes) menos lo que se perdió, repartido entre las cajas que salieron.
+ * La merma del reempaque se convierte con la fracción perdida: en cajas (mismo
+ * SKU) merma ÷ consumido; en libras merma ÷ libras consumidas con los pesos
+ * del catálogo (si faltan, contra lo producido más la merma). Si de plano no
+ * hay con qué convertir, el lote y su merma quedan marcados: nunca se adivina.
+ * Los reempaques se procesan por id: sus lotes de entrada siempre nacieron antes.
+ */
+async function computeOriginEquivalence(sql, purchase_order_id: number, lotsRaw: any[]) {
+  const factor = new Map<number, number>();
+  const unknown = new Set<number>();
+  for (const l of lotsRaw) if (!l.is_repack) factor.set(l.id, 1);
+  const packs = await sql.query(
+    `select id, pack_number, shrink_qty::text, shrink_unit from pack_outs
+     where purchase_order_id = $1 order by id`,
+    [purchase_order_id],
+  );
+  const shrinkEquiv: { pack_out_id: number; pack_number: string; shrink_qty: number; equiv: number | null }[] = [];
+  for (const p of packs) {
+    const ins = await sql.query(
+      `select pl.lot_id, pl.qty::text, ps.net_weight::text, ps.weight_unit
+       from pack_out_lines pl left join pack_styles ps on ps.id = pl.pack_style_id
+       where pl.pack_out_id = $1 and pl.direction = 'in' order by pl.id`,
+      [p.id],
+    );
+    const outs = await sql.query(
+      `select pl.lot_id, pl.qty::text, ps.net_weight::text, ps.weight_unit
+       from pack_out_lines pl left join pack_styles ps on ps.id = pl.pack_style_id
+       where pl.pack_out_id = $1 and pl.direction = 'out' order by pl.id`,
+      [p.id],
+    );
+    let consumedEquiv = 0;
+    let missing = false;
+    for (const i of ins) {
+      const f = factor.get(i.lot_id);
+      if (f == null || unknown.has(i.lot_id)) missing = true;
+      else consumedEquiv += n(i.qty) * f;
+    }
+    const consumedQty = ins.reduce((s, i) => s + n(i.qty), 0);
+    const produced = outs.reduce((s, o) => s + n(o.qty), 0);
+    const shrink = n(p.shrink_qty);
+    let fraction: number | null = 0;
+    if (shrink > 0) {
+      if (p.shrink_unit === "lb") {
+        let lb = 0;
+        let lbMissing = false;
+        for (const i of ins) {
+          const w = packWeightLb(i.net_weight, i.weight_unit);
+          if (w == null) lbMissing = true;
+          else lb += n(i.qty) * w;
+        }
+        if (!lbMissing && lb > 0) fraction = shrink / lb;
+        else {
+          const destLb = packWeightLb(outs[0]?.net_weight, outs[0]?.weight_unit);
+          fraction = destLb != null && produced > 0 ? shrink / (produced * destLb + shrink) : null;
+        }
+      } else fraction = consumedQty > 0 ? shrink / consumedQty : null;
+    }
+    const known = !missing && fraction != null;
+    shrinkEquiv.push({
+      pack_out_id: p.id,
+      pack_number: p.pack_number,
+      shrink_qty: shrink,
+      equiv: known ? consumedEquiv * (fraction as number) : null,
+    });
+    for (const o of outs) {
+      if (!known || produced <= 0) unknown.add(o.lot_id);
+      else factor.set(o.lot_id, Math.max(0, consumedEquiv * (1 - (fraction as number))) / produced);
+    }
+  }
+  return { factor, unknown, shrinkEquiv };
+}
 async function loadSettlement(
   sql,
   purchase_order_id: number,
@@ -2641,19 +2823,66 @@ async function loadSettlement(
   const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
   const lotsRaw = await loadPoLots(sql, purchase_order_id);
   const shrink = await loadShrinkRows(sql, purchase_order_id, shrinkPrices);
+  const equivalence = await computeOriginEquivalence(sql, purchase_order_id, lotsRaw);
+  for (const l of lotsRaw) {
+    l.origin_factor = equivalence.factor.get(l.id) ?? 1;
+    l.origin_factor_unknown = equivalence.unknown.has(l.id);
+  }
+  const dispositions = await loadDispositions(sql, purchase_order_id);
+  const activeDispositions = dispositions.filter((d) => !d.cancelled_at);
+  const purchaseRows = activeDispositions.filter((d) => d.kind === "plein_purchase");
   // La liquidación por comisión (la secuencia real de Plein) manda; el
   // target % queda solo como camino legado cuando no hay comisión definida.
-  const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows);
+  const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows, purchaseRows);
   const target = breakdown == null && po.target_profit_pct != null ? n(po.target_profit_pct) : null;
+  // El costo de las cajas que Plein compró vive en el lote propio que nació
+  // (unit_cost = precio pagado): no se reparte otra vez entre los lotes de la
+  // carga. La factura de proveedor sí lo incluye (inventory_total).
   const lots = computeSettlementLots(
     lotsRaw,
     expense_total,
     allocBy,
     target,
-    breakdown ? breakdown.net_to_grower : null,
+    breakdown ? breakdown.net_to_grower - breakdown.plein_purchase_total : null,
   );
   const revenue = lots.reduce((s, l) => s + l.revenue, 0);
-  const t_cost = lots.reduce((s, l) => s + l.t_cost, 0);
+  const plein_purchase_total = breakdown?.plein_purchase_total ?? 0;
+  const t_cost = lots.reduce((s, l) => s + l.t_cost, 0) + plein_purchase_total;
+  // ── Disposición del remanente (PACA 7 CFR 46) ────────────────────────────
+  const disposition_applies = DISPOSITION_DEALS.has(po.deal_type);
+  const received_qty = lotsRaw.filter((l) => !l.is_repack).reduce((s, l) => s + l.original_qty, 0);
+  let destroyed_equiv_qty = 0;
+  const equiv_unknown: string[] = [];
+  for (const l of lotsRaw) {
+    for (const [label, qty] of [
+      ["merma de bodega", l.waste_qty],
+      ["destruida", l.destroyed_qty],
+    ] as [string, number][]) {
+      if (!(qty > 0)) continue;
+      if (l.origin_factor_unknown) equiv_unknown.push(`${l.lot_number} (${label})`);
+      else destroyed_equiv_qty += qty * l.origin_factor;
+    }
+  }
+  for (const se of equivalence.shrinkEquiv) {
+    if (!(se.shrink_qty > 0)) continue;
+    if (se.equiv == null) equiv_unknown.push(`${se.pack_number} (merma de reempaque)`);
+    else destroyed_equiv_qty += se.equiv;
+  }
+  const destroyed_pct = received_qty > 0 ? (destroyed_equiv_qty / received_qty) * 100 : 0;
+  const needs_certificate = disposition_applies && destroyed_pct >= 5 - 1e-9;
+  const [certRow] = await sql.query(
+    `select id, certificate_number, certificate_date::text, issuer, filename, created_at::text
+     from destruction_certificates where purchase_order_id = $1 order by id desc limit 1`,
+    [purchase_order_id],
+  );
+  const unclassified = disposition_applies
+    ? lotsRaw
+        .filter((l) => l.unclassified_qty > 0.0005)
+        .map((l) => ({ lot_id: l.id, lot_number: l.lot_number, qty: l.unclassified_qty, unit: l.unit }))
+    : [];
+  const pending_rows = lotsRaw
+    .filter((l) => l.pending_qty > 0.0005)
+    .map((l) => ({ lot_id: l.id, lot_number: l.lot_number, qty: l.pending_qty, unit: l.unit }));
   const profit = lots.reduce((s, l) => s + l.profit, 0);
   const paid = n(
     (
@@ -2704,7 +2933,9 @@ async function loadSettlement(
   const [settlementRow] = await sql.query(
     `select id, settlement_number, issue_date::text, share_token,
             revenue::text, grower_expenses::text, commission::text, shrink_compensation::text,
-            net_to_grower::text, advance_recovered::text, final_payment::text
+            net_to_grower::text, advance_recovered::text, final_payment::text,
+            coalesce(is_partial,false) as is_partial, destroyed_pct::text, destroyed_equiv_qty::text,
+            received_qty::text, plein_purchase_total::text, certificate_number, certificate_date::text
      from grower_settlements where purchase_order_id = $1`,
     [purchase_order_id],
   );
@@ -2731,6 +2962,29 @@ async function loadSettlement(
     revenue,
     inventory_total: t_cost,
     non_inventory_total: 0,
+    plein_purchase_total,
+    purchase_reference: shrink.reference.caja,
+    disposition_applies,
+    disposition_rows: dispositions,
+    unclassified,
+    pending_rows,
+    destruction: {
+      received_qty,
+      destroyed_equiv_qty,
+      destroyed_pct,
+      needs_certificate,
+      equiv_unknown,
+      certificate: certRow
+        ? {
+            id: certRow.id,
+            certificate_number: certRow.certificate_number,
+            certificate_date: certRow.certificate_date,
+            issuer: certRow.issuer,
+            filename: certRow.filename,
+            created_at: certRow.created_at,
+          }
+        : null,
+    },
     expenses: expense_total,
     profit,
     profit_pct: revenue > 0 ? (profit / revenue) * 100 : 0,
@@ -2769,6 +3023,13 @@ async function loadSettlement(
           net_to_grower: n(settlementRow.net_to_grower),
           advance_recovered: n(settlementRow.advance_recovered),
           final_payment: n(settlementRow.final_payment),
+          is_partial: Boolean(settlementRow.is_partial),
+          destroyed_pct: settlementRow.destroyed_pct == null ? null : n(settlementRow.destroyed_pct),
+          destroyed_equiv_qty: settlementRow.destroyed_equiv_qty == null ? null : n(settlementRow.destroyed_equiv_qty),
+          received_qty: settlementRow.received_qty == null ? null : n(settlementRow.received_qty),
+          plein_purchase_total: n(settlementRow.plein_purchase_total),
+          certificate_number: settlementRow.certificate_number ?? null,
+          certificate_date: settlementRow.certificate_date ?? null,
         }
       : null,
     lots,
@@ -2816,6 +3077,20 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
     // Un lote reempacado cuyo origen no se resuelve NO se liquida con el SKU
     // del hijo: se niega la emisión y se dice cuál lote es.
     if (s.origin_errors.length) throw new Error(s.origin_errors.join(" "));
+    // PACA 7 CFR 46: se rinde cuenta del 100 % de lo recibido. Ninguna caja
+    // queda sin explicación: pendiente de venta, destruida o comprada por Plein.
+    if (s.disposition_applies) {
+      if (s.unclassified.length)
+        throw new Error(
+          `Faltan por clasificar ${s.unclassified
+            .map((u) => `${qtyText(u.qty)} ${u.unit} de ${u.lot_number}`)
+            .join(", ")}: manda cada caja a pendiente de venta, destruida o comprada por Plein antes de emitir.`,
+        );
+      if (s.destruction.needs_certificate && !s.destruction.certificate)
+        throw new Error(
+          `Lo destruido llega a ${s.destruction.destroyed_pct.toFixed(1)} % del embarque (${qtyText(s.destruction.destroyed_equiv_qty)} de ${qtyText(s.destruction.received_qty)} cajas recibidas): PACA exige adjuntar el certificado oficial de destrucción antes de emitir.`,
+        );
+    }
     const pendingPrice = s.shrink_rows.filter((r) => r.needs_price);
     if (pendingPrice.length)
       throw new Error(
@@ -2860,8 +3135,10 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
         `insert into grower_settlements
          (settlement_number, purchase_order_id, supplier_id, deal_type, commission_type, commission_rate,
           issue_date, sold_units, revenue, grower_expenses, commission, net_to_grower,
-          advance_recovered, final_payment, created_by, shrink_compensation)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+          advance_recovered, final_payment, created_by, shrink_compensation,
+          received_qty, destroyed_equiv_qty, destroyed_pct, plein_purchase_total, is_partial,
+          certificate_id, certificate_number, certificate_date)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) returning id`,
         [
           settlement_number,
           data.purchase_order_id,
@@ -2879,6 +3156,14 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
           final_payment,
           context.userId ?? null,
           s.breakdown.shrink_compensation,
+          s.destruction.received_qty,
+          Math.round(s.destruction.destroyed_equiv_qty * 1000) / 1000,
+          Math.round(s.destruction.destroyed_pct * 10000) / 10000,
+          s.breakdown.plein_purchase_total,
+          s.pending_rows.length > 0,
+          s.destruction.certificate?.id ?? null,
+          s.destruction.certificate?.certificate_number ?? null,
+          s.destruction.certificate?.certificate_date ?? null,
         ],
       )
     )[0].id;
@@ -2896,8 +3181,9 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
       await sql.query(
         `insert into grower_settlement_lots
          (settlement_id, lot_id, lot_number, product_name, calibre, sold_qty, unit, unit_price, revenue, remaining_qty,
-          repacked_out_qty, repacked_from, packed_as)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          repacked_out_qty, repacked_from, packed_as,
+          waste_qty, waste_reason, destroyed_qty, plein_bought_qty, pending_qty, original_qty)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
         [
           settlementId,
           lot.id,
@@ -2912,8 +3198,44 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
           lot.repacked_out_qty ?? 0,
           lot.repacked_from ?? null,
           lot.packed_as ?? null,
+          lot.waste ?? 0,
+          lot.waste_reason ?? null,
+          lot.destroyed ?? 0,
+          lot.plein_bought ?? 0,
+          lot.pending ?? 0,
+          lot.total,
         ],
       );
+    // Disposición del remanente congelada (pendientes incluidas), con el
+    // producto de ORIGEN del lote, y las disposiciones vivas quedan ligadas a
+    // esta liquidación: desde aquí ya no se deshacen.
+    const lotById = new Map<number, (typeof s.lots)[number]>(s.lots.map((l) => [l.id, l]));
+    for (const d of s.disposition_rows.filter((r) => !r.cancelled_at)) {
+      const lot = lotById.get(d.lot_id);
+      await sql.query(
+        `insert into grower_settlement_dispositions
+         (settlement_id, disposition_id, lot_number, product_name, calibre, kind, quantity, unit, reason, unit_price, amount, origin_equiv_qty)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [
+          settlementId,
+          d.id,
+          d.lot_number,
+          lot?.product_name ?? d.product_name,
+          lot?.calibre ?? d.calibre ?? null,
+          d.kind,
+          d.quantity,
+          d.unit,
+          d.reason,
+          d.kind === "plein_purchase" ? d.unit_price : null,
+          d.kind === "plein_purchase" ? d.amount : 0,
+          d.origin_equiv_qty,
+        ],
+      );
+    }
+    await sql.query(
+      `update lot_dispositions set settlement_id = $1 where purchase_order_id = $2 and cancelled_at is null`,
+      [settlementId, data.purchase_order_id],
+    );
     // Merma de reempaque congelada: cantidad, motivo y quién la absorbe.
     // Con monto solo cuando la absorbe Plein (se le paga al productor).
     for (const r of s.shrink_rows)
@@ -2975,6 +3297,338 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
       payable_number,
     };
   });
+/** Regresa cajas a la existencia del lote (deshacer una disposición). */
+async function restoreInventory(sql, lotId: number, qty: number) {
+  const [row] = await sql.query(
+    `select id from inventory where lot_id = $1 order by quantity desc, id limit 1`,
+    [lotId],
+  );
+  if (row) {
+    await sql.query(`update inventory set quantity = quantity + $1 where id = $2`, [qty, row.id]);
+    return;
+  }
+  const [loc] = await sql.query(`select id from locations order by id limit 1`);
+  if (loc)
+    await sql.query(`insert into inventory (lot_id, location_id, quantity) values ($1,$2,$3)`, [
+      lotId,
+      loc.id,
+      qty,
+    ]);
+}
+/**
+ * Disposición del remanente antes de emitir (PACA 7 CFR 46): cada caja que no
+ * se vendió va a pendiente de venta (sigue viva, no mueve nada), destruida
+ * (con motivo; baja inventario) o comprada por Plein (a precio de mercado;
+ * las cajas pasan a un lote propio de Plein con ese costo, sin comisión).
+ */
+export const addLotDisposition = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      lot_id: z.number(),
+      kind: z.enum(["pending_sale", "destroyed", "plein_purchase"]),
+      quantity: z.number().positive(),
+      reason: z.string().optional(),
+      unit_price: z.number().positive().optional(),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [lot] = await sql.query(
+      `select l.id, l.lot_number, l.product_id, l.supplier_id, l.pack_style_id, l.purchase_order_id,
+              l.current_qty::text, l.unit, l.status, l.owner_kind, l.grade, l.origin_farm, l.origin_country,
+              l.best_by_date::text, l.received_date::text, l.pack_date::text, coalesce(l.held,false) as held,
+              coalesce(l.quality_state,'sano') as quality_state, po.po_number, coalesce(po.deal_type,'firme') as deal_type
+       from lots l left join purchase_orders po on po.id = l.purchase_order_id where l.id = $1`,
+      [data.lot_id],
+    );
+    if (!lot) throw new Error("Lote no encontrado");
+    if (lot.owner_kind === "plein")
+      throw new Error(`El lote ${lot.lot_number} es fruta propia de Plein — no se liquida al productor.`);
+    if (lot.purchase_order_id == null)
+      throw new Error(`El lote ${lot.lot_number} no está ligado a ninguna carga.`);
+    if (!DISPOSITION_DEALS.has(lot.deal_type))
+      throw new Error(
+        "La disposición del remanente aplica a consignación y comisión pura — en una carga en firme la fruta ya es de Plein.",
+      );
+    const [issued] = await sql.query(
+      `select settlement_number from grower_settlements where purchase_order_id = $1`,
+      [lot.purchase_order_id],
+    );
+    if (issued)
+      throw new Error(
+        `La carga ${lot.po_number} ya tiene liquidación ${issued.settlement_number}: el remanente ya quedó rendido.`,
+      );
+    if (lot.held) throw new Error(`El lote ${lot.lot_number} está en hold — libéralo antes.`);
+    const current = n(lot.current_qty);
+    const [pend] = await sql.query(
+      `select coalesce(sum(quantity),0)::text as qty from lot_dispositions
+       where lot_id = $1 and kind = 'pending_sale' and cancelled_at is null`,
+      [lot.id],
+    );
+    const pendingQty = n(pend?.qty);
+    const free = Math.max(0, current - pendingQty);
+    if (data.quantity > free + 1e-9)
+      throw new Error(
+        `El lote ${lot.lot_number} solo tiene ${qtyText(free)} ${lot.unit} sin clasificar${
+          pendingQty > 0 ? ` (${qtyText(pendingQty)} ya están pendientes de venta)` : ""
+        }.`,
+      );
+    if (data.kind === "destroyed" && !data.reason?.trim())
+      throw new Error(
+        "La destrucción exige un motivo: PACA pide justificar cada caja que no se pudo vender.",
+      );
+    if (data.kind === "plein_purchase" && !(n(data.unit_price) > 0))
+      throw new Error("Captura el precio de mercado por caja al que Plein compra el remanente.");
+    // Equivalencia en cajas recibidas, para el 5 % del embarque.
+    const lotsRaw = await loadPoLots(sql, lot.purchase_order_id);
+    const eq = await computeOriginEquivalence(sql, lot.purchase_order_id, lotsRaw);
+    const origin_equiv = eq.unknown.has(lot.id) ? null : data.quantity * (eq.factor.get(lot.id) ?? 1);
+    const amount =
+      data.kind === "plein_purchase" ? Math.round(data.quantity * n(data.unit_price) * 100) / 100 : null;
+    const dispositionId = (
+      await sql.query(
+        `insert into lot_dispositions
+         (lot_id, purchase_order_id, kind, quantity, unit, reason, unit_price, amount, origin_equiv_qty, created_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
+        [
+          lot.id,
+          lot.purchase_order_id,
+          data.kind,
+          data.quantity,
+          lot.unit,
+          data.reason?.trim() || null,
+          data.kind === "plein_purchase" ? n(data.unit_price) : null,
+          amount,
+          origin_equiv == null ? null : Math.round(origin_equiv * 1000) / 1000,
+          context.userId ?? null,
+        ],
+      )
+    )[0].id;
+    let new_lot_number: string | null = null;
+    if (data.kind === "destroyed") {
+      await sql.query(
+        `update lots set destroyed_qty = coalesce(destroyed_qty,0) + $1, current_qty = current_qty - $1,
+                status = case when current_qty - $1 <= 0 then 'depleted' else status end where id = $2`,
+        [data.quantity, lot.id],
+      );
+      await sql.query(`update inventory set quantity = greatest(quantity - $1, 0) where lot_id = $2`, [
+        data.quantity,
+        lot.id,
+      ]);
+      await sql.query(
+        `insert into inventory_movements (lot_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+         values ($1,'destroyed',$2,$3,'lot_disposition',$4,$5)`,
+        [lot.id, -data.quantity, lot.unit, dispositionId, data.reason!.trim()],
+      );
+    } else if (data.kind === "plein_purchase") {
+      const [inv] = await sql.query(
+        `select location_id from inventory where lot_id = $1 order by quantity desc limit 1`,
+        [lot.id],
+      );
+      const locationId =
+        inv?.location_id ?? (await sql.query(`select id from locations order by id limit 1`))[0]?.id;
+      await sql.query(
+        `update lots set plein_bought_qty = coalesce(plein_bought_qty,0) + $1, current_qty = current_qty - $1,
+                status = case when current_qty - $1 <= 0 then 'depleted' else status end where id = $2`,
+        [data.quantity, lot.id],
+      );
+      await sql.query(`update inventory set quantity = greatest(quantity - $1, 0) where lot_id = $2`, [
+        data.quantity,
+        lot.id,
+      ]);
+      await sql.query(
+        `insert into inventory_movements (lot_id, location_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+         values ($1,$2,'plein_purchase_out',$3,$4,'lot_disposition',$5,$6)`,
+        [lot.id, locationId, -data.quantity, lot.unit, dispositionId, `Compra de remanente por Plein — ${lot.po_number}`],
+      );
+      // El lote propio de Plein: mismo producto y SKU, sin carga (ya no es del
+      // productor), costo = precio pagado, ligado a la disposición. Numeración
+      // colgada del lote de origen (1-PAP-1-PL1) para que se lea de dónde salió.
+      new_lot_number = await nextCode(sql, "lots", "lot_number", `${lot.lot_number}-PL`, 1);
+      const newLotId = (
+        await sql.query(
+          `insert into lots (lot_number, product_id, supplier_id, pack_style_id, original_qty, current_qty, unit, unit_cost,
+                             received_date, pack_date, best_by_date, grade, origin_farm, origin_country, status, quality_state,
+                             owner_kind, disposition_id)
+           values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13,'active',$14,'plein',$15) returning id`,
+          [
+            new_lot_number,
+            lot.product_id,
+            lot.supplier_id,
+            lot.pack_style_id,
+            data.quantity,
+            lot.unit,
+            n(data.unit_price),
+            lot.received_date ?? todayISO(),
+            lot.pack_date ?? null,
+            lot.best_by_date ?? null,
+            lot.grade ?? null,
+            lot.origin_farm ?? null,
+            lot.origin_country ?? null,
+            lot.quality_state,
+            dispositionId,
+          ],
+        )
+      )[0].id;
+      await sql.query(
+        `insert into inventory (lot_id, location_id, quantity) values ($1,$2,$3)
+         on conflict (lot_id, location_id) do update set quantity = inventory.quantity + excluded.quantity`,
+        [newLotId, locationId, data.quantity],
+      );
+      await sql.query(
+        `insert into inventory_movements (lot_id, location_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+         values ($1,$2,'plein_purchase_in',$3,$4,'lot_disposition',$5,$6)`,
+        [newLotId, locationId, data.quantity, lot.unit, dispositionId, `Fruta propia de Plein — comprada del remanente de ${lot.lot_number}`],
+      );
+      await sql.query(`update lot_dispositions set new_lot_id = $1 where id = $2`, [newLotId, dispositionId]);
+    }
+    return {
+      id: dispositionId,
+      lot_number: lot.lot_number,
+      kind: data.kind,
+      quantity: data.quantity,
+      unit: lot.unit,
+      amount,
+      new_lot_number,
+    };
+  });
+/**
+ * Deshacer una disposición mientras la liquidación NO esté emitida: regresa
+ * las cajas al lote, revierte el inventario y, en la compra por Plein, apaga
+ * el lote propio que nació (si nadie lo movió). El renglón se queda cancelado
+ * con rastro; nunca se borra.
+ */
+export const cancelLotDisposition = createServerFn({ method: "POST" })
+  .validator(z.object({ disposition_id: z.number(), reason: z.string().optional() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [d] = await sql.query(
+      `select d.id, d.lot_id, d.purchase_order_id, d.kind, d.quantity::text, d.new_lot_id, d.settlement_id, d.cancelled_at::text,
+              l.lot_number, l.unit, po.po_number
+       from lot_dispositions d join lots l on l.id = d.lot_id join purchase_orders po on po.id = d.purchase_order_id
+       where d.id = $1`,
+      [data.disposition_id],
+    );
+    if (!d) throw new Error("Disposición no encontrada");
+    if (d.cancelled_at) throw new Error("Esta disposición ya estaba cancelada.");
+    const [issued] = await sql.query(
+      `select settlement_number from grower_settlements where purchase_order_id = $1`,
+      [d.purchase_order_id],
+    );
+    if (issued || d.settlement_id)
+      throw new Error(
+        `La carga ${d.po_number} ya tiene liquidación ${issued?.settlement_number ?? ""}: lo congelado no se deshace.`,
+      );
+    const qty = n(d.quantity);
+    if (d.kind === "destroyed") {
+      await sql.query(
+        `update lots set destroyed_qty = greatest(coalesce(destroyed_qty,0) - $1, 0), current_qty = current_qty + $1,
+                status = case when status = 'depleted' then 'active' else status end where id = $2`,
+        [qty, d.lot_id],
+      );
+      await restoreInventory(sql, d.lot_id, qty);
+      await sql.query(
+        `insert into inventory_movements (lot_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+         values ($1,'destroyed_reversal',$2,$3,'lot_disposition',$4,$5)`,
+        [d.lot_id, qty, d.unit, d.id, `Se deshizo la destrucción${data.reason ? ` — ${data.reason}` : ""}`],
+      );
+    } else if (d.kind === "plein_purchase") {
+      const [nl] = await sql.query(
+        `select id, lot_number, original_qty::text, current_qty::text from lots where id = $1`,
+        [d.new_lot_id],
+      );
+      if (!nl) throw new Error("No se encontró el lote propio de Plein de esta compra.");
+      const [moved] = await sql.query(
+        `select count(*)::text as c from sale_line_allocations where lot_id = $1`,
+        [nl.id],
+      );
+      if (n(moved?.c) > 0 || Math.abs(n(nl.current_qty) - n(nl.original_qty)) > 1e-6)
+        throw new Error(
+          `El lote ${nl.lot_number} ya se movió (se vendió o salió de existencia): no se puede deshacer la compra.`,
+        );
+      await sql.query(
+        `update lots set status = 'cancelled', current_qty = 0, closed_at = now() where id = $1`,
+        [nl.id],
+      );
+      await sql.query(`update inventory set quantity = 0 where lot_id = $1`, [nl.id]);
+      await sql.query(
+        `insert into inventory_movements (lot_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+         values ($1,'plein_purchase_reversal',$2,$3,'lot_disposition',$4,$5)`,
+        [nl.id, -qty, d.unit, d.id, `Se deshizo la compra por Plein — regresa a ${d.lot_number}`],
+      );
+      await sql.query(
+        `update lots set plein_bought_qty = greatest(coalesce(plein_bought_qty,0) - $1, 0), current_qty = current_qty + $1,
+                status = case when status = 'depleted' then 'active' else status end where id = $2`,
+        [qty, d.lot_id],
+      );
+      await restoreInventory(sql, d.lot_id, qty);
+      await sql.query(
+        `insert into inventory_movements (lot_id, movement_type, quantity, unit, reference_type, reference_id, notes)
+         values ($1,'plein_purchase_reversal',$2,$3,'lot_disposition',$4,$5)`,
+        [d.lot_id, qty, d.unit, d.id, `Se deshizo la compra por Plein${data.reason ? ` — ${data.reason}` : ""}`],
+      );
+    }
+    await sql.query(
+      `update lot_dispositions set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`,
+      [context.userId ?? null, data.reason?.trim() || null, d.id],
+    );
+    return { ok: true, kind: d.kind, quantity: qty, lot_number: d.lot_number };
+  });
+const destructionCertificatePayload = z.object({
+  purchase_order_id: z.number(),
+  certificate_number: z.string().min(1),
+  certificate_date: z.string().optional(),
+  issuer: z.string().optional(),
+});
+/**
+ * Certificado oficial de destrucción (PACA: obligatorio cuando lo destruido
+ * llega o pasa del 5 % del embarque). Archivo en la base, mismo patrón que el
+ * PO del cliente; el original se le manda al productor con la cuenta.
+ */
+export const saveDestructionCertificate = createServerFn({ method: "POST" })
+  .validator((form: FormData) => {
+    const raw = form.get("payload");
+    if (typeof raw !== "string") throw new Error("Faltan los datos del certificado");
+    const payload = destructionCertificatePayload.parse(JSON.parse(raw));
+    const file = form.get("file");
+    return { payload, file: file instanceof File ? file : null };
+  })
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const { payload } = data;
+    if (!data.file)
+      throw new Error(
+        "Adjunta el certificado (PDF o foto): el original se le manda al productor junto con la cuenta.",
+      );
+    if (data.file.size > MAX_ATTACHMENT_BYTES)
+      throw new Error("El archivo pesa más de 15 MB — súbelo más chico.");
+    const [issued] = await sql.query(
+      `select settlement_number from grower_settlements where purchase_order_id = $1`,
+      [payload.purchase_order_id],
+    );
+    if (issued)
+      throw new Error(`La carga ya tiene liquidación ${issued.settlement_number}: el certificado se captura antes de emitir.`);
+    const id = (
+      await sql.query(
+        `insert into destruction_certificates (purchase_order_id, certificate_number, certificate_date, issuer, filename, mime, data, created_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
+        [
+          payload.purchase_order_id,
+          payload.certificate_number.trim(),
+          payload.certificate_date || null,
+          payload.issuer?.trim() || null,
+          data.file.name,
+          data.file.type || "application/octet-stream",
+          Buffer.from(await data.file.arrayBuffer()),
+          context.userId ?? null,
+        ],
+      )
+    )[0].id;
+    return { id, certificate_number: payload.certificate_number.trim(), filename: data.file.name };
+  });
 export const applySettlement = createServerFn({ method: "POST" })
   .validator(
     z.object({
@@ -3031,15 +3685,18 @@ export const applySettlement = createServerFn({ method: "POST" })
       ).map((r) => [r.pack_out_id, n(r.unit_price)]),
     );
     const shrink = await loadShrinkRows(sql, data.purchase_order_id, frozenPrices);
+    const purchases = (await loadDispositions(sql, data.purchase_order_id)).filter(
+      (d) => !d.cancelled_at && d.kind === "plein_purchase",
+    );
     // Si la OC tiene comisión definida, esa es la liquidación que se escribe;
     // el target % es solo el camino legado sin comisión.
-    const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows);
+    const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows, purchases);
     const computed = computeSettlementLots(
       lotsRaw,
       expense_total,
       allocBy,
       breakdown ? null : (data.target_profit_pct ?? null),
-      breakdown ? breakdown.net_to_grower : null,
+      breakdown ? breakdown.net_to_grower - breakdown.plein_purchase_total : null,
     );
     const overrides = new Map((data.lot_costs ?? []).map((c) => [c.lot_id, c.unit_cost]));
     for (const lot of computed) {
@@ -5764,8 +6421,16 @@ export const getPrintDoc = createServerFn({ method: "GET" })
       if (!liq) throw new Error("Liquidación no encontrada");
       const lots = await sql.query(
         `select lot_number, product_name, calibre, sold_qty::text, unit, unit_price::text, revenue::text, remaining_qty::text,
-                coalesce(repacked_out_qty, 0)::text as repacked_out_qty, repacked_from, packed_as
+                coalesce(repacked_out_qty, 0)::text as repacked_out_qty, repacked_from, packed_as,
+                coalesce(waste_qty, 0)::text as waste_qty, waste_reason, coalesce(destroyed_qty, 0)::text as destroyed_qty,
+                coalesce(plein_bought_qty, 0)::text as plein_bought_qty, coalesce(pending_qty, 0)::text as pending_qty,
+                original_qty::text
          from grower_settlement_lots where settlement_id = $1 order by id`,
+        [liq.id],
+      );
+      const dispositions = await sql.query(
+        `select lot_number, product_name, calibre, kind, quantity::text, unit, reason, unit_price::text, amount::text
+         from grower_settlement_dispositions where settlement_id = $1 order by id`,
         [liq.id],
       );
       const expenses = await sql.query(
@@ -5846,6 +6511,49 @@ export const getPrintDoc = createServerFn({ method: "GET" })
             amount: plein ? n(r.amount) : 0,
           };
         }),
+        // Merma de bodega: fruta que se tiró en cámara, con el motivo que se
+        // capturó al tirarla. Sin monto: la absorbe el productor.
+        ...lots
+          .filter((l) => n(l.waste_qty) > 0)
+          .map((l) => ({
+            sku: "MERMA",
+            description: `Merma de bodega — ${[l.product_name, l.calibre].filter(Boolean).join(" · ")}, lote ${l.lot_number}: ${qtyText(n(l.waste_qty))} ${l.unit || ""}${l.waste_reason ? ` — ${l.waste_reason}` : ""} — la absorbe el productor`,
+            qty: n(l.waste_qty),
+            unit: l.unit || "",
+            unit_price: 0,
+            amount: 0,
+          })),
+        // Disposición del remanente (PACA): destruida (con motivo), comprada por
+        // Plein (a precio de mercado, sin comisión) y pendiente de venta.
+        ...dispositions.map((d) => {
+          const desc = [d.product_name, d.calibre].filter(Boolean).join(" · ");
+          if (d.kind === "destroyed")
+            return {
+              sku: "DESTRUIDA",
+              description: `Destruida — ${desc}, lote ${d.lot_number}: ${qtyText(n(d.quantity))} ${d.unit || ""}${d.reason ? ` — ${d.reason}` : ""}`,
+              qty: n(d.quantity),
+              unit: d.unit || "",
+              unit_price: 0,
+              amount: 0,
+            };
+          if (d.kind === "plein_purchase")
+            return {
+              sku: "COMPRA PLEIN",
+              description: `Comprada por Plein — ${desc}, lote ${d.lot_number}: ${qtyText(n(d.quantity))} ${d.unit || ""} a valor de mercado, sin comisión (se paga al productor)`,
+              qty: n(d.quantity),
+              unit: d.unit || "",
+              unit_price: n(d.unit_price),
+              amount: n(d.amount),
+            };
+          return {
+            sku: "PENDIENTE",
+            description: `Pendiente de venta — ${desc}, lote ${d.lot_number}: ${qtyText(n(d.quantity))} ${d.unit || ""} siguen en existencia y se liquidan en una cuenta posterior`,
+            qty: n(d.quantity),
+            unit: d.unit || "",
+            unit_price: 0,
+            amount: 0,
+          };
+        }),
         ...expenses.map((e) => ({
           sku: "GASTO",
           description: `Gasto del productor — ${e.category}${e.notes ? ` (${e.notes})` : ""}`,
@@ -5875,13 +6583,38 @@ export const getPrintDoc = createServerFn({ method: "GET" })
             ]
           : []),
       ];
-      const remainingTotal = lots.reduce((sum, l) => sum + n(l.remaining_qty), 0);
-      const missing: string[] = [];
-      if (remainingTotal > 0.009)
-        missing.push(
-          `al emitir quedaban ${qtyText(remainingTotal)} cajas sin vender — esta liquidación cubre solo lo vendido`,
+      // Cuenta parcial: lo pendiente de venta se dice por lote y en la unidad
+      // del lote (no se suman presentaciones distintas). Reemplaza al aviso
+      // viejo de "quedaban N cajas sin vender".
+      const pendingLots = lots.filter((l) => n(l.pending_qty) > 0);
+      const partialText = pendingLots.length
+        ? `CUENTA PARCIAL — quedan pendientes de venta: ${pendingLots
+            .map((l) => `${qtyText(n(l.pending_qty))} ${l.unit || ""} de ${l.lot_number}`)
+            .join(", ")} — se liquidan en una cuenta posterior`
+        : null;
+      const contactText = !liq.phone && !liq.email ? "productor sin teléfono ni correo capturado" : null;
+      const warningText = partialText
+        ? `${partialText}${contactText ? `; ${contactText}` : ""}.`
+        : contactText
+          ? `AVISO — ${contactText}.`
+          : null;
+      // Cuadre por lote, en la unidad de cada lote: recibidas = vendidas +
+      // merma de bodega + a reempaque + destruidas + compradas por Plein +
+      // pendientes de venta. Solo se imprime para liquidaciones con cuadre.
+      const cuadre = lots
+        .filter((l) => l.original_qty != null)
+        .map(
+          (l) =>
+            `${l.lot_number}: ${qtyText(n(l.original_qty))} ${l.unit || ""} = ${qtyText(n(l.sold_qty))} vendidas + ${qtyText(n(l.waste_qty))} merma de bodega + ${qtyText(n(l.repacked_out_qty))} a reempaque + ${qtyText(n(l.destroyed_qty))} destruidas + ${qtyText(n(l.plein_bought_qty))} compradas por Plein + ${qtyText(n(l.pending_qty))} pendientes`,
         );
-      if (!liq.phone && !liq.email) missing.push("productor sin teléfono ni correo capturado");
+      const destructionText =
+        liq.received_qty != null
+          ? ` Destruido en total: ${qtyText(n(liq.destroyed_equiv_qty))} cajas equivalentes de ${qtyText(n(liq.received_qty))} recibidas (${n(liq.destroyed_pct).toFixed(1)} % del embarque)${
+              liq.certificate_number
+                ? ` — certificado oficial de destrucción No. ${liq.certificate_number}${liq.certificate_date ? ` del ${dmyLiq(liq.certificate_date)}` : ""}, original adjunto a esta cuenta`
+                : ""
+            }.`
+          : "";
       const dealLabel = liq.deal_type === "comision" ? "Comisión pura" : "Consignación";
       return {
         id: liq.id,
@@ -5901,8 +6634,8 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         total: n(liq.final_payment),
         // Guion ASCII a propósito: la helvetica de jsPDF no trae el signo menos
         // tipográfico (U+2212) y lo imprime como comillas.
-        notes: `Ingreso bruto ${money2(n(liq.revenue))} - gastos del productor ${money2(n(liq.grower_expenses))} - comisión Plein ${money2(n(liq.commission))}${n(liq.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(liq.shrink_compensation))}` : ""} = neto al productor ${money2(n(liq.net_to_grower))}. Adelantos recuperados: ${money2(n(liq.advance_recovered))}. Pago final al productor: ${money2(n(liq.final_payment))}.`,
-        warning: missing.length ? `LIQUIDACIÓN INCOMPLETA — ${missing.join("; ")}.` : null,
+        notes: `Ingreso bruto ${money2(n(liq.revenue))} - gastos del productor ${money2(n(liq.grower_expenses))} - comisión Plein ${money2(n(liq.commission))}${n(liq.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(liq.shrink_compensation))}` : ""}${n(liq.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(liq.plein_purchase_total))}` : ""} = neto al productor ${money2(n(liq.net_to_grower))}. Adelantos recuperados: ${money2(n(liq.advance_recovered))}. Pago final al productor: ${money2(n(liq.final_payment))}.${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
+        warning: warningText,
         showPaca: false,
         company,
       };
@@ -7339,7 +8072,7 @@ export const createPackOut = createServerFn({ method: "POST" })
       const [lot] = await sql.query(
         `select l.id, l.lot_number, l.current_qty::text, l.unit_cost::text, l.unit, l.supplier_id, l.origin_country,
                 l.product_id, l.pack_style_id, l.purchase_order_id, l.purchase_order_line_id, l.grade, l.origin_farm,
-                l.best_by_date::text, l.received_date::text, coalesce(l.held,false) as held, l.status,
+                l.best_by_date::text, l.received_date::text, coalesce(l.held,false) as held, l.status, l.owner_kind,
                 ps.sku_code, ps.net_weight::text, ps.weight_unit, o.po_number
          from lots l
          left join pack_styles ps on ps.id = l.pack_style_id
@@ -7348,6 +8081,12 @@ export const createPackOut = createServerFn({ method: "POST" })
         [src.lot_id],
       );
       if (!lot) throw new Error("Lote origen no encontrado");
+      // Fruta propia de Plein (comprada del remanente de una carga): no tiene
+      // carga a la cual reportarle la merma. Bloqueado por ahora, a propósito.
+      if (lot.owner_kind === "plein")
+        throw new Error(
+          `El lote ${lot.lot_number} es fruta propia de Plein, comprada del remanente de una carga — el reempaque de fruta propia no está habilitado todavía.`,
+        );
       // Bloqueo por hold (lots.held), no por calidad: un lote retenido o
       // castigado por inspección SÍ se reempaca — eso es reacondicionar.
       if (lot.held) throw new Error(`El lote ${lot.lot_number} está en hold — libéralo antes de reempacar.`);
@@ -7696,6 +8435,8 @@ export type LiveWipeCounts = {
   send_events: number;
   shipments: number;
   pallets: number;
+  dispositions: number;
+  certificates: number;
 };
 
 function wipeTotal(c: LiveWipeCounts) {
@@ -7712,7 +8453,9 @@ function wipeTotal(c: LiveWipeCounts) {
     c.customer_pos +
     c.send_events +
     c.shipments +
-    c.pallets
+    c.pallets +
+    c.dispositions +
+    c.certificates
   );
 }
 
@@ -7739,6 +8482,8 @@ async function countLiveActivity(sql: any): Promise<LiveWipeCounts> {
     send_events: await n(`select count(*)::text as c from send_events`),
     shipments: await n(`select count(*)::text as c from shipments`),
     pallets: await n(`select count(*)::text as c from pallets`),
+    dispositions: await n(`select count(*)::text as c from lot_dispositions`),
+    certificates: await n(`select count(*)::text as c from destruction_certificates`),
   };
 }
 
@@ -7766,10 +8511,17 @@ async function wipeLiveActivity(sql: any) {
   // Orden por FK: payables → detalle de liquidación → liquidaciones (que a su
   // vez apuntan a las OCs que se borran más abajo).
   await sql.query(`delete from grower_payables`);
+  // Disposición del remanente: los lotes apuntan a la disposición y la
+  // disposición a la liquidación — soltar y borrar en ese orden.
+  await sql.query(`update lots set disposition_id = null where disposition_id is not null`);
+  await sql.query(`delete from grower_settlement_dispositions`);
+  await sql.query(`delete from lot_dispositions`);
   await sql.query(`delete from grower_settlement_shrinks`);
   await sql.query(`delete from grower_settlement_expenses`);
   await sql.query(`delete from grower_settlement_lots`);
   await sql.query(`delete from grower_settlements`);
+  // Después de grower_settlements: la liquidación guarda FK al certificado.
+  await sql.query(`delete from destruction_certificates`);
   await sql.query(`delete from send_events`);
   await sql.query(`delete from shipments`);
   await sql.query(`delete from pallets`);
