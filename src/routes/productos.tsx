@@ -2,6 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal, TabActions } from "@/components/app-shell";
 import { PartySkuPanel, ProductPartyPanel } from "@/components/party-skus";
+import { ProductPicker } from "@/components/product-picker";
+import { packsToSkus } from "@/components/sku-select";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { useT } from "@/lib/i18n";
@@ -406,6 +408,7 @@ function PackOutTab() {
   const [manualLb, setManualLb] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ text: string; tone: "ok" | "danger" } | null>(null);
+  const [skuPicker, setSkuPicker] = useState(false);
 
   // SKU → peso neto en libras (null si el catálogo no lo trae).
   const packById = useMemo(() => {
@@ -420,9 +423,10 @@ function PackOutTab() {
       }
     return m;
   }, [products.data]);
-  const skuOpts = (products.data ?? []).flatMap((p) =>
-    p.packs.filter((k) => k.sku_code).map((k) => ({ id: k.id, label: `${k.sku_code} · ${p.name}` })),
-  );
+  // Mismo buscador de "+ Agregar artículo" en compras/ventas: escribir un
+  // calibre parecido ya causó un error real (Formosa por Maradol) al saltar
+  // con el teclado en un <select> de 147 SKUs.
+  const skus = packsToSkus(products.data ?? []);
 
   // Solo lotes activos, con existencia, sin hold y ligados a una carga: un
   // lote sin carga no se puede reempacar (la liquidación no sabría a quién
@@ -634,16 +638,45 @@ function PackOutTab() {
                 que no está ligado a una orden de compra no se puede reempacar.
               </p>
             ) : null}
-            <Field label={t("Destination SKU")}>
-              <Select required value={destPack} onChange={(e) => setDestPack(e.target.value)}>
-                <option value="">{t("Select SKU")}</option>
-                {skuOpts.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            {/* Sin <Field>: un <button> es "labelable" y el <label> que envuelve
+                a Field le robaría el nombre accesible (queda "SKU destino" en
+                vez de "Elegir SKU"/"Cambiar"/"Quitar"). Mismas clases, <div>. */}
+            <div className="flex flex-col gap-1">
+              <span className="label-caps">{t("Destination SKU")}</span>
+              {dest ? (
+                <div className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm">
+                  <span className="flex-1">{dest.label}</span>
+                  <button
+                    type="button"
+                    className="cursor-pointer text-xs text-link underline-offset-2 hover:underline"
+                    onClick={() => setSkuPicker(true)}
+                  >
+                    Cambiar
+                  </button>
+                  <button
+                    type="button"
+                    className="cursor-pointer text-xs text-muted underline-offset-2 hover:underline"
+                    onClick={() => setDestPack("")}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              ) : (
+                <Button type="button" variant="outline" onClick={() => setSkuPicker(true)}>
+                  {t("Select SKU")}
+                </Button>
+              )}
+            </div>
+            {skuPicker ? (
+              <ProductPicker
+                skus={skus}
+                onAdd={(s) => {
+                  setDestPack(String(s.id));
+                  setSkuPicker(false);
+                }}
+                onClose={() => setSkuPicker(false)}
+              />
+            ) : null}
             <Field label="Cajas que salen">
               <Input required type="number" min="0.01" step="0.01" value={destQty} onChange={(e) => setDestQty(e.target.value)} />
             </Field>
