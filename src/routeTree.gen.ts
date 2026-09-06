@@ -34,6 +34,7 @@ import { Route as VentasRouteImport } from './routes/ventas'
 import { Route as PortalIdRouteImport } from './routes/portal.$id'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCpoAttachmentIdRouteImport } from './routes/api/cpo-attachment.$id'
+import { Route as ApiDestructionCertificateIdRouteImport } from './routes/api/destruction-certificate.$id'
 import { Route as DocTipoIdRouteImport } from './routes/doc.$tipo.$id'
 import { Route as EtiquetasLotesPoIdRouteImport } from './routes/etiquetas.lotes.$poId'
 import { Route as EtiquetasPalletsPoIdRouteImport } from './routes/etiquetas.pallets.$poId'
@@ -163,6 +164,12 @@ const ApiCpoAttachmentIdRoute = ApiCpoAttachmentIdRouteImport.update({
   path: '/api/cpo-attachment/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDestructionCertificateIdRoute =
+  ApiDestructionCertificateIdRouteImport.update({
+    id: '/api/destruction-certificate/$id',
+    path: '/api/destruction-certificate/$id',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const DocTipoIdRoute = DocTipoIdRouteImport.update({
   id: '/doc/$tipo/$id',
   path: '/doc/$tipo/$id',
@@ -205,6 +212,7 @@ export interface FileRoutesByFullPath {
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
+  '/api/destruction-certificate/$id': typeof ApiDestructionCertificateIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
   '/etiquetas/lotes/$poId': typeof EtiquetasLotesPoIdRoute
   '/etiquetas/pallets/$poId': typeof EtiquetasPalletsPoIdRoute
@@ -235,6 +243,7 @@ export interface FileRoutesByTo {
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
+  '/api/destruction-certificate/$id': typeof ApiDestructionCertificateIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
   '/etiquetas/lotes/$poId': typeof EtiquetasLotesPoIdRoute
   '/etiquetas/pallets/$poId': typeof EtiquetasPalletsPoIdRoute
@@ -266,6 +275,7 @@ export interface FileRoutesById {
   '/portal/$id': typeof PortalIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cpo-attachment/$id': typeof ApiCpoAttachmentIdRoute
+  '/api/destruction-certificate/$id': typeof ApiDestructionCertificateIdRoute
   '/doc/$tipo/$id': typeof DocTipoIdRoute
   '/etiquetas/lotes/$poId': typeof EtiquetasLotesPoIdRoute
   '/etiquetas/pallets/$poId': typeof EtiquetasPalletsPoIdRoute
@@ -298,6 +308,7 @@ export interface FileRouteTypes {
     | '/portal/$id'
     | '/api/auth/$'
     | '/api/cpo-attachment/$id'
+    | '/api/destruction-certificate/$id'
     | '/doc/$tipo/$id'
     | '/etiquetas/lotes/$poId'
     | '/etiquetas/pallets/$poId'
@@ -328,6 +339,7 @@ export interface FileRouteTypes {
     | '/portal/$id'
     | '/api/auth/$'
     | '/api/cpo-attachment/$id'
+    | '/api/destruction-certificate/$id'
     | '/doc/$tipo/$id'
     | '/etiquetas/lotes/$poId'
     | '/etiquetas/pallets/$poId'
@@ -358,6 +370,7 @@ export interface FileRouteTypes {
     | '/portal/$id'
     | '/api/auth/$'
     | '/api/cpo-attachment/$id'
+    | '/api/destruction-certificate/$id'
     | '/doc/$tipo/$id'
     | '/etiquetas/lotes/$poId'
     | '/etiquetas/pallets/$poId'
@@ -389,6 +402,7 @@ export interface RootRouteChildren {
   PortalIdRoute: typeof PortalIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCpoAttachmentIdRoute: typeof ApiCpoAttachmentIdRoute
+  ApiDestructionCertificateIdRoute: typeof ApiDestructionCertificateIdRoute
   DocTipoIdRoute: typeof DocTipoIdRoute
   EtiquetasLotesPoIdRoute: typeof EtiquetasLotesPoIdRoute
   EtiquetasPalletsPoIdRoute: typeof EtiquetasPalletsPoIdRoute
@@ -571,6 +585,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCpoAttachmentIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/destruction-certificate/$id': {
+      id: '/api/destruction-certificate/$id'
+      path: '/api/destruction-certificate/$id'
+      fullPath: '/api/destruction-certificate/$id'
+      preLoaderRoute: typeof ApiDestructionCertificateIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/doc/$tipo/$id': {
       id: '/doc/$tipo/$id'
       path: '/doc/$tipo/$id'
@@ -621,6 +642,7 @@ const rootRouteChildren: RootRouteChildren = {
   PortalIdRoute: PortalIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCpoAttachmentIdRoute: ApiCpoAttachmentIdRoute,
+  ApiDestructionCertificateIdRoute: ApiDestructionCertificateIdRoute,
   DocTipoIdRoute: DocTipoIdRoute,
   EtiquetasLotesPoIdRoute: EtiquetasLotesPoIdRoute,
   EtiquetasPalletsPoIdRoute: EtiquetasPalletsPoIdRoute,

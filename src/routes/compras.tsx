@@ -15,8 +15,10 @@ import { COMPANY } from "@/lib/company";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
+  addLotDisposition,
   applyAdvanceRecovery,
   applySettlement,
+  cancelLotDisposition,
   cancelPurchaseOrder,
   createBillFromPO,
   createExpense,
@@ -28,6 +30,7 @@ import {
   listPurchaseOrders,
   listSuppliers,
   receiveMerchandise,
+  saveDestructionCertificate,
   setExpenseChargedTo,
   setPoCommission,
   setVendorShare,
@@ -2228,7 +2231,17 @@ function SettlementModal({
   const anyDeviation = shrinkView.some((v) => v.deviates);
   const anyMissingPrice = shrinkView.some((v) => v.missing_price);
   const originErrors = s?.origin_errors ?? [];
-  const canEmit = !saving && !anyMissingPrice && originErrors.length === 0 && (!anyDeviation || confirmDeviation);
+  // Candado PACA (bloque B): sin cajas sin clasificar y, si lo destruido llega
+  // o pasa del 5 % del embarque, con el certificado adjunto.
+  const emitBlock: string | null = !s?.disposition_applies
+    ? null
+    : s.unclassified.length
+      ? `Faltan por clasificar: ${s.unclassified.map((u) => `${u.qty} ${u.unit} de ${u.lot_number}`).join(", ")}. Manda cada caja a pendiente de venta, destruida o comprada por Plein.`
+      : s.destruction.needs_certificate && !s.destruction.certificate
+        ? `Lo destruido llega a ${s.destruction.destroyed_pct.toFixed(1)} % del embarque: adjunta el certificado oficial de destrucción antes de emitir.`
+        : null;
+  const canEmit =
+    !saving && !anyMissingPrice && originErrors.length === 0 && (!anyDeviation || confirmDeviation) && !emitBlock;
   const unitWord = (u: string, v: number) => (u === "lb" ? "lb" : v === 1 ? "caja" : "cajas");
 
   // Propuesta de recuperación al emitir (solo comisión pura, donde no hay
@@ -2446,7 +2459,8 @@ function SettlementModal({
                 </Button>
                 <p className="ml-auto max-w-sm text-xs text-muted">
                   Ingreso − gastos del productor − comisión de Plein
-                  {shrinkView.some((v) => v.charged_to === "plein") ? " + merma pagada por Plein" : ""} = neto al
+                  {shrinkView.some((v) => v.charged_to === "plein") ? " + merma pagada por Plein" : ""}
+                  {(s.plein_purchase_total ?? 0) > 0.009 ? " + remanente comprado por Plein" : ""} = neto al
                   productor.
                 </p>
               </div>
@@ -2580,6 +2594,17 @@ function SettlementModal({
                         <span className="tabular-nums">+{money(shrinkCompensationLive)}</span>
                       </div>
                     ) : null}
+                    {(s.plein_purchase_total ?? 0) > 0.009 ? (
+                      <div className="flex justify-between border-b border-border py-1.5">
+                        <span>
+                          + Remanente comprado por Plein
+                          <span className="ml-2 text-xs text-muted">
+                            a valor de mercado, sin comisión: no entra a la base de la comisión
+                          </span>
+                        </span>
+                        <span className="tabular-nums">+{money(s.plein_purchase_total)}</span>
+                      </div>
+                    ) : null}
                     {anyDeviation ? (
                       <label className="flex cursor-pointer items-center gap-2 border-b border-border py-1.5 text-xs">
                         <input
@@ -2633,13 +2658,28 @@ function SettlementModal({
                   Define la comisión de Plein para calcular la liquidación al productor.
                 </p>
               )}
+              {s.disposition_applies ? (
+                <RemainderPanel
+                  s={s}
+                  onChanged={async () => {
+                    await data.reload();
+                  }}
+                  onMsg={setMsg}
+                />
+              ) : null}
               {s.breakdown ? (
                 <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
                   {s.settlement ? (
                     <>
                       <p className="text-sm">
                         Liquidación{" "}
-                        <span className="font-mono">{s.settlement.settlement_number}</span> emitida
+                        <span className="font-mono">{s.settlement.settlement_number}</span>
+                        {s.settlement.is_partial ? (
+                          <span className="ml-1 rounded bg-warn/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase text-warn">
+                            Cuenta parcial
+                          </span>
+                        ) : null}{" "}
+                        emitida
                         el {fecha(s.settlement.issue_date)} — pago final{" "}
                         <strong className="tabular-nums">
                           {money(s.settlement.final_payment)}
@@ -2668,6 +2708,7 @@ function SettlementModal({
                       <Button size="sm" disabled={!canEmit} onClick={() => void emitirLiquidacion()}>
                         Emitir liquidación
                       </Button>
+                      {emitBlock ? <p className="w-full text-xs text-danger">{emitBlock}</p> : null}
                       <p className="ml-auto max-w-md text-xs text-muted">
                         Congela los montos tal como están hoy y les da folio (account of sales). El
                         documento emitido no se recalcula: reimprimir devuelve exactamente lo mismo.
@@ -2731,6 +2772,9 @@ function SettlementModal({
                     "Sold",
                     "Waste",
                     "A reempaque",
+                    "Destruidas",
+                    "Compró Plein",
+                    "Pendientes",
                     "Remaining",
                     "Revenue",
                     "T. cost",
@@ -2780,6 +2824,9 @@ function SettlementModal({
                     <td className="px-2 py-2 tabular-nums">{l.sold}</td>
                     <td className="px-2 py-2 tabular-nums">{l.waste}</td>
                     <td className="px-2 py-2 tabular-nums">{l.repacked_out_qty || 0}</td>
+                    <td className="px-2 py-2 tabular-nums">{l.destroyed || 0}</td>
+                    <td className="px-2 py-2 tabular-nums">{l.plein_bought || 0}</td>
+                    <td className="px-2 py-2 tabular-nums">{l.pending || 0}</td>
                     <td className="px-2 py-2 tabular-nums">{l.remaining}</td>
                     <td className="px-2 py-2 tabular-nums">{money(l.revenue)}</td>
                     <td className="px-2 py-2 tabular-nums">{l.pas ? "—" : money(l.t_cost)}</td>
@@ -2822,6 +2869,376 @@ function SettlementModal({
         </>
       ) : null}
     </Modal>
+  );
+}
+
+type SettlementData = Awaited<ReturnType<typeof getSettlement>>;
+type DispositionKind = "pending_sale" | "destroyed" | "plein_purchase";
+const DISPOSITION_LABEL: Record<DispositionKind, string> = {
+  pending_sale: "Pendiente de venta",
+  destroyed: "Destruida",
+  plein_purchase: "Comprada por Plein",
+};
+/**
+ * Disposición del remanente (PACA 7 CFR 46): cada caja que no se vendió va a
+ * pendiente de venta, destruida (con motivo) o comprada por Plein (a precio
+ * de mercado, sin comisión). Se deshace mientras la liquidación no esté
+ * emitida. Si lo destruido llega o pasa del 5 % del embarque, pide el
+ * certificado oficial antes de emitir.
+ */
+function RemainderPanel({
+  s,
+  onChanged,
+  onMsg,
+}: {
+  s: SettlementData;
+  onChanged: () => Promise<void>;
+  onMsg: (m: string) => void;
+}) {
+  const [forms, setForms] = useState<
+    Record<number, { kind: DispositionKind; qty: string; reason: string; price: string; confirm: boolean }>
+  >({});
+  const [busy, setBusy] = useState(false);
+  const [cert, setCert] = useState({ number: "", date: "", issuer: "" });
+  const [certFile, setCertFile] = useState<File | null>(null);
+  const [certKey, setCertKey] = useState(0);
+  const issued = Boolean(s.settlement);
+  const ref = s.purchase_reference;
+  const lotsOpen = s.lots.filter((l) => l.remaining > 0.0005);
+  const active = s.disposition_rows.filter((d) => !d.cancelled_at);
+  const cancelled = s.disposition_rows.filter((d) => d.cancelled_at);
+  const formOf = (id: number) =>
+    forms[id] ?? {
+      kind: "pending_sale" as DispositionKind,
+      qty: "",
+      reason: "",
+      price: ref != null && ref > 0 ? ref.toFixed(2) : "",
+      confirm: false,
+    };
+  const setForm = (id: number, patch: Partial<ReturnType<typeof formOf>>) =>
+    setForms((m) => ({ ...m, [id]: { ...formOf(id), ...patch } }));
+  async function run(fn: () => Promise<string>) {
+    setBusy(true);
+    try {
+      const m = await fn();
+      await onChanged();
+      onMsg(m);
+    } catch (e) {
+      onMsg(e instanceof Error ? e.message : "No se pudo registrar");
+    } finally {
+      setBusy(false);
+    }
+  }
+  const qtyWord = (q: number, unit: string) => `${q} ${unit}`;
+  return (
+    <div className="mt-3 rounded-md border border-border bg-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Disposición del remanente</p>
+        <p className="max-w-xl text-xs text-muted">
+          PACA pide rendir cuentas del 100 % de lo recibido: cada caja que no se vendió queda como
+          pendiente de venta, destruida o comprada por Plein. Con cajas sin clasificar no se emite.
+        </p>
+      </div>
+      {s.unclassified.length ? (
+        <p className="mt-2 text-sm text-danger">
+          Faltan por clasificar:{" "}
+          {s.unclassified.map((u) => `${qtyWord(u.qty, u.unit)} de ${u.lot_number}`).join(", ")}.
+        </p>
+      ) : (
+        <p className="mt-2 text-sm text-ok">
+          {lotsOpen.length ? "Todo el remanente está clasificado." : "No quedó remanente: todo se vendió, reempacó o dispuso."}
+        </p>
+      )}
+      {lotsOpen.length ? (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[720px] text-left text-sm">
+            <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
+              <tr>
+                <th className="px-2 py-2 font-medium">Lote</th>
+                <th className="px-2 py-2 font-medium">Producto</th>
+                <th className="px-2 py-2 font-medium">En existencia</th>
+                <th className="px-2 py-2 font-medium">Pendientes de venta</th>
+                <th className="px-2 py-2 font-medium">Sin clasificar</th>
+                {!issued ? <th className="px-2 py-2 font-medium">Clasificar</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {lotsOpen.map((l) => {
+                const f = formOf(l.id);
+                const price = Number(f.price);
+                const deviates =
+                  f.kind === "plein_purchase" && ref != null && ref > 0 && price > 0 && Math.abs(price - ref) / ref > 0.5;
+                const qty = Number(f.qty);
+                const okQty = qty > 0 && qty <= l.unclassified + 1e-9;
+                const okForm =
+                  okQty &&
+                  (f.kind !== "destroyed" || f.reason.trim().length > 0) &&
+                  (f.kind !== "plein_purchase" || (price > 0 && (!deviates || f.confirm)));
+                return (
+                  <tr key={l.id} className="border-b border-border align-top">
+                    <td className="px-2 py-2 font-medium text-link">{l.lot_number}</td>
+                    <td className="px-2 py-2">
+                      {l.product_name}
+                      {l.calibre ? ` ${l.calibre}` : ""}
+                      {l.is_repack && l.packed_as ? (
+                        <span className="block text-[11px] text-muted">reempacado como {l.packed_as}</span>
+                      ) : null}
+                    </td>
+                    <td className="px-2 py-2 tabular-nums">{qtyWord(l.remaining, l.unit)}</td>
+                    <td className="px-2 py-2 tabular-nums">{qtyWord(l.pending, l.unit)}</td>
+                    <td className={`px-2 py-2 tabular-nums ${l.unclassified > 0.0005 ? "font-semibold text-danger" : "text-ok"}`}>
+                      {qtyWord(l.unclassified, l.unit)}
+                    </td>
+                    {!issued ? (
+                      <td className="px-2 py-2">
+                        <div className="flex flex-wrap items-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || l.unclassified <= 0.0005}
+                            onClick={() =>
+                              void run(async () => {
+                                const r = await addLotDisposition({
+                                  data: { lot_id: l.id, kind: "pending_sale", quantity: l.unclassified },
+                                });
+                                return `${r.lot_number}: ${qtyWord(r.quantity, r.unit)} a pendiente de venta`;
+                              })
+                            }
+                          >
+                            Todo a pendiente de venta
+                          </Button>
+                          <Select
+                            className="w-44"
+                            value={f.kind}
+                            onChange={(e) => setForm(l.id, { kind: e.target.value as DispositionKind, confirm: false })}
+                          >
+                            <option value="pending_sale">Pendiente de venta</option>
+                            <option value="destroyed">Destruida</option>
+                            <option value="plein_purchase">Comprada por Plein</option>
+                          </Select>
+                          <Input
+                            className="w-24"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder={String(l.unclassified)}
+                            value={f.qty}
+                            onChange={(e) => setForm(l.id, { qty: e.target.value })}
+                          />
+                          {f.kind === "destroyed" ? (
+                            <Input
+                              className="w-56"
+                              placeholder="Motivo de la destrucción"
+                              value={f.reason}
+                              onChange={(e) => setForm(l.id, { reason: e.target.value })}
+                            />
+                          ) : null}
+                          {f.kind === "plein_purchase" ? (
+                            <span className="flex items-center gap-1 text-xs">
+                              <span className="text-muted">$ / {l.unit}</span>
+                              <Input
+                                className="w-24"
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={f.price}
+                                onChange={(e) => setForm(l.id, { price: e.target.value, confirm: false })}
+                              />
+                            </span>
+                          ) : null}
+                          <Button
+                            size="sm"
+                            disabled={busy || !okForm}
+                            onClick={() =>
+                              void run(async () => {
+                                const r = await addLotDisposition({
+                                  data: {
+                                    lot_id: l.id,
+                                    kind: f.kind,
+                                    quantity: qty,
+                                    reason: f.kind === "destroyed" ? f.reason.trim() : undefined,
+                                    unit_price: f.kind === "plein_purchase" ? price : undefined,
+                                  },
+                                });
+                                setForm(l.id, { qty: "", reason: "", confirm: false });
+                                return `${r.lot_number}: ${qtyWord(r.quantity, r.unit)} — ${DISPOSITION_LABEL[r.kind as DispositionKind]}${
+                                  r.new_lot_number ? ` · nació el lote propio ${r.new_lot_number}` : ""
+                                }`;
+                              })
+                            }
+                          >
+                            Registrar
+                          </Button>
+                        </div>
+                        {f.kind === "plein_purchase" ? (
+                          <p className="mt-1 text-[11px] text-muted">
+                            {ref != null && ref > 0
+                              ? `Referencia: promedio realizado de la carga ${money(ref, 2)} por caja.`
+                              : "La carga no tiene ventas: captura el precio de mercado a mano."}
+                          </p>
+                        ) : null}
+                        {deviates ? (
+                          <label className="mt-1 flex cursor-pointer items-center gap-2 text-xs text-warn">
+                            <input
+                              type="checkbox"
+                              checked={f.confirm}
+                              onChange={(e) => setForm(l.id, { confirm: e.target.checked })}
+                            />
+                            Este precio se sale del rango (promedio de la carga {money(ref ?? 0, 2)} por caja). Lo revisé y
+                            quiero continuar.
+                          </label>
+                        ) : null}
+                        {f.qty !== "" && !okQty ? (
+                          <p className="mt-1 text-[11px] text-danger">
+                            La cantidad debe ser mayor que cero y hasta {qtyWord(l.unclassified, l.unit)}.
+                          </p>
+                        ) : null}
+                      </td>
+                    ) : null}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {active.length || cancelled.length ? (
+        <div className="mt-3 text-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Disposiciones registradas</p>
+          {active.map((d) => (
+            <div key={d.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-1.5">
+              <span>
+                <span className="font-medium">{DISPOSITION_LABEL[d.kind]}</span> · lote{" "}
+                <span className="font-mono">{d.lot_number}</span> · {qtyWord(d.quantity, d.unit)}
+                {d.kind === "destroyed" && d.reason ? <span className="ml-2 text-xs text-muted">{d.reason}</span> : null}
+                {d.kind === "plein_purchase" ? (
+                  <span className="ml-2 text-xs text-muted">
+                    {money(d.unit_price ?? 0, 2)} / {d.unit} = {money(d.amount)}
+                    {d.new_lot_number ? ` · lote propio ${d.new_lot_number}` : ""}
+                  </span>
+                ) : null}
+              </span>
+              {!issued ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="cursor-pointer text-xs text-link underline-offset-2 hover:underline"
+                  onClick={() =>
+                    void run(async () => {
+                      const r = await cancelLotDisposition({ data: { disposition_id: d.id } });
+                      return `Se deshizo: ${DISPOSITION_LABEL[r.kind as DispositionKind]} de ${qtyWord(r.quantity, d.unit)} en ${r.lot_number}`;
+                    })
+                  }
+                >
+                  Deshacer
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {cancelled.map((d) => (
+            <div key={d.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-1.5 text-subtle line-through">
+              <span>
+                {DISPOSITION_LABEL[d.kind]} · lote {d.lot_number} · {qtyWord(d.quantity, d.unit)}
+              </span>
+              <span className="text-xs no-underline">cancelada{d.cancel_reason ? ` — ${d.cancel_reason}` : ""}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="mt-3 rounded-md border border-border bg-surface-2 p-3 text-sm">
+        <p>
+          Destruido en total:{" "}
+          <strong className="tabular-nums">{Math.round(s.destruction.destroyed_equiv_qty * 100) / 100}</strong> cajas
+          equivalentes de <strong className="tabular-nums">{s.destruction.received_qty}</strong> recibidas ={" "}
+          <strong className={`tabular-nums ${s.destruction.needs_certificate ? "text-warn" : ""}`}>
+            {s.destruction.destroyed_pct.toFixed(1)} %
+          </strong>{" "}
+          del embarque
+          <span className="ml-2 text-xs text-muted">
+            (merma de bodega + merma de reempaque + destruidas al liquidar; cajas de reempaques convertidas a cajas
+            recibidas)
+          </span>
+        </p>
+        {s.destruction.equiv_unknown.length ? (
+          <p className="mt-1 text-xs text-warn">
+            No se pudo convertir a cajas recibidas: {s.destruction.equiv_unknown.join(", ")} — falta peso neto en el
+            catálogo. Esa merma no entra al porcentaje.
+          </p>
+        ) : null}
+        {s.destruction.needs_certificate ? (
+          s.destruction.certificate ? (
+            <p className="mt-2 text-sm">
+              Certificado oficial de destrucción No.{" "}
+              <span className="font-mono">{s.destruction.certificate.certificate_number}</span>
+              {s.destruction.certificate.certificate_date ? ` del ${fecha(s.destruction.certificate.certificate_date)}` : ""}
+              {s.destruction.certificate.issuer ? ` · ${s.destruction.certificate.issuer}` : ""}{" "}
+              <a
+                href={`/api/destruction-certificate/${s.destruction.certificate.id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-link underline-offset-2 hover:underline"
+              >
+                Ver certificado
+              </a>
+            </p>
+          ) : issued ? (
+            <p className="mt-2 text-sm text-danger">Se emitió sin certificado.</p>
+          ) : (
+            <div className="mt-2 grid gap-2">
+              <p className="text-sm text-warn">
+                Llega o pasa del 5 %: PACA exige el certificado oficial que pruebe que la fruta no tenía valor
+                comercial. Adjúntalo aquí; el original se le manda al productor con la cuenta.
+              </p>
+              <div className="flex flex-wrap items-end gap-2">
+                <Field label="Número de certificado">
+                  <Input className="w-40" value={cert.number} onChange={(e) => setCert({ ...cert, number: e.target.value })} />
+                </Field>
+                <Field label="Fecha">
+                  <Input className="w-40" type="date" value={cert.date} onChange={(e) => setCert({ ...cert, date: e.target.value })} />
+                </Field>
+                <Field label="Quién lo emite">
+                  <Input className="w-48" value={cert.issuer} onChange={(e) => setCert({ ...cert, issuer: e.target.value })} />
+                </Field>
+                <Field label="Archivo (PDF o foto)">
+                  <Input
+                    key={certKey}
+                    type="file"
+                    accept="application/pdf,image/png,image/jpeg,image/webp"
+                    onChange={(e) => setCertFile(e.target.files?.[0] ?? null)}
+                  />
+                </Field>
+                <Button
+                  size="sm"
+                  disabled={busy || !cert.number.trim() || !certFile}
+                  onClick={() =>
+                    void run(async () => {
+                      const fd = new FormData();
+                      fd.append(
+                        "payload",
+                        JSON.stringify({
+                          purchase_order_id: s.po_id,
+                          certificate_number: cert.number.trim(),
+                          certificate_date: cert.date || undefined,
+                          issuer: cert.issuer.trim() || undefined,
+                        }),
+                      );
+                      if (certFile) fd.append("file", certFile);
+                      const r = await saveDestructionCertificate({ data: fd });
+                      setCert({ number: "", date: "", issuer: "" });
+                      setCertFile(null);
+                      setCertKey((k) => k + 1);
+                      return `Certificado ${r.certificate_number} guardado (${r.filename})`;
+                    })
+                  }
+                >
+                  Guardar certificado
+                </Button>
+              </div>
+            </div>
+          )
+        ) : null}
+      </div>
+    </div>
   );
 }
 
