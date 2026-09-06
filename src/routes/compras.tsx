@@ -2243,6 +2243,9 @@ function SettlementModal({
   const canEmit =
     !saving && !anyMissingPrice && originErrors.length === 0 && (!anyDeviation || confirmDeviation) && !emitBlock;
   const unitWord = (u: string, v: number) => (u === "lb" ? "lb" : v === 1 ? "caja" : "cajas");
+  // "1 cajas" es incorrecto en español: redondea igual que se muestra (2
+  // decimales) antes de decidir la palabra, para que nunca se contradigan.
+  const boxWord = (v: number) => (Math.round(v * 100) / 100 === 1 ? "caja" : "cajas");
 
   // Propuesta de recuperación al emitir (solo comisión pura, donde no hay
   // bill): lo que alcance entre el saldo vivo y el neto de esta liquidación.
@@ -2482,7 +2485,7 @@ function SettlementModal({
                       <span>
                         Ingreso de la venta
                         <span className="ml-2 text-xs text-muted">
-                          {s.breakdown.sold_units} cajas vendidas
+                          {s.breakdown.sold_units} {boxWord(s.breakdown.sold_units)} vendidas
                         </span>
                       </span>
                       <span className="tabular-nums">{money(s.breakdown.revenue)}</span>
@@ -2520,7 +2523,7 @@ function SettlementModal({
                         Comisión Plein
                         <span className="ml-2 text-xs text-muted">
                           {s.breakdown.commission_type === "per_unit"
-                            ? `${money(s.breakdown.commission_rate, 2)} × ${s.breakdown.sold_units} cajas`
+                            ? `${money(s.breakdown.commission_rate, 2)} × ${s.breakdown.sold_units} ${boxWord(s.breakdown.sold_units)}`
                             : s.breakdown.commission_type === "gross_pct"
                               ? `${s.breakdown.commission_rate}% de ${money(s.breakdown.commission_base)} (venta bruta)`
                               : `${s.breakdown.commission_rate}% de ${money(s.breakdown.commission_base)} (neto tras gastos)`}
@@ -2536,7 +2539,7 @@ function SettlementModal({
                             <span className="ml-2 text-xs text-muted">
                               {v.shrink_qty} {unitWord(v.shrink_unit, v.shrink_qty)}
                               {v.equiv_boxes != null
-                                ? ` (≈ ${Math.round(v.equiv_boxes * 100) / 100} cajas de ${v.equiv_box_weight_lb} lb)`
+                                ? ` (≈ ${Math.round(v.equiv_boxes * 100) / 100} ${boxWord(v.equiv_boxes)} de ${v.equiv_box_weight_lb} lb)`
                                 : ""}
                               {v.source_lots ? ` · lotes ${v.source_lots}` : ""}
                               {v.reason ? ` · ${v.reason}` : ""}
@@ -2899,6 +2902,10 @@ function RemainderPanel({
     Record<number, { kind: DispositionKind; qty: string; reason: string; price: string; confirm: boolean }>
   >({});
   const [busy, setBusy] = useState(false);
+  // Un solo clic manda TODO el remanente del lote a pendiente de venta y no
+  // se puede deshacer sin pensarlo — ya le pasó a Miguel sin querer. Mismo
+  // patrón de "armar y confirmar" que Cancelar en proveedores.tsx (sin modal).
+  const [armPending, setArmPending] = useState<number | null>(null);
   const [cert, setCert] = useState({ number: "", date: "", issuer: "" });
   const [certFile, setCertFile] = useState<File | null>(null);
   const [certKey, setCertKey] = useState(0);
@@ -2930,6 +2937,7 @@ function RemainderPanel({
     }
   }
   const qtyWord = (q: number, unit: string) => `${q} ${unit}`;
+  const boxWord = (v: number) => (Math.round(v * 100) / 100 === 1 ? "caja" : "cajas");
   return (
     <div className="mt-3 rounded-md border border-border bg-surface p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -2994,18 +3002,26 @@ function RemainderPanel({
                         <div className="flex flex-wrap items-end gap-2">
                           <Button
                             size="sm"
-                            variant="outline"
+                            variant={armPending === l.id ? undefined : "outline"}
                             disabled={busy || l.unclassified <= 0.0005}
-                            onClick={() =>
+                            onClick={() => {
+                              if (armPending !== l.id) {
+                                setArmPending(l.id);
+                                return;
+                              }
+                              setArmPending(null);
                               void run(async () => {
                                 const r = await addLotDisposition({
                                   data: { lot_id: l.id, kind: "pending_sale", quantity: l.unclassified },
                                 });
                                 return `${r.lot_number}: ${qtyWord(r.quantity, r.unit)} a pendiente de venta`;
-                              })
-                            }
+                              });
+                            }}
+                            onBlur={() => setArmPending((v) => (v === l.id ? null : v))}
                           >
-                            Todo a pendiente de venta
+                            {armPending === l.id
+                              ? `¿Mandar ${qtyWord(l.unclassified, l.unit)} de ${l.lot_number} a pendiente de venta? Sí, confirmar`
+                              : "Todo a pendiente de venta"}
                           </Button>
                           <Select
                             className="w-44"
@@ -3148,8 +3164,9 @@ function RemainderPanel({
       <div className="mt-3 rounded-md border border-border bg-surface-2 p-3 text-sm">
         <p>
           Destruido en total:{" "}
-          <strong className="tabular-nums">{Math.round(s.destruction.destroyed_equiv_qty * 100) / 100}</strong> cajas
-          equivalentes de <strong className="tabular-nums">{s.destruction.received_qty}</strong> recibidas ={" "}
+          <strong className="tabular-nums">{Math.round(s.destruction.destroyed_equiv_qty * 100) / 100}</strong>{" "}
+          {boxWord(s.destruction.destroyed_equiv_qty)} equivalentes de{" "}
+          <strong className="tabular-nums">{s.destruction.received_qty}</strong> recibidas ={" "}
           <strong className={`tabular-nums ${s.destruction.needs_certificate ? "text-warn" : ""}`}>
             {s.destruction.destroyed_pct.toFixed(1)} %
           </strong>{" "}

@@ -182,13 +182,16 @@ export function aging30(
   return "b91";
 }
 
+// Catálogo en español: el valor se guarda tal cual (mismo patrón que
+// RESULTADOS_REC) y termina impreso en el account of sales del productor —
+// no pasa por t(). No se reescriben los renglones ya guardados en inglés.
 export const WASTE_REASONS = [
-  "Quality dump",
-  "Donation",
-  "Inventory adjustment",
-  "Other",
-  "Repack",
-  "Sample",
+  "Baja por calidad",
+  "Donación",
+  "Ajuste de inventario",
+  "Reempaque",
+  "Muestra",
+  "Otro",
 ] as const;
 
 export function skuLabel(s: {

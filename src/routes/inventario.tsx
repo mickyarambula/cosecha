@@ -792,7 +792,7 @@ function WasteModal({
           <Select value={waste.reason} onChange={(e) => setWaste({ ...waste, reason: e.target.value })}>
             {WASTE_REASONS.map((r) => (
               <option key={r} value={r}>
-                {t(r)}
+                {r}
               </option>
             ))}
           </Select>
