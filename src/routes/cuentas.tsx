@@ -17,21 +17,23 @@ export const Route = createFileRoute("/cuentas")({
   component: Page,
 });
 
+// "Boxes" y "Supplies" se retiraron (redundantes con "Cartón" de Costo, y
+// entre sí) sin reemplazo en español. Los demás quedan como su concepto en
+// español: mismo patrón que WASTE_REASONS, sin reescribir gastos ya
+// guardados con el nombre en inglés — esos se quedan como están.
 const EXPENSE_KEYS = [
   "Freight",
-  "Inspection Services",
-  "Quality Control",
+  "Servicios de inspección",
+  "Control de calidad",
   "Advertising",
   "Commissions and fees",
   "Cost of Labor",
   "Disposal fees",
-  "Dues & Subscriptions",
-  "Equipment",
-  "Boxes",
-  "Supplies",
+  "Cuotas y suscripciones",
+  "Equipo",
   "Insurance",
-  "Legal & Professional fees",
-  "Maintenance & Repairs",
+  "Honorarios legales y profesionales",
+  "Mantenimiento y reparaciones",
   "Materials",
 ] as const;
 

@@ -7522,19 +7522,32 @@ export const getFinancials = createServerFn({ method: "GET" })
       if (number === "50000") return cogs;
       if (number === "51000") return expByCat.Freight || 0;
       if (number === "53000")
+        // "Dues & Subscriptions" ya está en gastos guardados antes de esta
+        // sesión; "Cuotas y suscripciones" es el mismo concepto en español,
+        // de aquí en adelante — se suman los dos, nunca se reescribe uno por
+        // el otro.
         return (
-          (expByCat.Supplies || 0) + (expByCat.Boxes || 0) + (expByCat["Dues & Subscriptions"] || 0)
+          (expByCat.Supplies || 0) +
+          (expByCat.Boxes || 0) +
+          (expByCat["Dues & Subscriptions"] || 0) +
+          (expByCat["Cuotas y suscripciones"] || 0)
         );
       if (number === "55000")
-        return (expByCat.Insurance || 0) + (expByCat["Legal & Professional fees"] || 0);
+        return (
+          (expByCat.Insurance || 0) +
+          (expByCat["Legal & Professional fees"] || 0) +
+          (expByCat["Honorarios legales y profesionales"] || 0)
+        );
       if (number === "59999") {
         const known = /* @__PURE__ */ new Set([
           "Freight",
           "Supplies",
           "Boxes",
           "Dues & Subscriptions",
+          "Cuotas y suscripciones",
           "Insurance",
           "Legal & Professional fees",
+          "Honorarios legales y profesionales",
         ]);
         return Object.entries(expByCat).reduce((s, [k, v]) => s + (known.has(k) ? 0 : v), 0);
       }

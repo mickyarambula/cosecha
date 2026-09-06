@@ -170,7 +170,7 @@ function Page() {
   });
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [expDraft, setExpDraft] = useState({
-    category: "Inspection Services",
+    category: "Servicios de inspección",
     supplier_id: "",
     amount: "100",
     invoice: "",
