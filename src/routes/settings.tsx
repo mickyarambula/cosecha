@@ -695,6 +695,7 @@ function WipeTests() {
         [t("Sent log"), counts.send_events],
         [t("Dispositions"), counts.dispositions],
         [t("Destruction certificates"), counts.certificates],
+        [t("Complementary settlements"), counts.supplements],
       ]
     : [];
 

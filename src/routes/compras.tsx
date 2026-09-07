@@ -24,7 +24,9 @@ import {
   createExpense,
   createPurchaseOrder,
   getSettlement,
+  getSupplementPreview,
   issueGrowerSettlement,
+  issueSettlementSupplement,
   listLocations,
   listProducts,
   listPurchaseOrders,
@@ -2723,6 +2725,16 @@ function SettlementModal({
                   )}
                 </div>
               ) : null}
+              {s.settlement ? (
+                <SupplementPanel
+                  s={s}
+                  poId={poId}
+                  onChanged={async () => {
+                    await data.reload();
+                  }}
+                  onMsg={setMsg}
+                />
+              ) : null}
             </>
           )}
           {s.grower_balance > 0 ? (
@@ -2914,9 +2926,24 @@ function RemainderPanel({
   const lotsOpen = s.lots.filter((l) => l.remaining > 0.0005);
   const active = s.disposition_rows.filter((d) => !d.cancelled_at);
   const cancelled = s.disposition_rows.filter((d) => d.cancelled_at);
+  // Con LIQ emitida (bloque C-1a) solo se destruye o se compra lo que quedó
+  // pendiente de venta; un lote nacido después (reempaque) es pendiente entero.
+  const availableOf = (l: SettlementData["lots"][number]) =>
+    issued ? (l.pending > 0.0005 ? l.pending : l.is_repack ? l.unclassified : 0) : l.unclassified;
+  // Certificado para la complementaria: lo destruido después de la LIQ que
+  // nadie ha rendido, con el acumulado del embarque en o sobre 5 %, y sin un
+  // certificado nuevo (el del padre o de una complementaria anterior no cuenta).
+  const usedCerts = new Set(
+    [s.settlement?.certificate_number ?? null, ...s.supplements.map((x) => x.certificate_number)].filter(Boolean),
+  );
+  const latestCert = s.destruction.certificate;
+  const certUsed = latestCert ? usedCerts.has(latestCert.certificate_number) : true;
+  const unrenderedDestroyed = active.some((d) => d.kind === "destroyed" && !d.settlement_id && !d.supplement_id);
+  const certFormNeeded = s.destruction.needs_certificate && (!issued ? !latestCert : unrenderedDestroyed && certUsed);
+  const pendingTotal = s.pending_rows.reduce((a, r) => a + r.qty, 0);
   const formOf = (id: number) =>
     forms[id] ?? {
-      kind: "pending_sale" as DispositionKind,
+      kind: (issued ? "destroyed" : "pending_sale") as DispositionKind,
       qty: "",
       reason: "",
       price: ref != null && ref > 0 ? ref.toFixed(2) : "",
@@ -2943,11 +2970,18 @@ function RemainderPanel({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted">Disposición del remanente</p>
         <p className="max-w-xl text-xs text-muted">
-          PACA pide rendir cuentas del 100 % de lo recibido: cada caja que no se vendió queda como
-          pendiente de venta, destruida o comprada por Plein. Con cajas sin clasificar no se emite.
+          {issued
+            ? "La liquidación ya se emitió: las cajas que quedaron están pendientes de venta. Aquí solo se registra lo que de esas cajas se destruyó o compró Plein; entra a la siguiente cuenta complementaria."
+            : "PACA pide rendir cuentas del 100 % de lo recibido: cada caja que no se vendió queda como pendiente de venta, destruida o comprada por Plein. Con cajas sin clasificar no se emite."}
         </p>
       </div>
-      {s.unclassified.length ? (
+      {issued ? (
+        <p className="mt-2 text-sm text-muted">
+          {lotsOpen.length
+            ? `Pendientes de venta: ${s.pending_rows.map((r) => `${qtyWord(r.qty, r.unit)} de ${r.lot_number}`).join(", ") || qtyWord(pendingTotal, "cajas")}.`
+            : "No queda remanente en existencia."}
+        </p>
+      ) : s.unclassified.length ? (
         <p className="mt-2 text-sm text-danger">
           Faltan por clasificar:{" "}
           {s.unclassified.map((u) => `${qtyWord(u.qty, u.unit)} de ${u.lot_number}`).join(", ")}.
@@ -2967,7 +3001,7 @@ function RemainderPanel({
                 <th className="px-2 py-2 font-medium">En existencia</th>
                 <th className="px-2 py-2 font-medium">Pendientes de venta</th>
                 <th className="px-2 py-2 font-medium">Sin clasificar</th>
-                {!issued ? <th className="px-2 py-2 font-medium">Clasificar</th> : null}
+                <th className="px-2 py-2 font-medium">{issued ? "Destruir / Compra Plein" : "Clasificar"}</th>
               </tr>
             </thead>
             <tbody>
@@ -2977,7 +3011,8 @@ function RemainderPanel({
                 const deviates =
                   f.kind === "plein_purchase" && ref != null && ref > 0 && price > 0 && Math.abs(price - ref) / ref > 0.5;
                 const qty = Number(f.qty);
-                const okQty = qty > 0 && qty <= l.unclassified + 1e-9;
+                const avail = availableOf(l);
+                const okQty = qty > 0 && qty <= avail + 1e-9;
                 const okForm =
                   okQty &&
                   (f.kind !== "destroyed" || f.reason.trim().length > 0) &&
@@ -2994,12 +3029,14 @@ function RemainderPanel({
                     </td>
                     <td className="px-2 py-2 tabular-nums">{qtyWord(l.remaining, l.unit)}</td>
                     <td className="px-2 py-2 tabular-nums">{qtyWord(l.pending, l.unit)}</td>
-                    <td className={`px-2 py-2 tabular-nums ${l.unclassified > 0.0005 ? "font-semibold text-danger" : "text-ok"}`}>
+                    <td className={`px-2 py-2 tabular-nums ${!issued && l.unclassified > 0.0005 ? "font-semibold text-danger" : issued ? "" : "text-ok"}`}>
                       {qtyWord(l.unclassified, l.unit)}
                     </td>
-                    {!issued ? (
-                      <td className="px-2 py-2">
+                    <td className="px-2 py-2">
+                      {!issued || avail > 0.0005 ? (
+                        <>
                         <div className="flex flex-wrap items-end gap-2">
+                          {!issued ? (
                           <Button
                             size="sm"
                             variant={armPending === l.id ? undefined : "outline"}
@@ -3023,12 +3060,13 @@ function RemainderPanel({
                               ? `¿Mandar ${qtyWord(l.unclassified, l.unit)} de ${l.lot_number} a pendiente de venta? Sí, confirmar`
                               : "Todo a pendiente de venta"}
                           </Button>
+                          ) : null}
                           <Select
                             className="w-44"
                             value={f.kind}
                             onChange={(e) => setForm(l.id, { kind: e.target.value as DispositionKind, confirm: false })}
                           >
-                            <option value="pending_sale">Pendiente de venta</option>
+                            {!issued ? <option value="pending_sale">Pendiente de venta</option> : null}
                             <option value="destroyed">Destruida</option>
                             <option value="plein_purchase">Comprada por Plein</option>
                           </Select>
@@ -3037,7 +3075,7 @@ function RemainderPanel({
                             type="number"
                             min="0"
                             step="0.01"
-                            placeholder={String(l.unclassified)}
+                            placeholder={String(avail)}
                             value={f.qty}
                             onChange={(e) => setForm(l.id, { qty: e.target.value })}
                           />
@@ -3106,11 +3144,12 @@ function RemainderPanel({
                         ) : null}
                         {f.qty !== "" && !okQty ? (
                           <p className="mt-1 text-[11px] text-danger">
-                            La cantidad debe ser mayor que cero y hasta {qtyWord(l.unclassified, l.unit)}.
+                            La cantidad debe ser mayor que cero y hasta {qtyWord(avail, l.unit)}.
                           </p>
                         ) : null}
-                      </td>
-                    ) : null}
+                        </>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
@@ -3134,7 +3173,7 @@ function RemainderPanel({
                   </span>
                 ) : null}
               </span>
-              {!issued ? (
+              {!d.settlement_id && !d.supplement_id ? (
                 <button
                   type="button"
                   disabled={busy}
@@ -3183,7 +3222,7 @@ function RemainderPanel({
           </p>
         ) : null}
         {s.destruction.needs_certificate ? (
-          s.destruction.certificate ? (
+          !certFormNeeded && s.destruction.certificate ? (
             <p className="mt-2 text-sm">
               Certificado oficial de destrucción No.{" "}
               <span className="font-mono">{s.destruction.certificate.certificate_number}</span>
@@ -3198,13 +3237,14 @@ function RemainderPanel({
                 Ver certificado
               </a>
             </p>
-          ) : issued ? (
+          ) : !certFormNeeded && issued ? (
             <p className="mt-2 text-sm text-danger">Se emitió sin certificado.</p>
           ) : (
             <div className="mt-2 grid gap-2">
               <p className="text-sm text-warn">
-                Llega o pasa del 5 %: PACA exige el certificado oficial que pruebe que la fruta no tenía valor
-                comercial. Adjúntalo aquí; el original se le manda al productor con la cuenta.
+                {issued
+                  ? "Lo destruido acumulado del embarque llega o pasa del 5 %: PACA exige el certificado oficial de estas cajas. Adjúntalo aquí para poder emitir la cuenta complementaria; el original se le manda al productor con la cuenta."
+                  : "Llega o pasa del 5 %: PACA exige el certificado oficial que pruebe que la fruta no tenía valor comercial. Adjúntalo aquí; el original se le manda al productor con la cuenta."}
               </p>
               <div className="flex flex-wrap items-end gap-2">
                 <Field label="Número de certificado">
@@ -3255,6 +3295,348 @@ function RemainderPanel({
           )
         ) : null}
       </div>
+    </div>
+  );
+}
+
+type SupplementPreview = Awaited<ReturnType<typeof getSupplementPreview>>;
+function stamp(iso: string | null | undefined) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return `${fecha(iso)} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+/**
+ * Cuenta complementaria (bloque C-1a): rinde lo ocurrido desde la LIQ padre
+ * (o la complementaria anterior) hasta ahora, con la comisión congelada del
+ * padre. Los cuatro cruces del servidor bloquean el botón con el mensaje
+ * completo; se emiten N sobre el mismo padre, nunca una sobre otra.
+ */
+function SupplementPanel({
+  s,
+  poId,
+  onChanged,
+  onMsg,
+}: {
+  s: SettlementData;
+  poId: number;
+  onChanged: () => Promise<void>;
+  onMsg: (m: string) => void;
+}) {
+  const [prices, setPrices] = useState<Record<number, string>>({});
+  const [applied, setApplied] = useState<{ pack_out_id: number; unit_price: number }[]>([]);
+  const [recover, setRecover] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [showSales, setShowSales] = useState(false);
+  const preview = useAsync(
+    () =>
+      getSupplementPreview({
+        data: { purchase_order_id: poId, shrink_prices: applied.length ? applied : undefined },
+      }),
+    [poId, s, applied],
+  );
+  const p = preview.data;
+  const ok = p && p.applicable ? p : null;
+  const boxWord = (v: number) => (Math.round(v * 100) / 100 === 1 ? "caja" : "cajas");
+  const statusWord = (st: string) =>
+    st === "paid" ? "pagada" : st === "partial" ? "pago parcial" : st === "cancelled" ? "cancelada" : "abierta";
+  const applyPrices = () =>
+    setApplied(
+      Object.entries(prices)
+        .filter(([, v]) => Number(v) > 0)
+        .map(([k, v]) => ({ pack_out_id: Number(k), unit_price: Number(v) })),
+    );
+  async function emitir() {
+    if (!ok) return;
+    setSaving(true);
+    try {
+      const r = await issueSettlementSupplement({
+        data: {
+          purchase_order_id: poId,
+          recover_amount: recover ? Number(recover) : undefined,
+          shrink_prices: applied.length ? applied : undefined,
+        },
+      });
+      setRecover("");
+      await onChanged();
+      onMsg(
+        r.balance_due > 0.009
+          ? `Complementaria ${r.supplement_number} emitida — salió negativa: saldo a favor de Plein ${money(r.balance_due)} registrado como adelanto ${r.advance_number} sin salida de caja`
+          : `Complementaria ${r.supplement_number} emitida — pago final ${money(r.final_payment)}` +
+              (r.payable_number ? ` · registrado por remitir como ${r.payable_number} (Finanzas → CxP)` : "") +
+              (r.bill_number ? ` · factura complementaria ${r.bill_number} (Finanzas → CxP)` : ""),
+      );
+    } catch (err) {
+      onMsg(err instanceof Error ? err.message : "No se pudo emitir la complementaria");
+    } finally {
+      setSaving(false);
+    }
+  }
+  const openLiability =
+    s.parent_payable && s.parent_payable.remaining > 0.009
+      ? `${s.parent_payable.payable_number} sigue abierta por ${money(s.parent_payable.remaining)}`
+      : s.bill && s.bill.remaining > 0.009
+        ? `${s.bill.bill_number} sigue abierta por ${money(s.bill.remaining)}`
+        : null;
+  return (
+    <div className="mt-3 rounded-md border border-border bg-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Cuenta complementaria</p>
+        <p className="max-w-xl text-xs text-muted">
+          Rinde solo lo ocurrido después de la liquidación emitida (ventas de las cajas pendientes, gastos que
+          llegaron tarde, lo destruido o comprado por Plein), con la comisión con la que se rindió la cuenta.
+          Cuelga de {s.settlement?.settlement_number}; puede haber varias.
+        </p>
+      </div>
+      {s.supplements.length ? (
+        <div className="mt-3 text-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Emitidas</p>
+          {s.supplements.map((x) => (
+            <div key={x.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-1.5">
+              <span>
+                <span className="font-mono">{x.supplement_number}</span>
+                <span className="ml-2 text-xs text-muted">
+                  del {stamp(x.period_start)} al {stamp(x.period_end)} · neto {money(x.net_to_grower)}
+                </span>
+                {x.balance_due > 0.009 ? (
+                  <span className="ml-2 text-xs text-warn">
+                    saldo a favor de Plein {money(x.balance_due)} ({x.advance?.advance_number ?? "ADE-"}, sin caja
+                    {x.advance && x.advance.balance > 0.009 ? `, vivo ${money(x.advance.balance)}` : ", ya recuperado"})
+                    {x.advance && x.advance.balance > 0.009 && openLiability ? ` — mientras ${openLiability}` : ""}
+                  </span>
+                ) : (
+                  <span className="ml-2 text-xs text-muted">
+                    pago final {money(x.final_payment)}
+                    {x.payable ? ` · ${x.payable.payable_number} (${statusWord(x.payable.status)})` : ""}
+                    {x.bill ? ` · ${x.bill.bill_number} (${statusWord(x.bill.status)})` : ""}
+                  </span>
+                )}
+              </span>
+              <a
+                href={`/doc/liq/${x.share_token}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-link underline-offset-2 hover:underline"
+              >
+                Ver / imprimir
+              </a>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {preview.loading ? <p className="mt-3 text-sm text-muted">Calculando…</p> : null}
+      {preview.error ? <p className="mt-3 text-sm text-danger">{preview.error}</p> : null}
+      {p && !p.applicable ? <p className="mt-3 text-sm text-muted">{p.reason}</p> : null}
+      {ok ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+            Siguiente: {ok.supplement_number} — desde {ok.since_number} ({stamp(ok.period_start)}) hasta ahora
+          </p>
+          <div className="mt-2 max-w-xl text-sm">
+            <div className="flex justify-between border-b border-border py-1.5 text-xs text-muted">
+              <span>Ya rendido en {ok.parent.settlement_number}{ok.previous.length ? ` y ${ok.previous.map((x) => x.supplement_number).join(", ")}` : ""}</span>
+              <span className="tabular-nums">{money(ok.prior_net)}</span>
+            </div>
+            <div className="flex justify-between border-b border-border py-1.5">
+              <span>
+                Ventas de la ventana
+                <span className="ml-2 text-xs text-muted">
+                  {ok.breakdown.sold_units} {boxWord(ok.breakdown.sold_units)} en {ok.sales.length} despacho
+                  {ok.sales.length === 1 ? "" : "s"}
+                </span>
+                {ok.sales.length ? (
+                  <button
+                    type="button"
+                    className="ml-2 cursor-pointer text-[11px] text-link underline-offset-2 hover:underline"
+                    onClick={() => setShowSales((v) => !v)}
+                  >
+                    {showSales ? "ocultar detalle" : "ver detalle"}
+                  </button>
+                ) : null}
+              </span>
+              <span className="tabular-nums">{money(ok.breakdown.revenue)}</span>
+            </div>
+            {showSales && ok.sales.length ? (
+              <div className="border-b border-border py-1 text-xs text-muted">
+                {ok.sales.map((r) => (
+                  <div key={r.allocation_id} className="flex justify-between py-0.5">
+                    <span>
+                      {stamp(r.shipped_at)} · {r.so_number}
+                      {r.invoice_number ? ` · ${r.invoice_number}` : " · sin factura"} · {r.customer_name} · lote{" "}
+                      {r.lot_number} · {r.quantity} {r.unit} × {money(r.unit_price, 2)}
+                    </span>
+                    <span className="tabular-nums">{money(r.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {ok.expenses.map((e) => (
+              <div key={e.id} className="flex justify-between border-b border-border py-1.5">
+                <span>
+                  {e.category}
+                  <span className="ml-2 text-xs text-muted">
+                    {e.expense_number}
+                    {e.notes ? ` · ${e.notes}` : ""} · se descuenta al productor
+                  </span>
+                </span>
+                <span className="tabular-nums">−{money(e.amount)}</span>
+              </div>
+            ))}
+            <div className="flex justify-between border-b border-border py-1.5">
+              <span>
+                Comisión Plein
+                <span className="ml-2 text-xs text-muted">
+                  {ok.breakdown.commission_type === "per_unit"
+                    ? `${money(ok.breakdown.commission_rate, 2)} × ${ok.breakdown.sold_units} ${boxWord(ok.breakdown.sold_units)}`
+                    : ok.breakdown.commission_type === "gross_pct"
+                      ? `${ok.breakdown.commission_rate}% de ${money(ok.breakdown.commission_base)} (venta bruta)`
+                      : ok.breakdown.commission_type === "net_pct"
+                        ? `${ok.breakdown.commission_rate}% de ${money(ok.breakdown.commission_base)} (neto tras gastos)`
+                        : "sin comisión"}{" "}
+                  · la misma de {ok.parent.settlement_number}
+                </span>
+              </span>
+              <span className="tabular-nums">−{money(ok.breakdown.commission)}</span>
+            </div>
+            {ok.shrink_rows.map((v) => (
+              <div key={v.pack_out_id} className="flex items-start justify-between gap-3 border-b border-border py-1.5">
+                <span>
+                  Merma por reempaque <span className="font-mono">{v.pack_number}</span>
+                  <span className="ml-2 text-xs text-muted">
+                    {v.shrink_qty} {v.shrink_unit === "lb" ? "lb" : boxWord(v.shrink_qty)}
+                    {v.source_lots ? ` · lotes ${v.source_lots}` : ""}
+                    {v.reason ? ` · ${v.reason}` : ""}
+                  </span>
+                  <span className={`ml-2 text-[11px] ${v.charged_to === "plein" ? "text-warn" : "text-subtle"}`}>
+                    {v.charged_to === "plein" ? "la absorbe Plein — se paga al productor" : "la absorbe el productor — sin monto"}
+                  </span>
+                </span>
+                {v.charged_to !== "plein" ? (
+                  <span className="tabular-nums text-subtle">{money(0)}</span>
+                ) : v.needs_price ? (
+                  <span className="flex items-center gap-1 text-xs">
+                    <span className="text-muted">$ /{v.shrink_unit === "lb" ? "lb" : "caja"}</span>
+                    <Input
+                      className="w-24"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={prices[v.pack_out_id] ?? ""}
+                      onChange={(e) => setPrices((m) => ({ ...m, [v.pack_out_id]: e.target.value }))}
+                      onBlur={applyPrices}
+                    />
+                  </span>
+                ) : (
+                  <span className="tabular-nums">+{money(v.amount)}</span>
+                )}
+              </div>
+            ))}
+            {ok.dispositions.map((d) => (
+              <div key={d.id} className="flex justify-between border-b border-border py-1.5">
+                <span>
+                  {d.kind === "destroyed" ? "Destruida" : "Comprada por Plein"} · lote{" "}
+                  <span className="font-mono">{d.lot_number}</span> · {d.quantity} {d.unit}
+                  {d.reason ? <span className="ml-2 text-xs text-muted">{d.reason}</span> : null}
+                </span>
+                <span className={`tabular-nums ${d.kind === "destroyed" ? "text-subtle" : ""}`}>
+                  {d.kind === "destroyed" ? money(0) : `+${money(d.amount)}`}
+                </span>
+              </div>
+            ))}
+            <div className="flex justify-between py-2 text-base font-semibold">
+              <span>Neto de esta cuenta</span>
+              <span className={`tabular-nums ${ok.breakdown.net_to_grower < -0.009 ? "text-danger" : "text-ok"}`}>
+                {money(ok.breakdown.net_to_grower)}
+              </span>
+            </div>
+            {ok.breakdown.net_to_grower < -0.009 ? (
+              <p className="text-xs text-warn">
+                Sale negativa: el productor le queda a deber a Plein {money(-ok.breakdown.net_to_grower)}. Al emitir nace
+                un adelanto ADE- sin salida de caja (Chase no se mueve) que se recupera contra la siguiente liquidación
+                {openLiability ? `, aunque ${openLiability}` : ""}.
+              </p>
+            ) : null}
+          </div>
+          {ok.lots.some((l) => l.moved || l.opening_pending > 0.0005) ? (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[720px] text-left text-xs">
+                <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
+                  <tr>
+                    {["Lote", "Abre pendientes", "Vendidas", "Merma", "A reempaque", "Destruidas", "Compró Plein", "Cierra pendientes"].map((h) => (
+                      <th key={h} className="px-2 py-1.5 font-medium">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {ok.lots
+                    .filter((l) => l.moved || l.opening_pending > 0.0005)
+                    .map((l) => (
+                      <tr key={l.lot_id} className="border-b border-border">
+                        <td className="px-2 py-1.5 font-medium text-link">
+                          {l.lot_number}
+                          {l.origin !== "pending" ? (
+                            <span className="ml-1 text-[10px] text-muted">
+                              nuevo ({l.origin === "repack" ? "reempaque" : "recepción"})
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-2 py-1.5 tabular-nums">{l.opening_pending}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{l.sold_qty}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{l.waste_qty}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{l.repacked_out_qty}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{l.destroyed_qty}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{l.plein_bought_qty}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{Math.max(l.closing_pending, 0)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+          {ok.destruction.destroyed_equiv_qty > 0.0005 ? (
+            <p className="mt-2 text-xs text-muted">
+              Destruido en esta ventana: {Math.round(ok.destruction.destroyed_equiv_qty * 100) / 100}{" "}
+              {boxWord(ok.destruction.destroyed_equiv_qty)} equivalentes. Acumulado del embarque:{" "}
+              <strong className={ok.destruction.needs_certificate ? "text-warn" : ""}>
+                {ok.destruction.destroyed_cum_pct.toFixed(1)} %
+              </strong>{" "}
+              ({Math.round(ok.destruction.destroyed_cum_equiv_qty * 100) / 100} de {ok.destruction.received_qty} recibidas).
+              {ok.destruction.needs_certificate && ok.destruction.certificate
+                ? ` Certificado ${ok.destruction.certificate.certificate_number} listo para esta cuenta.`
+                : ""}
+            </p>
+          ) : null}
+          {ok.blocks.length ? (
+            <div className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-3 text-sm text-danger">
+              <p className="font-semibold">No se puede emitir la complementaria todavía.</p>
+              {ok.blocks.map((b, i) => (
+                <p key={i} className="mt-1">
+                  {b}
+                </p>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
+            {ok.deal_type === "comision" && ok.grower_balance > 0 && ok.breakdown.net_to_grower > 0.009 ? (
+              <Field label="Recuperar adelantos al emitir ($)">
+                <Input className="w-32" value={recover} onChange={(e) => setRecover(e.target.value)} />
+              </Field>
+            ) : null}
+            <Button size="sm" disabled={saving || ok.blocks.length > 0} onClick={() => void emitir()}>
+              Emitir complementaria {ok.supplement_number}
+            </Button>
+            <p className="ml-auto max-w-md text-xs text-muted">
+              Congela lo nuevo tal como está hoy y le da folio colgado de {ok.parent.settlement_number}. El PDF se
+              lee solo: dice qué se rindió antes, qué periodo abarca y cada venta con su OV, factura y cliente.
+              {ok.deal_type === "comision" && ok.grower_balance > 0
+                ? ` El productor tiene ${money(ok.grower_balance)} en adelantos vivos — aquí decides cuánto se recupera (puede ser cero).`
+                : ""}
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

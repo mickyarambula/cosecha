@@ -393,6 +393,31 @@ function Page() {
                 </div>
               ) : vtab === "account" ? (
                 <div className="mt-3">
+                  {(account.data?.plein_balance ?? 0) > 0.009 ? (
+                    <div className="mb-3 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-sm text-warn">
+                      Saldo a favor de Plein por cuentas complementarias negativas:{" "}
+                      <strong className="tabular-nums">{money(account.data?.plein_balance ?? 0)}</strong>{" "}
+                      (
+                      {(account.data?.advances ?? [])
+                        .filter((a) => a.supplement_id != null && a.balance > 0.009)
+                        .map((a) => `${a.advance_number} de ${a.supplement_number}`)
+                        .join(", ")}
+                      , sin salida de caja).{" "}
+                      {(account.data?.open_liabilities ?? []).length ? (
+                        <>
+                          Al mismo tiempo Plein le debe a este productor{" "}
+                          <strong className="tabular-nums">{money(account.data?.open_liabilities_total ?? 0)}</strong>{" "}
+                          en{" "}
+                          {(account.data?.open_liabilities ?? [])
+                            .map((l) => `${l.number} (${money(l.remaining)})`)
+                            .join(", ")}
+                          . El adelanto se recupera contra la siguiente liquidación.
+                        </>
+                      ) : (
+                        "Se recupera contra la siguiente liquidación."
+                      )}
+                    </div>
+                  ) : null}
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm">
                       Saldo vivo de adelantos:{" "}
@@ -439,6 +464,16 @@ function Page() {
                             <td className="px-2 py-2">{fecha(a.advance_date)}</td>
                             <td className="px-2 py-2">
                               {a.concept}
+                              {a.supplement_id != null ? (
+                                <a
+                                  href={`/doc/liq/${a.supplement_token}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="ml-2 text-xs text-link underline-offset-2 hover:underline"
+                                >
+                                  ver cuenta {a.supplement_number}
+                                </a>
+                              ) : null}
                               {a.notes ? <span className="ml-2 text-xs text-muted">{a.notes}</span> : null}
                             </td>
                             <td className="px-2 py-2">{a.po_number || "—"}</td>
