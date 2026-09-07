@@ -21,8 +21,12 @@ export const Route = createFileRoute("/cuentas")({
 // entre sí) sin reemplazo en español. Los demás quedan como su concepto en
 // español: mismo patrón que WASTE_REASONS, sin reescribir gastos ya
 // guardados con el nombre en inglés — esos se quedan como están.
+// "Fletes" y "Seguros" ya estaban sembrados en español desde el inicio
+// (money_concepts) pero nunca aparecían aquí para mapearse a su cuenta —
+// currentOf() solo buscaba "Freight"/"Insurance". Se agregan los dos.
 const EXPENSE_KEYS = [
   "Freight",
+  "Fletes",
   "Servicios de inspección",
   "Control de calidad",
   "Advertising",
@@ -32,6 +36,7 @@ const EXPENSE_KEYS = [
   "Cuotas y suscripciones",
   "Equipo",
   "Insurance",
+  "Seguros",
   "Honorarios legales y profesionales",
   "Mantenimiento y reparaciones",
   "Materials",

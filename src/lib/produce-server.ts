@@ -7520,7 +7520,10 @@ export const getFinancials = createServerFn({ method: "GET" })
       if (number === "40000") return sales;
       if (number === "40002") return credits;
       if (number === "50000") return cogs;
-      if (number === "51000") return expByCat.Freight || 0;
+      // "Freight" (inglés) y "Fletes" (español, sembrado desde el inicio en
+      // money_concepts bajo Costo) son el MISMO concepto — el código solo
+      // buscaba el inglés y "Fletes" se iba al cajón 59999 desde siempre.
+      if (number === "51000") return (expByCat.Freight || 0) + (expByCat.Fletes || 0);
       if (number === "53000")
         // "Dues & Subscriptions" ya está en gastos guardados antes de esta
         // sesión; "Cuotas y suscripciones" es el mismo concepto en español,
@@ -7533,19 +7536,24 @@ export const getFinancials = createServerFn({ method: "GET" })
           (expByCat["Cuotas y suscripciones"] || 0)
         );
       if (number === "55000")
+        // Mismo caso que Fletes/Freight: "Seguros" es el concepto sembrado en
+        // español para "Insurance" y el código nunca lo reconocía.
         return (
           (expByCat.Insurance || 0) +
+          (expByCat.Seguros || 0) +
           (expByCat["Legal & Professional fees"] || 0) +
           (expByCat["Honorarios legales y profesionales"] || 0)
         );
       if (number === "59999") {
         const known = /* @__PURE__ */ new Set([
           "Freight",
+          "Fletes",
           "Supplies",
           "Boxes",
           "Dues & Subscriptions",
           "Cuotas y suscripciones",
           "Insurance",
+          "Seguros",
           "Legal & Professional fees",
           "Honorarios legales y profesionales",
         ]);
