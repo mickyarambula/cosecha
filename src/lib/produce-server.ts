@@ -3088,7 +3088,7 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
         );
       if (s.destruction.needs_certificate && !s.destruction.certificate)
         throw new Error(
-          `Lo destruido llega a ${s.destruction.destroyed_pct.toFixed(1)} % del embarque (${qtyText(s.destruction.destroyed_equiv_qty)} de ${qtyText(s.destruction.received_qty)} cajas recibidas): PACA exige adjuntar el certificado oficial de destrucción antes de emitir.`,
+          `Lo destruido llega a ${s.destruction.destroyed_pct.toFixed(1)} % del embarque (${qtyText(s.destruction.destroyed_equiv_qty)} de ${qtyText(s.destruction.received_qty)} ${boxWord(s.destruction.received_qty)} recibidas): PACA exige adjuntar el certificado oficial de destrucción antes de emitir.`,
         );
     }
     const pendingPrice = s.shrink_rows.filter((r) => r.needs_price);
@@ -6390,6 +6390,12 @@ function money2(v: number) {
 function qtyText(v: number) {
   return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
+// "1 cajas" es incorrecto en español. Redondea igual que qtyText (2
+// decimales) antes de decidir, para que la palabra y el número mostrado
+// nunca se contradigan.
+function boxWord(v: number) {
+  return Math.round(v * 100) / 100 === 1 ? "caja" : "cajas";
+}
 function partyOf(row) {
   const loc = [row.city, row.country].filter(Boolean).join(", ");
   return {
@@ -6454,7 +6460,7 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         iso ? iso.slice(0, 10).split("-").reverse().join("/") : "";
       const commissionLabel =
         liq.commission_type === "per_unit"
-          ? `${money2(n(liq.commission_rate))} por caja × ${n(liq.sold_units)} cajas`
+          ? `${money2(n(liq.commission_rate))} por caja × ${qtyText(n(liq.sold_units))} ${boxWord(n(liq.sold_units))}`
           : liq.commission_type === "gross_pct"
             ? `${n(liq.commission_rate)}% sobre venta bruta`
             : `${n(liq.commission_rate)}% sobre neto tras gastos`;
@@ -6609,7 +6615,7 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         );
       const destructionText =
         liq.received_qty != null
-          ? ` Destruido en total: ${qtyText(n(liq.destroyed_equiv_qty))} cajas equivalentes de ${qtyText(n(liq.received_qty))} recibidas (${n(liq.destroyed_pct).toFixed(1)} % del embarque)${
+          ? ` Destruido en total: ${qtyText(n(liq.destroyed_equiv_qty))} ${boxWord(n(liq.destroyed_equiv_qty))} equivalentes de ${qtyText(n(liq.received_qty))} recibidas (${n(liq.destroyed_pct).toFixed(1)} % del embarque)${
               liq.certificate_number
                 ? ` — certificado oficial de destrucción No. ${liq.certificate_number}${liq.certificate_date ? ` del ${dmyLiq(liq.certificate_date)}` : ""}, original adjunto a esta cuenta`
                 : ""
@@ -7514,21 +7520,42 @@ export const getFinancials = createServerFn({ method: "GET" })
       if (number === "40000") return sales;
       if (number === "40002") return credits;
       if (number === "50000") return cogs;
-      if (number === "51000") return expByCat.Freight || 0;
+      // "Freight" (inglés) y "Fletes" (español, sembrado desde el inicio en
+      // money_concepts bajo Costo) son el MISMO concepto — el código solo
+      // buscaba el inglés y "Fletes" se iba al cajón 59999 desde siempre.
+      if (number === "51000") return (expByCat.Freight || 0) + (expByCat.Fletes || 0);
       if (number === "53000")
+        // "Dues & Subscriptions" ya está en gastos guardados antes de esta
+        // sesión; "Cuotas y suscripciones" es el mismo concepto en español,
+        // de aquí en adelante — se suman los dos, nunca se reescribe uno por
+        // el otro.
         return (
-          (expByCat.Supplies || 0) + (expByCat.Boxes || 0) + (expByCat["Dues & Subscriptions"] || 0)
+          (expByCat.Supplies || 0) +
+          (expByCat.Boxes || 0) +
+          (expByCat["Dues & Subscriptions"] || 0) +
+          (expByCat["Cuotas y suscripciones"] || 0)
         );
       if (number === "55000")
-        return (expByCat.Insurance || 0) + (expByCat["Legal & Professional fees"] || 0);
+        // Mismo caso que Fletes/Freight: "Seguros" es el concepto sembrado en
+        // español para "Insurance" y el código nunca lo reconocía.
+        return (
+          (expByCat.Insurance || 0) +
+          (expByCat.Seguros || 0) +
+          (expByCat["Legal & Professional fees"] || 0) +
+          (expByCat["Honorarios legales y profesionales"] || 0)
+        );
       if (number === "59999") {
         const known = /* @__PURE__ */ new Set([
           "Freight",
+          "Fletes",
           "Supplies",
           "Boxes",
           "Dues & Subscriptions",
+          "Cuotas y suscripciones",
           "Insurance",
+          "Seguros",
           "Legal & Professional fees",
+          "Honorarios legales y profesionales",
         ]);
         return Object.entries(expByCat).reduce((s, [k, v]) => s + (known.has(k) ? 0 : v), 0);
       }
