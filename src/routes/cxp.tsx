@@ -199,7 +199,12 @@ function Page() {
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <p className="font-mono text-xs text-muted">
-                      {p.payable_number} · {p.settlement_number} · {p.po_number}
+                      {p.payable_number} · {p.supplement_number ?? p.settlement_number} · {p.po_number}
+                      {p.supplement_number ? (
+                        <span className="ml-2 font-sans normal-case">
+                          complementaria de {p.settlement_number}
+                        </span>
+                      ) : null}
                     </p>
                     <h3 className="font-display text-lg font-semibold">{p.supplier_name}</h3>
                     <p className="text-xs text-muted">{fecha(p.issue_date)}</p>
@@ -208,14 +213,22 @@ function Page() {
                     <Badge tone={orderTone(p.status)}>{orderLabel(p.status)}</Badge>
                     <a
                       className="text-xs text-link"
-                      href={`/doc/liq/${p.settlement_token}`}
+                      href={`/doc/liq/${p.supplement_token ?? p.settlement_token}`}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Ver liquidación
+                      {p.supplement_number ? "Ver complementaria" : "Ver liquidación"}
                     </a>
                   </div>
                 </div>
+                {p.against_advances && p.saldo > 0.009 && p.status !== "cancelled" ? (
+                  <p className="mt-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-xs text-warn">
+                    Adelanto en contra del productor: {p.against_advances.numbers} por{" "}
+                    {money(p.against_advances.balance)} (saldo a favor de Plein por una cuenta
+                    complementaria negativa, sin salida de caja). Esta remisión sigue abierta al mismo
+                    tiempo; el adelanto se recupera contra la siguiente liquidación.
+                  </p>
+                ) : null}
                 <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
                   <div>
                     <p className="text-xs text-muted">Total</p>
