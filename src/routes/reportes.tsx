@@ -81,6 +81,7 @@ function Page() {
                 <th className="px-3 py-2 text-right">{t("Expenses")}</th>
                 <th className="px-3 py-2 text-right">{t("Profit")}</th>
                 <th className="px-3 py-2 text-right">{t("Balance due")}</th>
+                <th className="px-3 py-2">Liquidación</th>
                 <th className="px-3 py-2">{t("Sign-off")}</th>
               </tr>
             </thead>
@@ -100,6 +101,17 @@ function Page() {
                   <td className="px-3 py-2 text-right tabular-nums">{money(r.expenses)}</td>
                   <td className={`px-3 py-2 text-right tabular-nums ${r.profit < 0 ? "text-danger" : ""}`}>{money(r.profit)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{money(r.balance_due)}</td>
+                  <td className="px-3 py-2 text-xs">
+                    {r.settlement_number ? (
+                      <>
+                        <span className="font-mono">{r.settlement_number}</span>
+                        {r.supplements ? ` + ${r.supplements} compl.` : ""} · neto productor{" "}
+                        <span className="tabular-nums">{money(r.net_to_grower)}</span>
+                      </>
+                    ) : (
+                      <span className="text-muted">sin emitir (cálculo vivo)</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-xs">{r.signed_off ? t("Signed") : t(orderLabel(r.status))}</td>
                 </tr>
               ))}

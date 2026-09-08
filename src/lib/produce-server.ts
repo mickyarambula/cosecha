@@ -2813,7 +2813,7 @@ async function loadSettlement(
               coalesce(po.vendor_share_level,'po') as vendor_share_level,
               coalesce(po.signed_off,false) as signed_off,
               coalesce(po.deal_type,'firme') as deal_type,
-              po.commission_type, po.commission_rate::text
+              po.commission_type, po.commission_rate::text, po.liquidated_at::text
        from purchase_orders po join suppliers s on s.id = po.supplier_id
        where po.id = $1`,
     [purchase_order_id],
@@ -2917,6 +2917,7 @@ async function loadSettlement(
     [purchase_order_id],
   );
   const supplements = await loadSupplementRows(sql, purchase_order_id);
+  const adjustments = await loadAdjustments(sql, purchase_order_id);
   // La remisión (REM-) de la LIQ padre, para decir en pantalla si sigue
   // abierta cuando una complementaria negativa deja un adelanto en contra.
   const [parentPayable] = await sql.query(
@@ -3051,6 +3052,8 @@ async function loadSettlement(
         }
       : null,
     supplements,
+    adjustments,
+    liquidated_at: po.liquidated_at ? String(po.liquidated_at) : null,
     parent_payable: parentPayable
       ? {
           payable_number: String(parentPayable.payable_number),
@@ -3134,6 +3137,12 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
       throw new Error(
         `Esta carga ya tiene liquidación ${s.settlement.settlement_number} — el documento emitido no se recalcula.`,
       );
+    // C-2a: una bill de consignación creada antes de emitir tiene que cuadrar
+    // con lo que se congela; si no, se cancela y se vuelve a crear después.
+    if (s.deal_type === "consignacion" && s.bill && Math.abs(s.bill.total - s.breakdown.net_to_grower) > 0.011)
+      throw new Error(
+        `La factura ${s.bill.bill_number} se creó por ${money2(s.bill.total)} antes de emitir y la cuenta da ${money2(s.breakdown.net_to_grower)}. Cancela ${s.bill.bill_number} (y su pago, si lo tiene, en Finanzas → Tesorería) y vuelve a crearla después de emitir: nacerá del documento.`,
+      );
     const [po] = await sql.query(`select supplier_id from purchase_orders where id = $1`, [
       data.purchase_order_id,
     ]);
@@ -3193,6 +3202,31 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
         ],
       )
     )[0].id;
+    // C-2a: marca de congelado. Desde aquí la carga solo cambia por
+    // complementaria; nunca se apaga.
+    await sql.query(
+      `update purchase_orders
+          set liquidated_at = (select created_at from grower_settlements where id = $1), liquidated_by = $2
+        where id = $3`,
+      [settlementId, context.userId ?? null, data.purchase_order_id],
+    );
+    // C-2a: en consignación Plein sí compra la fruta, así que el costo de los
+    // lotes se escribe UNA vez, desde el neto congelado (mismo reparto que
+    // hacía "Update lot costs", que queda bloqueado tras emitir). En comisión
+    // pura Plein no toma título: el costo se queda en cero a propósito.
+    if (s.deal_type === "consignacion") {
+      for (const lot of s.lots) {
+        await sql.query(`update lots set unit_cost = $1 where id = $2`, [lot.cost_unit, lot.id]);
+        await sql.query(
+          `update purchase_order_lines set unit_cost = $1
+           where purchase_order_id = $2 and product_id = (select product_id from lots where id = $3)`,
+          [lot.cost_unit, data.purchase_order_id, lot.id],
+        );
+      }
+      await sql.query(`update purchase_orders set costing_mode = 'pas' where id = $1`, [
+        data.purchase_order_id,
+      ]);
+    }
     for (const sp of splits)
       await sql.query(
         `insert into settlement_advance_applications (advance_id, settlement_id, purchase_order_id, amount)
@@ -3324,6 +3358,207 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
       final_payment,
       payable_number,
     };
+  });
+// ── Candados de la carga liquidada (Bloque C-2a) ────────────────────────────
+// Marca de congelado: purchase_orders.liquidated_at. Solo la enciende
+// issueGrowerSettlement, que rechaza firme, así que en una carga firme ningún
+// candado de este bloque se dispara. Regla del bloque: cada candado nombra el
+// camino legítimo; lo que no tenía salida no se bloqueó.
+type LiquidatedInfo = {
+  po_number: string;
+  liquidated_at: string;
+  settlement_number: string;
+  supplements: number;
+  commission_type: string | null;
+  commission_rate: number;
+};
+async function liquidatedInfo(sql, purchase_order_id: number): Promise<LiquidatedInfo | null> {
+  const [row] = await sql.query(
+    `select po.po_number, po.liquidated_at::text, gs.settlement_number, gs.commission_type, gs.commission_rate::text,
+            (select count(*)::text from grower_settlement_supplements sup where sup.purchase_order_id = po.id) as supplements
+     from purchase_orders po
+     left join grower_settlements gs on gs.purchase_order_id = po.id
+     where po.id = $1`,
+    [purchase_order_id],
+  );
+  if (!row || !row.liquidated_at) return null;
+  return {
+    po_number: String(row.po_number),
+    liquidated_at: String(row.liquidated_at),
+    settlement_number: row.settlement_number ? String(row.settlement_number) : "la liquidación",
+    supplements: n(row.supplements),
+    commission_type: row.commission_type ?? null,
+    commission_rate: n(row.commission_rate),
+  };
+}
+function liqLabel(info: LiquidatedInfo) {
+  return `${info.settlement_number}${
+    info.supplements > 0 ? ` (y ${info.supplements} complementaria${info.supplements === 1 ? "" : "s"})` : ""
+  }`;
+}
+function commissionText(type: string | null, rate: number) {
+  return type === "per_unit"
+    ? `${money2(rate)} por caja`
+    : type === "gross_pct"
+      ? `${rate}% sobre venta bruta`
+      : type === "net_pct"
+        ? `${rate}% sobre neto tras gastos`
+        : "sin comisión";
+}
+/**
+ * ¿Este gasto ya se le rindió al productor? Busca su id en el detalle de la
+ * LIQ y de las complementarias; para LIQ emitidas antes de 0037 (sin id) vale
+ * la regla: gasto al productor de esa carga, anterior a la emisión.
+ */
+async function renderedExpenseDoc(
+  sql,
+  expense_id: number,
+): Promise<{ doc: string; amount: number; legacy: boolean } | null> {
+  const [a] = await sql.query(
+    `select gs.settlement_number as doc, gse.amount::text
+     from grower_settlement_expenses gse join grower_settlements gs on gs.id = gse.settlement_id
+     where gse.expense_id = $1 limit 1`,
+    [expense_id],
+  );
+  if (a) return { doc: String(a.doc), amount: n(a.amount), legacy: false };
+  const [b] = await sql.query(
+    `select sup.supplement_number as doc, e.amount::text
+     from grower_settlement_supplement_expenses e join grower_settlement_supplements sup on sup.id = e.supplement_id
+     where e.expense_id = $1 limit 1`,
+    [expense_id],
+  );
+  if (b) return { doc: String(b.doc), amount: n(b.amount), legacy: false };
+  const [c] = await sql.query(
+    `select gs.settlement_number as doc, e.amount::text
+     from expenses e
+     join grower_settlements gs on gs.purchase_order_id = e.purchase_order_id
+     where e.id = $1 and coalesce(e.charged_to,'plein') = 'grower' and e.cancelled_at is null
+       and e.created_at <= gs.created_at
+       and not exists (select 1 from grower_settlement_expenses x where x.settlement_id = gs.id and x.expense_id is not null)
+     limit 1`,
+    [expense_id],
+  );
+  return c ? { doc: String(c.doc), amount: n(c.amount), legacy: true } : null;
+}
+function renderedExpenseMessage(label: string, doc: string, amount: number, kind: "more" | "adjust" | "to_grower") {
+  if (kind === "more")
+    return `El gasto ${label} ya se le rindió al productor en ${doc} por ${money2(amount)}: no se edita. Si faltó cobrar, captura un gasto nuevo por la diferencia; entra a la siguiente cuenta complementaria.`;
+  if (kind === "to_grower")
+    return `${label} quedó a cargo de Plein cuando se rindió ${doc}: no cambia. Si el productor sí debe pagarlo, captura un gasto nuevo al productor por ese monto; entra a la siguiente cuenta complementaria.`;
+  return `El gasto ${label} ya se le rindió al productor en ${doc} por ${money2(amount)}: no se edita ni se cancela. Si se cobró de más o no debía cobrarse, captura un ajuste a favor del productor en Calcular liquidación → Cuenta complementaria, con el motivo.`;
+}
+function oldExpenseLinkMessage(info: LiquidatedInfo) {
+  return `${info.po_number} ya tiene liquidación ${info.settlement_number} y este gasto es anterior a esa fecha: no se puede ligar después de rendir cuentas. Captúralo como gasto nuevo con fecha de hoy para que entre a la cuenta complementaria.`;
+}
+type AdjustmentRow = {
+  id: number;
+  amount: number;
+  reason: string;
+  expense_id: number | null;
+  expense_number: string | null;
+  supplement_id: number | null;
+  supplement_number: string | null;
+  created_at: string;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+};
+async function loadAdjustments(sql, purchase_order_id: number): Promise<AdjustmentRow[]> {
+  const rows = await sql.query(
+    `select a.id, a.amount::text, a.reason, a.expense_id, e.expense_number, a.supplement_id, sup.supplement_number,
+            a.created_at::text, a.cancelled_at::text, a.cancel_reason
+     from grower_adjustments a
+     left join expenses e on e.id = a.expense_id
+     left join grower_settlement_supplements sup on sup.id = a.supplement_id
+     where a.purchase_order_id = $1 order by a.id`,
+    [purchase_order_id],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    amount: n(r.amount),
+    reason: String(r.reason),
+    expense_id: r.expense_id ?? null,
+    expense_number: r.expense_number ? String(r.expense_number) : null,
+    supplement_id: r.supplement_id ?? null,
+    supplement_number: r.supplement_number ? String(r.supplement_number) : null,
+    created_at: String(r.created_at),
+    cancelled_at: r.cancelled_at ?? null,
+    cancel_reason: r.cancel_reason ?? null,
+  }));
+}
+/**
+ * Ajuste a favor del productor: la salida de los candados de dinero. Un gasto
+ * rendido de más, cancelado, desligado o que en realidad absorbe Plein no se
+ * edita: se captura aquí, con motivo, y entra a la siguiente cuenta
+ * complementaria como renglón a favor del productor.
+ */
+export const addGrowerAdjustment = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      purchase_order_id: z.number(),
+      amount: z.number().positive(),
+      reason: z.string().min(1),
+      expense_id: z.number().optional(),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [po] = await sql.query(
+      `select id, po_number, supplier_id, liquidated_at::text from purchase_orders where id = $1`,
+      [data.purchase_order_id],
+    );
+    if (!po) throw new Error("Orden de compra no encontrada");
+    if (!po.liquidated_at)
+      throw new Error(
+        `${po.po_number} todavía no tiene liquidación emitida: corrige el gasto directamente en Finanzas → Gastos. El ajuste a favor del productor es para gastos que ya se rindieron.`,
+      );
+    if (!data.reason.trim()) throw new Error("El ajuste exige un motivo: PACA pide justificar cada corrección al productor.");
+    let expenseNumber: string | null = null;
+    if (data.expense_id != null) {
+      const [e] = await sql.query(
+        `select id, expense_number, purchase_order_id from expenses where id = $1`,
+        [data.expense_id],
+      );
+      if (!e) throw new Error("Gasto no encontrado");
+      if (e.purchase_order_id !== po.id && e.purchase_order_id != null)
+        throw new Error(`${e.expense_number} no es un gasto de ${po.po_number}.`);
+      expenseNumber = String(e.expense_number);
+    }
+    const staffName = await staffNameFor(sql, context.userId);
+    const id = (
+      await sql.query(
+        `insert into grower_adjustments (purchase_order_id, supplier_id, amount, reason, expense_id, created_by)
+         values ($1,$2,$3,$4,$5,$6) returning id`,
+        [po.id, po.supplier_id, round2(data.amount), data.reason.trim(), data.expense_id ?? null, staffName],
+      )
+    )[0].id as number;
+    return { id, amount: round2(data.amount), expense_number: expenseNumber };
+  });
+export const cancelGrowerAdjustment = createServerFn({ method: "POST" })
+  .validator(z.object({ adjustment_id: z.number(), reason: z.string().optional() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [a] = await sql.query(
+      `select a.id, a.amount::text, a.cancelled_at::text, a.supplement_id, sup.supplement_number, po.po_number
+       from grower_adjustments a
+       join purchase_orders po on po.id = a.purchase_order_id
+       left join grower_settlement_supplements sup on sup.id = a.supplement_id
+       where a.id = $1`,
+      [data.adjustment_id],
+    );
+    if (!a) throw new Error("Ajuste no encontrado");
+    if (a.cancelled_at) throw new Error("Este ajuste ya estaba cancelado.");
+    if (a.supplement_id)
+      throw new Error(
+        `Este ajuste ya quedó rendido en ${a.supplement_number} de ${a.po_number}: lo congelado no se deshace.`,
+      );
+    const staffName = await staffNameFor(sql, context.userId);
+    await sql.query(
+      `update grower_adjustments set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`,
+      [staffName, data.reason?.trim() || null, a.id],
+    );
+    return { ok: true, amount: n(a.amount) };
   });
 // ── Liquidación complementaria (Bloque C-1a) ────────────────────────────────
 // Una LIQ- emitida no cierra la carga: después se venden las cajas que
@@ -3559,6 +3794,12 @@ async function computeSupplement(
     else destroyed_equiv_qty += d.origin_equiv_qty;
   }
 
+  // ── Ajustes a favor del productor aún sin rendir (C-2a) ─────────────────
+  const adjustmentRows = (await loadAdjustments(sql, purchase_order_id)).filter(
+    (a) => !a.cancelled_at && a.supplement_id == null,
+  );
+  const adjustment_total = round2(adjustmentRows.reduce((s, a) => s + a.amount, 0));
+
   // ── Merma de bodega y salidas a reempaque de la ventana, por lote ───────
   const wasteMap = new Map<number, number>(
     (
@@ -3766,7 +4007,15 @@ async function computeSupplement(
         [f.expense_id],
       );
       const label = `${live?.expense_number ?? f.category} (${f.category}${f.notes ? `, ${f.notes}` : ""})`;
-      if (!live || live.cancelled_at)
+      // C-2a: si el gasto rendido ya tiene su ajuste a favor del productor
+      // (vivo o ya rendido), la corrección está documentada: no bloquea.
+      const [adjusted] = await sql.query(
+        `select 1 as x from grower_adjustments where expense_id = $1 and cancelled_at is null limit 1`,
+        [f.expense_id],
+      );
+      if (adjusted) {
+        if (live?.id) matchedLive.add(live.id as number);
+      } else if (!live || live.cancelled_at)
         blocks.push(
           `El gasto ${label} se canceló después de rendirlo en ${f.doc} por ${money2(f.amount)}. Si de verdad no se debía cobrar, ese ajuste necesita quedar documentado: vuelve a capturarlo por ${money2(f.amount)} al productor para poder emitir, y el crédito se rinde por separado.`,
         );
@@ -3836,8 +4085,11 @@ async function computeSupplement(
     commission_base = revenue - grower_expenses;
     commission = round2((Math.max(0, commission_base) * frozenRate) / 100);
   }
+  // El ajuste a favor del productor NO entra a la base de la comisión (igual
+  // que la merma pagada por Plein y la compra del remanente): es dinero que
+  // se le devuelve, no una venta. Solo suma al neto.
   const net_to_grower = round2(
-    revenue - grower_expenses - commission + shrink_compensation + plein_purchase_total,
+    revenue - grower_expenses - commission + shrink_compensation + plein_purchase_total + adjustment_total,
   );
   const prior_net = round2(n(parent.net_to_grower) + previous.reduce((a, p) => a + p.net_to_grower, 0));
   const has_activity =
@@ -3845,6 +4097,7 @@ async function computeSupplement(
     expenseRows.length > 0 ||
     shrinkRows.length > 0 ||
     dispositionRows.length > 0 ||
+    adjustmentRows.length > 0 ||
     lotRows.some((l) => l.moved);
   if (!has_activity)
     blocks.push(`No hay movimientos nuevos desde ${since_number}: no hay nada que rendir todavía.`);
@@ -3922,6 +4175,7 @@ async function computeSupplement(
     expenses: expenseRows,
     shrink_rows: shrinkRows,
     dispositions: dispositionRows,
+    adjustments: adjustmentRows,
     lots: lotRows,
     breakdown: {
       commission_type: frozenType,
@@ -3933,6 +4187,7 @@ async function computeSupplement(
       commission,
       shrink_compensation,
       plein_purchase_total,
+      adjustment_total,
       net_to_grower,
     },
     prior_net,
@@ -4178,6 +4433,20 @@ export const issueSettlementSupplement = createServerFn({ method: "POST" })
       );
       await sql.query(`update lot_dispositions set supplement_id = $1 where id = $2`, [supplementId, d.id]);
     }
+    // Ajustes a favor del productor (C-2a): congelados con su motivo y ligados;
+    // desde aquí ya no se deshacen.
+    for (const a of c.adjustments) {
+      await sql.query(
+        `insert into grower_settlement_supplement_adjustments (supplement_id, adjustment_id, expense_number, reason, amount)
+         values ($1,$2,$3,$4,$5)`,
+        [supplementId, a.id, a.expense_number, a.reason, a.amount],
+      );
+      await sql.query(`update grower_adjustments set supplement_id = $1 where id = $2`, [supplementId, a.id]);
+    }
+    await sql.query(`update grower_settlement_supplements set adjustment_total = $1 where id = $2`, [
+      c.breakdown.adjustment_total,
+      supplementId,
+    ]);
     // El dinero: REM- (comisión pura) o FAC- adicional (consignación) si el
     // productor cobra; ADE- sin caja si el productor quedó a deber.
     let payable_number: string | null = null;
@@ -4621,6 +4890,13 @@ export const applySettlement = createServerFn({ method: "POST" })
       throw new Error(
         "Comisión pura: el costo de estos lotes se queda en cero — no hay compra que liquidar.",
       );
+    // C-2a: con liquidación emitida el costo ya quedó escrito desde el
+    // documento (issueGrowerSettlement); nada lo reescribe después.
+    const liq = await liquidatedInfo(sql, data.purchase_order_id);
+    if (liq)
+      throw new Error(
+        `El costo de los lotes de ${liq.po_number} quedó fijado al emitir ${liq.settlement_number}. La factura de proveedor nace del documento emitido (botón "Factura de proveedor"); no hay nada que recalcular.`,
+      );
     if (data.target_profit_pct != null)
       await sql.query(`update purchase_orders set target_profit_pct = $1 where id = $2`, [
         data.target_profit_pct,
@@ -4701,6 +4977,13 @@ export const setPoCommission = createServerFn({ method: "POST" })
       throw new Error(
         "Trato en firme: el precio ya está cerrado, no lleva comisión de liquidación.",
       );
+    // C-2a: la comisión con la que se rindió cuentas es la que aplica a esa
+    // carga. No hay nada que corregir: las pendientes se rinden con la misma.
+    const liq = await liquidatedInfo(sql, data.purchase_order_id);
+    if (liq)
+      throw new Error(
+        `La comisión de ${liq.po_number} quedó fija al emitir ${liq.settlement_number}: ${commissionText(liq.commission_type, liq.commission_rate)}. Las cajas pendientes se rinden con esa misma comisión en la cuenta complementaria.`,
+      );
     if (data.commission_type != null && !(n(data.commission_rate) > 0))
       throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
     await sql.query(
@@ -4723,8 +5006,25 @@ export const setExpenseChargedTo = createServerFn({ method: "POST" })
   .middleware([moduleMiddleware("finance")])
   .handler(async ({ data }) => {
     const sql = await getSql();
-    const [exp] = await sql.query(`select id from expenses where id = $1`, [data.expense_id]);
+    const [exp] = await sql.query(
+      `select id, expense_number, category, coalesce(charged_to,'plein') as charged_to from expenses where id = $1`,
+      [data.expense_id],
+    );
     if (!exp) throw new Error("Gasto no encontrado");
+    // C-2a: quién absorbe un gasto ya rendido no cambia. Plein → Productor se
+    // cobra con un gasto nuevo; Productor → Plein se devuelve con un ajuste.
+    if (data.charged_to !== exp.charged_to) {
+      const rendered = await renderedExpenseDoc(sql, exp.id);
+      if (rendered)
+        throw new Error(
+          renderedExpenseMessage(
+            `${exp.expense_number} (${exp.category})`,
+            rendered.doc,
+            rendered.amount,
+            data.charged_to === "grower" ? "to_grower" : "adjust",
+          ),
+        );
+    }
     await sql.query(`update expenses set charged_to = $1 where id = $2`, [
       data.charged_to,
       data.expense_id,
@@ -5046,10 +5346,18 @@ export const wasteLot = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [lot] = await sql.query(
-      `select id, current_qty::text, unit, lot_number from lots where id = $1`,
+      `select id, current_qty::text, unit, lot_number, purchase_order_id from lots where id = $1`,
       [data.lot_id],
     );
     if (!lot) throw new Error("Lot not found");
+    // C-2a: fruta consignada que se echa a perder después de rendir cuentas se
+    // rinde como Destruida (con motivo y contando para el 5 % del embarque),
+    // no como merma de bodega.
+    const liq = lot.purchase_order_id != null ? await liquidatedInfo(sql, lot.purchase_order_id) : null;
+    if (liq)
+      throw new Error(
+        `${liq.po_number} ya tiene liquidación ${liq.settlement_number}: las cajas pendientes que se echaron a perder se registran como Destruida en Órdenes de compra → Calcular liquidación → Disposición del remanente (con certificado si el acumulado llega al 5 %). Así entran a la cuenta complementaria.`,
+      );
     if (data.quantity > n(lot.current_qty) + 1e-9)
       throw new Error("Cannot waste more than on-hand");
     await sql.query(
@@ -5182,8 +5490,43 @@ export const getVendorPortal = createServerFn({ method: "GET" })
        order by so.order_date, l.lot_number`,
       [po.id],
     );
+    // C-2c: con liquidación emitida el productor ve el documento congelado
+    // (padre + complementarias), no el cálculo vivo que contradecía al PDF.
+    const parentLiq = settlement.settlement;
+    const liquidation = parentLiq
+      ? {
+          settlement_number: parentLiq.settlement_number,
+          issue_date: parentLiq.issue_date,
+          share_token: parentLiq.share_token,
+          revenue: parentLiq.revenue,
+          grower_expenses: parentLiq.grower_expenses,
+          commission: parentLiq.commission,
+          net_to_grower: parentLiq.net_to_grower,
+          final_payment: parentLiq.final_payment,
+          supplements: settlement.supplements.map((x) => ({
+            supplement_number: x.supplement_number,
+            issue_date: x.issue_date,
+            period_start: x.period_start,
+            period_end: x.period_end,
+            revenue: x.revenue,
+            grower_expenses: x.grower_expenses,
+            commission: x.commission,
+            net_to_grower: x.net_to_grower,
+            final_payment: x.final_payment,
+            balance_due: x.balance_due,
+            share_token: x.share_token,
+          })),
+          revenue_total: round2(parentLiq.revenue + settlement.supplements.reduce((s, x) => s + x.revenue, 0)),
+          grower_expenses_total: round2(
+            parentLiq.grower_expenses + settlement.supplements.reduce((s, x) => s + x.grower_expenses, 0),
+          ),
+          commission_total: round2(parentLiq.commission + settlement.supplements.reduce((s, x) => s + x.commission, 0)),
+          net_total: round2(parentLiq.net_to_grower + settlement.supplements.reduce((s, x) => s + x.net_to_grower, 0)),
+        }
+      : null;
     return {
       ...settlement,
+      liquidation,
       expected_date: po.expected_date,
       vendor_invoice: po.vendor_invoice,
       bol: po.bol,
@@ -5485,10 +5828,24 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(
-      `select id, po_number, supplier_id, coalesce(deal_type,'firme') as deal_type from purchase_orders where id = $1`,
+      `select id, po_number, supplier_id, coalesce(deal_type,'firme') as deal_type, commission_type, commission_rate::text
+       from purchase_orders where id = $1`,
       [data.purchase_order_id],
     );
     if (!po) throw new Error("Orden de compra no encontrada");
+    // C-2a: con liquidación emitida se pueden corregir notas, BOL, factura del
+    // proveedor y fechas; la comisión no (es la del documento rendido).
+    const liq = await liquidatedInfo(sql, po.id);
+    if (liq) {
+      const sameType = (data.commission_type ?? null) === (po.commission_type ?? null);
+      const sameRate =
+        (data.commission_type ?? null) == null ||
+        Math.abs(n(data.commission_rate) - n(po.commission_rate)) <= 1e-9;
+      if (!sameType || !sameRate)
+        throw new Error(
+          `La comisión de ${liq.po_number} quedó fija al emitir ${liq.settlement_number}: ${commissionText(liq.commission_type, liq.commission_rate)}. Las cajas pendientes se rinden con esa misma comisión en la cuenta complementaria.`,
+        );
+    }
     const [bill] = await sql.query(
       `select id from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`,
       [data.purchase_order_id],
@@ -5739,7 +6096,8 @@ export const updateExpense = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [exp] = await sql.query(
-      `select id, amount::text, paid::text, purchase_order_id, status, cancelled_at
+      `select id, expense_number, category, amount::text, paid::text, purchase_order_id, status, cancelled_at,
+              coalesce(charged_to,'plein') as charged_to, created_at::text
      from expenses where id = $1`,
       [data.expense_id],
     );
@@ -5750,6 +6108,35 @@ export const updateExpense = createServerFn({ method: "POST" })
     // Sin el campo, la orden se queda como está: solo se mueve cuando quien
     // llama lo pide explícitamente (un null explícito sí la desliga).
     const nextPo = data.purchase_order_id === undefined ? oldPo : data.purchase_order_id;
+    // C-2a: un gasto ya rendido al productor no se edita en lo que mueve
+    // dinero. Faltó cobrar → gasto nuevo por la diferencia; se cobró de más,
+    // se desliga o lo absorbe Plein → ajuste a favor del productor.
+    const rendered = await renderedExpenseDoc(sql, exp.id);
+    if (rendered) {
+      const label = `${exp.expense_number} (${exp.category})`;
+      const nextCharged = data.charged_to || "plein";
+      if (data.amount > n(exp.amount) + 0.009)
+        throw new Error(renderedExpenseMessage(label, rendered.doc, rendered.amount, "more"));
+      if (
+        data.amount < n(exp.amount) - 0.009 ||
+        nextPo !== oldPo ||
+        nextCharged !== exp.charged_to ||
+        (rendered.legacy && data.category !== exp.category)
+      )
+        throw new Error(
+          renderedExpenseMessage(
+            label,
+            rendered.doc,
+            rendered.amount,
+            nextCharged === "grower" && exp.charged_to !== "grower" ? "to_grower" : "adjust",
+          ),
+        );
+    }
+    // C-2a: ligar un gasto anterior a la liquidación a una carga ya rendida.
+    if (nextPo != null && nextPo !== oldPo) {
+      const liq = await liquidatedInfo(sql, nextPo);
+      if (liq && String(exp.created_at) <= liq.liquidated_at) throw new Error(oldExpenseLinkMessage(liq));
+    }
     // El prorrateo al lote se recalcula solo desde los gastos de la OC, así que
     // mover el monto o la orden cambiaría una liquidación ya facturada.
     const movesMoney = Math.abs(n(exp.amount) - data.amount) > 0.009 || nextPo !== oldPo;
@@ -5820,6 +6207,14 @@ export const cancelExpense = createServerFn({ method: "POST" })
     );
     if (!exp) throw new Error("Gasto no encontrado");
     if (exp.cancelled_at) throw new Error("Este gasto ya está cancelado.");
+    // C-2a: un gasto ya rendido no se cancela; se corrige con un ajuste.
+    const rendered = await renderedExpenseDoc(sql, exp.id);
+    if (rendered) {
+      const [cat] = await sql.query(`select category from expenses where id = $1`, [exp.id]);
+      throw new Error(
+        renderedExpenseMessage(`${exp.expense_number} (${cat?.category ?? ""})`, rendered.doc, rendered.amount, "adjust"),
+      );
+    }
     const bill = await settledBillFor(sql, exp.purchase_order_id ?? null);
     if (bill)
       throw new Error(
@@ -5938,6 +6333,12 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
     );
     if (!po) throw new Error("Orden de compra no encontrada");
     if (po.status === "cancelled") throw new Error("Esta orden de compra está cancelada");
+    // C-2a: una carga que ya rindió cuentas no recibe más mercancía.
+    const liq = await liquidatedInfo(sql, po.id);
+    if (liq)
+      throw new Error(
+        `${po.po_number} ya tiene liquidación ${liq.settlement_number}: no se recibe más mercancía contra ella. Crea una orden de compra nueva para ese embarque; se liquida aparte.`,
+      );
     for (const line of data.lines) {
       if (line.result === "Rechazada" && !line.defect_reason)
         throw new Error("El rechazo exige un motivo");
@@ -6812,8 +7213,9 @@ export const createBillFromPO = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
+    // Solo la bill BASE cuenta: las FAC- de las complementarias son aparte.
     const [existing] = await sql.query(
-      `select bill_number from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`,
+      `select bill_number from supplier_bills where purchase_order_id = $1 and status <> 'cancelled' and supplement_id is null`,
       [data.purchase_order_id],
     );
     if (existing) throw new Error(`Esta compra ya tiene factura ${existing.bill_number}`);
@@ -6836,22 +7238,29 @@ export const createBillFromPO = createServerFn({ method: "POST" })
     const received = lines.reduce((s, l) => s + n(l.quantity_received), 0);
     if (received <= 0)
       throw new Error("Todavía no hay mercancía recibida para facturar al proveedor");
-    if (po.deal_type === "consignacion" && !lines.some((l) => n(l.unit_cost) > 0)) {
-      throw new Error(
-        'Este trato es en consignación: el costo se define al liquidar, después de vender. Corre "Calculate settlement" primero.',
-      );
-    }
     // En firme el costo lo capturó Miguel, así que qty × costo ya es exacto.
-    // En consignación liquidada, el costo/unidad que se guardó en cada línea
-    // viene de redondear a 4 decimales el resultado de repartir el neto entre
-    // las cajas — al multiplicar de vuelta por la cantidad, ese redondeo se
-    // puede notar un centavo. Para que la bill cuadre exacto con lo que
-    // Miguel vio en el settlement, se usa el neto ya calculado ahí
-    // (loadSettlement hace la misma cuenta, sin pasar por ese redondeo).
-    const total =
-      po.deal_type === "firme"
-        ? lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0)
-        : Math.round((await loadSettlement(sql, po.id)).inventory_total * 100) / 100;
+    // En consignación (C-2a) la bill nace del documento emitido: el neto al
+    // productor congelado en la LIQ, nunca del cálculo vivo. Las cuentas
+    // complementarias traen su propia FAC- al emitirse.
+    let total: number;
+    if (po.deal_type === "firme") {
+      total = lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0);
+    } else {
+      const liq = await liquidatedInfo(sql, po.id);
+      if (!liq)
+        throw new Error(
+          `${po.po_number} es a consignación: la factura de proveedor nace del documento emitido. Emite primero la liquidación (Calcular liquidación → Emitir liquidación).`,
+        );
+      const [gs] = await sql.query(
+        `select net_to_grower::text from grower_settlements where purchase_order_id = $1`,
+        [po.id],
+      );
+      total = round2(n(gs?.net_to_grower));
+      if (total <= 0.009)
+        throw new Error(
+          `La liquidación ${liq.settlement_number} de ${po.po_number} salió en cero o negativa: no nace factura de proveedor por esta carga.`,
+        );
+    }
     const issue = todayISO();
     const bill_number = await nextCode(sql, "supplier_bills", "bill_number", "FAC-");
     return {
@@ -7006,6 +7415,13 @@ export const cancelPurchaseOrder = createServerFn({ method: "POST" })
     );
     if (!po) throw new Error("Orden de compra no encontrada");
     if (po.status === "cancelled") throw new Error(`La orden ${po.po_number} ya está cancelada`);
+    // C-2a: una carga que ya rindió cuentas no se cancela; se cierra rindiendo
+    // lo pendiente.
+    const liq = await liquidatedInfo(sql, po.id);
+    if (liq)
+      throw new Error(
+        `${po.po_number} ya tiene liquidación ${liqLabel(liq)}: no se cancela. Las cajas pendientes se venden, se destruyen o las compra Plein desde Calcular liquidación; la carga se cierra sola cuando no queden pendientes.`,
+      );
     const [bill] = await sql.query(
       `select bill_number from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`,
       [po.id],
@@ -7064,12 +7480,20 @@ export const cancelSupplierBill = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const sql = await getSql();
     const [bill] = await sql.query(
-      `select id, bill_number, status, purchase_order_id, bill_type, paid::text from supplier_bills where id = $1`,
+      `select b.id, b.bill_number, b.status, b.purchase_order_id, b.bill_type, b.paid::text, b.supplement_id,
+              sup.supplement_number
+       from supplier_bills b left join grower_settlement_supplements sup on sup.id = b.supplement_id
+       where b.id = $1`,
       [data.bill_id],
     );
     if (!bill) throw new Error("Factura de proveedor no encontrada");
     if (bill.status === "cancelled")
       throw new Error(`La factura ${bill.bill_number} ya está cancelada`);
+    // C-2a: la FAC- de una complementaria es su único registro por pagar.
+    if (bill.supplement_id)
+      throw new Error(
+        `${bill.bill_number} nació de la cuenta complementaria ${bill.supplement_number} y es su registro por pagar: no se cancela. Si el pago fue un error, cancela el pago en Finanzas → Tesorería.`,
+      );
     // La marca explícita (0031) es el criterio principal — mismo que
     // invoice_type='opening'. El chequeo de OC nula se queda como red de
     // seguridad para cualquier bill sin OC que no traiga la marca.
@@ -7447,7 +7871,7 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
             sup.shrink_compensation::text, sup.plein_purchase_total::text, sup.net_to_grower::text,
             sup.advance_recovered::text, sup.final_payment::text, sup.balance_due::text, sup.prior_net::text,
             sup.received_qty::text, sup.destroyed_equiv_qty::text, sup.destroyed_cum_equiv_qty::text, sup.destroyed_cum_pct::text,
-            sup.certificate_number, sup.certificate_date::text, sup.settlement_id,
+            sup.certificate_number, sup.certificate_date::text, sup.settlement_id, coalesce(sup.adjustment_total,0)::text as adjustment_total,
             po.po_number, s.name, s.contact_name, s.phone, s.email, s.city, s.country, s.paca_number,
             gs.settlement_number as parent_number, gs.issue_date::text as parent_issue_date,
             gp.payable_number, sb.bill_number, a.advance_number
@@ -7491,6 +7915,10 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
   const dispositions = await sql.query(
     `select lot_number, product_name, calibre, kind, quantity::text, unit, reason, unit_price::text, amount::text
      from grower_settlement_supplement_dispositions where supplement_id = $1 order by id`,
+    [sup.id],
+  );
+  const adjustments = await sql.query(
+    `select expense_number, reason, amount::text from grower_settlement_supplement_adjustments where supplement_id = $1 order by id`,
     [sup.id],
   );
   const dmy = (iso: string | null) => (iso ? iso.slice(0, 10).split("-").reverse().join("/") : "");
@@ -7579,6 +8007,15 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
       unit_price: -n(e.amount),
       amount: -n(e.amount),
     })),
+    // Ajuste a favor del productor: se le devuelve, con motivo; no lleva comisión.
+    ...adjustments.map((a) => ({
+      sku: "AJUSTE",
+      description: `Ajuste a favor del productor — ${a.reason}${a.expense_number ? ` (corrige ${a.expense_number})` : ""}`,
+      qty: 1,
+      unit: "",
+      unit_price: n(a.amount),
+      amount: n(a.amount),
+    })),
     ...(n(sup.commission) !== 0 || n(sup.sold_units) > 0
       ? [
           {
@@ -7651,7 +8088,7 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
     lines,
     subtotal: n(sup.net_to_grower),
     total: n(sup.balance_due) > 0.009 ? -n(sup.balance_due) : n(sup.final_payment),
-    notes: `Complementa ${sup.parent_number} (ya rendido: ${money2(n(sup.prior_net))}). Periodo de esta cuenta: del ${dmyStamp(sup.period_start)} al ${dmyStamp(sup.period_end)}. Ingreso de la ventana ${money2(n(sup.revenue))} - gastos del productor ${money2(n(sup.grower_expenses))} - comisión Plein ${money2(n(sup.commission))}${n(sup.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(sup.shrink_compensation))}` : ""}${n(sup.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(sup.plein_purchase_total))}` : ""} = neto de esta cuenta ${money2(n(sup.net_to_grower))}. Adelantos recuperados: ${money2(n(sup.advance_recovered))}.${closeText}${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
+    notes: `Complementa ${sup.parent_number} (ya rendido: ${money2(n(sup.prior_net))}). Periodo de esta cuenta: del ${dmyStamp(sup.period_start)} al ${dmyStamp(sup.period_end)}. Ingreso de la ventana ${money2(n(sup.revenue))} - gastos del productor ${money2(n(sup.grower_expenses))} - comisión Plein ${money2(n(sup.commission))}${n(sup.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(sup.shrink_compensation))}` : ""}${n(sup.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(sup.plein_purchase_total))}` : ""}${n(sup.adjustment_total) > 0.009 ? ` + ajustes a favor del productor ${money2(n(sup.adjustment_total))}` : ""} = neto de esta cuenta ${money2(n(sup.net_to_grower))}. Adelantos recuperados: ${money2(n(sup.advance_recovered))}.${closeText}${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
     warning: warningText,
     showPaca: false,
     company,
@@ -8274,10 +8711,13 @@ export const connectExpensePo = createServerFn({ method: "POST" })
   .middleware([moduleMiddleware("finance")])
   .handler(async ({ data }) => {
     const sql = await getSql();
-    const [exp] = await sql.query(`select amount::text from expenses where id = $1`, [
+    const [exp] = await sql.query(`select amount::text, created_at::text from expenses where id = $1`, [
       data.expense_id,
     ]);
     if (!exp) throw new Error("Expense not found");
+    // C-2a: un gasto anterior a la liquidación no se liga a una carga ya rendida.
+    const liq = await liquidatedInfo(sql, data.purchase_order_id);
+    if (liq && String(exp.created_at) <= liq.liquidated_at) throw new Error(oldExpenseLinkMessage(liq));
     await sql.query(
       `insert into expense_po_links (expense_id, purchase_order_id, amount_applied) values ($1,$2,$3)
        on conflict (expense_id, purchase_order_id) do update set amount_applied = excluded.amount_applied`,
@@ -8298,9 +8738,16 @@ export const disconnectExpensePo = createServerFn({ method: "POST" })
   )
   .middleware([moduleMiddleware("finance")])
   .handler(async ({ data }) => {
-    await (
-      await getSql()
-    ).query(`delete from expense_po_links where expense_id = $1 and purchase_order_id = $2`, [
+    const sql = await getSql();
+    // C-2a: un gasto ya rendido no se desliga; se corrige con un ajuste.
+    const rendered = await renderedExpenseDoc(sql, data.expense_id);
+    if (rendered) {
+      const [e] = await sql.query(`select expense_number, category from expenses where id = $1`, [data.expense_id]);
+      throw new Error(
+        renderedExpenseMessage(`${e?.expense_number ?? ""} (${e?.category ?? ""})`, rendered.doc, rendered.amount, "adjust"),
+      );
+    }
+    await sql.query(`delete from expense_po_links where expense_id = $1 and purchase_order_id = $2`, [
       data.expense_id,
       data.purchase_order_id,
     ]);
@@ -9731,6 +10178,7 @@ export type LiveWipeCounts = {
   dispositions: number;
   certificates: number;
   supplements: number;
+  adjustments: number;
 };
 
 function wipeTotal(c: LiveWipeCounts) {
@@ -9750,7 +10198,8 @@ function wipeTotal(c: LiveWipeCounts) {
     c.pallets +
     c.dispositions +
     c.certificates +
-    c.supplements
+    c.supplements +
+    c.adjustments
   );
 }
 
@@ -9780,6 +10229,7 @@ async function countLiveActivity(sql: any): Promise<LiveWipeCounts> {
     dispositions: await n(`select count(*)::text as c from lot_dispositions`),
     certificates: await n(`select count(*)::text as c from destruction_certificates`),
     supplements: await n(`select count(*)::text as c from grower_settlement_supplements`),
+    adjustments: await n(`select count(*)::text as c from grower_adjustments`),
   };
 }
 
@@ -9827,6 +10277,9 @@ async function wipeLiveActivity(sql: any) {
   await sql.query(`delete from grower_settlement_supplement_expenses`);
   await sql.query(`delete from grower_settlement_supplement_sales`);
   await sql.query(`delete from grower_settlement_supplement_lots`);
+  await sql.query(`delete from grower_settlement_supplement_adjustments`);
+  // Los ajustes (C-2a) apuntan a la complementaria que los rindió.
+  await sql.query(`delete from grower_adjustments`);
   await sql.query(`update lot_dispositions set supplement_id = null where supplement_id is not null`);
   await sql.query(`delete from grower_settlement_supplements`);
   await sql.query(`delete from grower_settlement_dispositions`);
@@ -9935,6 +10388,18 @@ export const listSettlements = createServerFn({ method: "GET" })
     const out: any[] = [];
     for (const po of pos) {
       const settlement = await loadSettlement(sql, po.id);
+      // C-2c: con liquidación emitida, el reporte lee el congelado (padre +
+      // complementarias) en vez del cálculo vivo.
+      const liq = settlement.settlement;
+      const sups = settlement.supplements;
+      const frozen = liq
+        ? {
+            revenue: round2(liq.revenue + sups.reduce((s, x) => s + x.revenue, 0)),
+            grower_expenses: round2(liq.grower_expenses + sups.reduce((s, x) => s + x.grower_expenses, 0)),
+            commission: round2(liq.commission + sups.reduce((s, x) => s + x.commission, 0)),
+            net_to_grower: round2(liq.net_to_grower + sups.reduce((s, x) => s + x.net_to_grower, 0)),
+          }
+        : null;
       out.push({
         po_id: po.id,
         po_number: po.po_number,
@@ -9943,11 +10408,18 @@ export const listSettlements = createServerFn({ method: "GET" })
         costing_mode: po.costing_mode,
         deal_type: settlement.deal_type,
         status: po.status,
-        revenue: settlement.revenue,
-        expenses: settlement.expenses,
-        profit: settlement.profit,
-        profit_pct: settlement.profit_pct,
+        revenue: frozen ? frozen.revenue : settlement.revenue,
+        expenses: frozen ? frozen.grower_expenses : settlement.expenses,
+        profit: frozen ? frozen.commission : settlement.profit,
+        profit_pct: frozen
+          ? frozen.revenue > 0
+            ? (frozen.commission / frozen.revenue) * 100
+            : 0
+          : settlement.profit_pct,
         balance_due: settlement.balance_due,
+        settlement_number: liq?.settlement_number ?? null,
+        supplements: sups.length,
+        net_to_grower: frozen?.net_to_grower ?? null,
       });
     }
     return out;
