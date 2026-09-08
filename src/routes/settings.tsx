@@ -696,6 +696,7 @@ function WipeTests() {
         [t("Dispositions"), counts.dispositions],
         [t("Destruction certificates"), counts.certificates],
         [t("Complementary settlements"), counts.supplements],
+        [t("Grower adjustments"), counts.adjustments],
       ]
     : [];
 

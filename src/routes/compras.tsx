@@ -15,8 +15,10 @@ import { COMPANY } from "@/lib/company";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
+  addGrowerAdjustment,
   addLotDisposition,
   applyAdvanceRecovery,
+  cancelGrowerAdjustment,
   applySettlement,
   cancelLotDisposition,
   cancelPurchaseOrder,
@@ -2441,7 +2443,12 @@ function SettlementModal({
               ) : null}
               <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
                 <Field label="Plein commission">
-                  <Select value={ctype} onChange={(e) => setCtype(e.target.value)} className="w-44">
+                  <Select
+                    value={ctype}
+                    onChange={(e) => setCtype(e.target.value)}
+                    className="w-44"
+                    disabled={!!s.settlement}
+                  >
                     <option value="">Sin comisión</option>
                     <option value="per_unit">Por caja ($)</option>
                     <option value="gross_pct">% venta bruta</option>
@@ -2453,20 +2460,22 @@ function SettlementModal({
                     className="w-24"
                     value={crate}
                     onChange={(e) => setCrate(e.target.value)}
+                    disabled={!!s.settlement}
                   />
                 </Field>
-                <Button
-                  size="sm"
-                  disabled={saving || (!!ctype && !(Number(crate) > 0))}
-                  onClick={() => void saveCommission()}
-                >
-                  {t("Save")}
-                </Button>
+                {!s.settlement ? (
+                  <Button
+                    size="sm"
+                    disabled={saving || (!!ctype && !(Number(crate) > 0))}
+                    onClick={() => void saveCommission()}
+                  >
+                    {t("Save")}
+                  </Button>
+                ) : null}
                 <p className="ml-auto max-w-sm text-xs text-muted">
-                  Ingreso − gastos del productor − comisión de Plein
-                  {shrinkView.some((v) => v.charged_to === "plein") ? " + merma pagada por Plein" : ""}
-                  {(s.plein_purchase_total ?? 0) > 0.009 ? " + remanente comprado por Plein" : ""} = neto al
-                  productor.
+                  {s.settlement
+                    ? `La comisión de ${s.po_number} quedó fija al emitir ${s.settlement.settlement_number}. Las cajas pendientes se rinden con esa misma comisión en la cuenta complementaria.`
+                    : `Ingreso − gastos del productor − comisión de Plein${shrinkView.some((v) => v.charged_to === "plein") ? " + merma pagada por Plein" : ""}${(s.plein_purchase_total ?? 0) > 0.009 ? " + remanente comprado por Plein" : ""} = neto al productor.`}
                 </p>
               </div>
               {originErrors.length ? (
@@ -2864,7 +2873,7 @@ function SettlementModal({
             <Button variant="outline" onClick={onClose}>
               {t("Go back")}
             </Button>
-            {s.deal_type !== "comision" ? (
+            {s.deal_type !== "comision" && !s.settlement ? (
               <Button
                 disabled={saving || (s.deal_type !== "firme" && !s.breakdown)}
                 onClick={() =>
@@ -3328,6 +3337,9 @@ function SupplementPanel({
   const [recover, setRecover] = useState("");
   const [saving, setSaving] = useState(false);
   const [showSales, setShowSales] = useState(false);
+  const [adjAmount, setAdjAmount] = useState("");
+  const [adjReason, setAdjReason] = useState("");
+  const [adjExpense, setAdjExpense] = useState("");
   const preview = useAsync(
     () =>
       getSupplementPreview({
@@ -3368,6 +3380,41 @@ function SupplementPanel({
       );
     } catch (err) {
       onMsg(err instanceof Error ? err.message : "No se pudo emitir la complementaria");
+    } finally {
+      setSaving(false);
+    }
+  }
+  // Ajuste a favor del productor (C-2a): la salida de los candados de gasto.
+  async function registrarAjuste() {
+    setSaving(true);
+    try {
+      const r = await addGrowerAdjustment({
+        data: {
+          purchase_order_id: poId,
+          amount: Number(adjAmount),
+          reason: adjReason.trim(),
+          expense_id: adjExpense ? Number(adjExpense) : undefined,
+        },
+      });
+      setAdjAmount("");
+      setAdjReason("");
+      setAdjExpense("");
+      await onChanged();
+      onMsg(`Ajuste a favor del productor por ${money(r.amount)} registrado${r.expense_number ? ` (corrige ${r.expense_number})` : ""}; entra a la siguiente cuenta complementaria`);
+    } catch (err) {
+      onMsg(err instanceof Error ? err.message : "No se pudo registrar el ajuste");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function deshacerAjuste(id: number) {
+    setSaving(true);
+    try {
+      const r = await cancelGrowerAdjustment({ data: { adjustment_id: id } });
+      await onChanged();
+      onMsg(`Se deshizo el ajuste de ${money(r.amount)}`);
+    } catch (err) {
+      onMsg(err instanceof Error ? err.message : "No se pudo deshacer el ajuste");
     } finally {
       setSaving(false);
     }
@@ -3543,6 +3590,26 @@ function SupplementPanel({
                 </span>
               </div>
             ))}
+            {ok.adjustments.map((a) => (
+              <div key={a.id} className="flex justify-between border-b border-border py-1.5">
+                <span>
+                  + Ajuste a favor del productor
+                  <span className="ml-2 text-xs text-muted">
+                    {a.reason}
+                    {a.expense_number ? ` · corrige ${a.expense_number}` : ""} · sin comisión
+                  </span>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    className="ml-2 cursor-pointer text-[11px] text-link underline-offset-2 hover:underline"
+                    onClick={() => void deshacerAjuste(a.id)}
+                  >
+                    Deshacer
+                  </button>
+                </span>
+                <span className="tabular-nums">+{money(a.amount)}</span>
+              </div>
+            ))}
             <div className="flex justify-between py-2 text-base font-semibold">
               <span>Neto de esta cuenta</span>
               <span className={`tabular-nums ${ok.breakdown.net_to_grower < -0.009 ? "text-danger" : "text-ok"}`}>
@@ -3608,6 +3675,51 @@ function SupplementPanel({
                 : ""}
             </p>
           ) : null}
+          <div className="mt-3 rounded-md border border-border bg-surface-2 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Ajuste a favor del productor</p>
+            <p className="mt-1 max-w-2xl text-xs text-muted">
+              Para un gasto ya rendido que se cobró de más, se canceló o en realidad lo absorbe Plein. Se le
+              devuelve al productor en esta cuenta, con motivo; no lleva comisión.
+            </p>
+            <div className="mt-2 flex flex-wrap items-end gap-2">
+              <Field label="Monto ($)">
+                <Input
+                  className="w-28"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={adjAmount}
+                  onChange={(e) => setAdjAmount(e.target.value)}
+                />
+              </Field>
+              <Field label="Motivo">
+                <Input
+                  className="w-72"
+                  placeholder="Por qué se le devuelve"
+                  value={adjReason}
+                  onChange={(e) => setAdjReason(e.target.value)}
+                />
+              </Field>
+              <Field label="Corrige el gasto (opcional)">
+                <Select className="w-60" value={adjExpense} onChange={(e) => setAdjExpense(e.target.value)}>
+                  <option value="">—</option>
+                  {s.expense_rows.map((e) => (
+                    <option key={e.id} value={String(e.id)}>
+                      {e.category}
+                      {e.notes ? ` · ${e.notes}` : ""} · {money(e.amount)}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Button
+                size="sm"
+                disabled={saving || !(Number(adjAmount) > 0) || !adjReason.trim()}
+                onClick={() => void registrarAjuste()}
+              >
+                Registrar ajuste
+              </Button>
+            </div>
+          </div>
           {ok.blocks.length ? (
             <div className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-3 text-sm text-danger">
               <p className="font-semibold">No se puede emitir la complementaria todavía.</p>

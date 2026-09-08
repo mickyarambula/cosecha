@@ -766,6 +766,7 @@ const ES: Record<string, string> = {
   Dispositions: "Disposiciones del remanente",
   "Destruction certificates": "Certificados de destrucción",
   "Complementary settlements": "Liquidaciones complementarias",
+  "Grower adjustments": "Ajustes a favor del productor",
   "Customer POs": "POs de cliente",
   "Sent log": "Registro de envíos",
   "Type BORRAR to confirm": "Escribe BORRAR para confirmar",

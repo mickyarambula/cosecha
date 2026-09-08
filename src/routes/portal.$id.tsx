@@ -18,6 +18,8 @@ function Page() {
   const portal = useAsync(() => getVendorPortal({ data: { token: id } }), [id]);
   const d = portal.data;
   const level = d?.level ?? "po";
+  // C-2c: con liquidación emitida el productor ve el congelado, no el vivo.
+  const liq = d?.liquidation ?? null;
 
   if (portal.loading) return <p className="p-6 text-sm text-muted">{t("Loading vendor portal…")}</p>;
   if (portal.error) return <p className="p-6 text-sm text-danger">{portal.error}</p>;
@@ -41,11 +43,52 @@ function Page() {
         </Link>
       </div>
 
+      {liq ? (
+        <Panel className="mb-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Cuenta rendida al productor</p>
+          <p className="mt-1 text-sm">
+            Liquidación <span className="font-mono">{liq.settlement_number}</span> emitida el {fecha(liq.issue_date)} —
+            neto al productor <strong className="tabular-nums">{money(liq.net_to_grower)}</strong>, pago final{" "}
+            <strong className="tabular-nums">{money(liq.final_payment)}</strong>{" "}
+            <a href={`/doc/liq/${liq.share_token}`} target="_blank" rel="noreferrer" className="text-link">
+              Ver cuenta
+            </a>
+          </p>
+          {liq.supplements.map((x) => (
+            <p key={x.supplement_number} className="mt-1 text-sm">
+              Complementaria <span className="font-mono">{x.supplement_number}</span> emitida el {fecha(x.issue_date)} —
+              neto <strong className="tabular-nums">{money(x.net_to_grower)}</strong>
+              {x.balance_due > 0.009 ? (
+                <>
+                  , saldo a favor de Plein <strong className="tabular-nums">{money(x.balance_due)}</strong>
+                </>
+              ) : (
+                <>
+                  , pago final <strong className="tabular-nums">{money(x.final_payment)}</strong>
+                </>
+              )}{" "}
+              <a href={`/doc/liq/${x.share_token}`} target="_blank" rel="noreferrer" className="text-link">
+                Ver cuenta
+              </a>
+            </p>
+          ))}
+          <p className="mt-2 text-xs text-muted">
+            Las cifras de abajo son las de los documentos emitidos
+            {liq.supplements.length ? ` (liquidación y ${liq.supplements.length} complementaria${liq.supplements.length === 1 ? "" : "s"})` : ""}
+            ; lo que se venda o gaste después se rinde en la siguiente cuenta complementaria.
+          </p>
+        </Panel>
+      ) : null}
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <Kpi label="Total sales" value={money(d.revenue)} />
-        <Kpi label="Purchaser expenses" value={money(d.expenses)} />
-        <Kpi label="Commission $" value={money(d.profit)} hint={pct(d.profit_pct)} tone="ok" />
-        <Kpi label="Remaining balance" value={money(d.balance_due)} />
+        <Kpi label="Total sales" value={money(liq ? liq.revenue_total : d.revenue)} />
+        <Kpi label="Purchaser expenses" value={money(liq ? liq.grower_expenses_total : d.expenses)} />
+        <Kpi
+          label="Commission $"
+          value={money(liq ? liq.commission_total : d.profit)}
+          hint={pct(liq ? (liq.revenue_total > 0 ? (liq.commission_total / liq.revenue_total) * 100 : 0) : d.profit_pct)}
+          tone="ok"
+        />
+        <Kpi label={liq ? "Neto al productor" : "Remaining balance"} value={money(liq ? liq.net_total : d.balance_due)} />
       </div>
 
       <Panel className="mt-4">
@@ -111,7 +154,8 @@ function Page() {
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold">{t("Sales")}</p>
             <span className="text-sm text-muted">
-              {t("Total sales")} {money(d.revenue)}
+              {t("Total sales")} {money(liq ? liq.revenue_total : d.revenue)}
+              {liq ? " (documentos emitidos)" : ""}
             </span>
           </div>
           <table className="w-full text-left text-sm">
@@ -147,7 +191,8 @@ function Page() {
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold">{t("Expenses")}</p>
             <span className="text-sm text-muted">
-              {t("Total expenses")} {money(d.expenses)}
+              {t("Total expenses")} {money(liq ? liq.grower_expenses_total : d.expenses)}
+              {liq ? " (al productor, documentos emitidos)" : ""}
             </span>
           </div>
           <table className="w-full text-left text-sm">
