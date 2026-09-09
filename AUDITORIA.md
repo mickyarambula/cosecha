@@ -1,5 +1,7 @@
 # Auditoría Cosecha — 27 Ago 2026
 
+**Nota (9 Sep 2026): este documento es un corte histórico.** La lista vigente de hallazgos, con lo que ya se resolvió y en qué bloque, es `AUDITORIA-2026-09-03.md` — léela primero. Este archivo se conserva solo por su explicación del corte v1→v2 (abajo), que sigue siendo la referencia de por qué había dos números distintos.
+
 Levantamiento completo del repo tal como está publicado en pleinproduce.vercel.app (commit `51fa472`). Solo lectura: nada de esto está corregido todavía. Dos partes: **A) Levantamiento** (qué hay) y **B) Plan de ataque** (en qué orden se arregla).
 
 ---
@@ -11,7 +13,7 @@ Levantamiento completo del repo tal como está publicado en pleinproduce.vercel.
 1. **Corte v1 (30 de junio)** — construido desde las *Cargas* pendientes de V8: AR $673,014.43 (50 facturas), AP $564,670.16 (52 bills), Chase $19,066.20, JEAMS $23,030.33, ajuste de capital $104,380.14. Es el que documentan HANDOFF.md y COSECHA.md. El propio asiento de Chase decía "reemplázalo con el saldo del banco cuando lo tengas".
 2. **Corte v2 (19 de agosto)** — reconstruido después **desde los libros de dinero** (Ingresos / Egresos / Chase), que son la fuente que se decidió usar. Borra el corte v1 completo y siembra: AR $673,014.43 (50 facturas, mismo total), **AP $570,097.56 (62 bills)**, **Chase $9,361.05** (último folio aplicado: 429), **JEAMS $52,447.33**, ajuste de capital $59,830.59. Este corte **cuadra por construcción**: 673,014.43 + 9,361.05 = 570,097.56 + 52,447.33 + 59,830.59 = $682,375.48.
 
-Lo que ve Miguel en la app es el corte v2 — el correcto y más reciente. **Pendiente**: actualizar HANDOFF.md y COSECHA.md para que digan corte 19 de agosto con estos números, y así ningún chat futuro "corrija" la app hacia los números viejos.
+Lo que ve Miguel en la app es el corte v2 — el correcto y más reciente. **Hecho (9 Sep 2026)**: `HANDOFF.md` y `COSECHA.md` ya dicen corte 19 de agosto con estos números — quedó pendiente casi dos semanas después de escribirse esta nota.
 
 ---
 
