@@ -2150,6 +2150,7 @@ export const listLots = createServerFn({ method: "GET" })
            coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as revenue
     from sale_line_allocations a
     join sales_order_lines sol on sol.id = a.sales_order_line_id
+    where a.cancelled_at is null
     group by a.lot_id
   `);
     const soldMap = new Map<number, { qty: number; revenue: number }>(
@@ -2219,7 +2220,7 @@ export const getLotTrace = createServerFn({ method: "GET" })
       join sales_orders so on so.id = sol.sales_order_id
       join customers c on c.id = so.customer_id
       left join invoices i on i.sales_order_id = so.id
-      where a.lot_id = $1
+      where a.lot_id = $1 and a.cancelled_at is null
       group by so.id, so.so_number, c.name, sol.id, sol.unit_price, i.invoice_number, so.order_date
       order by so.id
     `,
@@ -2439,6 +2440,11 @@ async function loadPoLots(sql, poId) {
     [poId],
   );
   const pendingMap = new Map<number, number>(pending.map((r) => [r.lot_id, n(r.qty)]));
+  // Con LIQ emitida toda la existencia es pendiente de venta: la emisión
+  // exigió cero sin clasificar y las cajas que regresan de una venta rendida
+  // cancelada (C-2b) vuelven a pendientes, no a "sin clasificar".
+  const [poFlag] = await sql.query(`select liquidated_at from purchase_orders where id = $1`, [poId]);
+  const liquidated = Boolean(poFlag?.liquidated_at);
   // Merma de bodega: PACA pide justificar cada caja que no se vendió, así que
   // los motivos de waste_events viajan al documento.
   const wasteReasons = await sql.query(
@@ -2455,7 +2461,7 @@ async function loadPoLots(sql, poId) {
      from sale_line_allocations a
      join sales_order_lines sol on sol.id = a.sales_order_line_id
      join lots l on l.id = a.lot_id
-     where l.purchase_order_id = $1
+     where l.purchase_order_id = $1 and a.cancelled_at is null
      group by a.lot_id`,
     [poId],
   );
@@ -2495,8 +2501,8 @@ async function loadPoLots(sql, poId) {
       repacked_out_qty: repackedMap.get(l.id) ?? 0,
       destroyed_qty: n(l.destroyed_qty),
       plein_bought_qty: n(l.plein_bought_qty),
-      pending_qty: Math.min(pendingMap.get(l.id) ?? 0, n(l.current_qty)),
-      unclassified_qty: Math.max(0, n(l.current_qty) - (pendingMap.get(l.id) ?? 0)),
+      pending_qty: liquidated ? n(l.current_qty) : Math.min(pendingMap.get(l.id) ?? 0, n(l.current_qty)),
+      unclassified_qty: liquidated ? 0 : Math.max(0, n(l.current_qty) - (pendingMap.get(l.id) ?? 0)),
       waste_reason: wasteReasonMap.get(l.id) ?? null,
       owner_kind: l.owner_kind ?? null,
       // Cajas equivalentes de origen por caja de este lote (1 en un lote
@@ -2564,7 +2570,8 @@ const SALES_AGG_SQL = `
     from sale_line_allocations a
     join sales_order_lines sol on sol.id = a.sales_order_line_id
     join lots l on l.id = a.lot_id
-    left join pack_styles ps on ps.id = l.pack_style_id`;
+    left join pack_styles ps on ps.id = l.pack_style_id
+    where a.cancelled_at is null`;
 /**
  * Merma de los reempaques de una carga, valuada. La que absorbe Plein se le
  * paga al productor al promedio realizado de ESA fruta: ventas del lote
@@ -2584,7 +2591,7 @@ async function loadShrinkRows(
      from pack_outs where purchase_order_id = $1 and coalesce(shrink_qty, 0) > 0 order by id`,
     [purchase_order_id],
   );
-  const [ref] = await sql.query(`${SALES_AGG_SQL} where l.purchase_order_id = $1`, [
+  const [ref] = await sql.query(`${SALES_AGG_SQL} and l.purchase_order_id = $1`, [
     purchase_order_id,
   ]);
   const reference = {
@@ -2606,7 +2613,7 @@ async function loadShrinkRows(
       [h.id],
     );
     const lotIds = [...ins.map((i) => i.lot_id), ...outs.map((o) => o.lot_id)];
-    const [sales] = await sql.query(`${SALES_AGG_SQL} where a.lot_id = any($1::int[])`, [lotIds]);
+    const [sales] = await sql.query(`${SALES_AGG_SQL} and a.lot_id = any($1::int[])`, [lotIds]);
     // Al productor se le nombra el lote que ÉL entregó, no un reempaque
     // intermedio (ins.lot_number puede ser otro RPK). Misma resolución de
     // cadena que la tabla de lotes: mismo tope de saltos, mismo candado de
@@ -3695,7 +3702,7 @@ async function computeSupplement(
   }
   const [parent] = await sql.query(
     `select id, settlement_number, created_at::text, commission_type, commission_rate::text,
-            net_to_grower::text, certificate_id
+            net_to_grower::text, commission::text, certificate_id
      from grower_settlements where id = $1`,
     [s.settlement.id],
   );
@@ -3721,7 +3728,7 @@ async function computeSupplement(
        join sales_orders so on so.id = sol.sales_order_id
        join customers c on c.id = so.customer_id
        join lots l on l.id = a.lot_id
-       where l.purchase_order_id = $1 and a.created_at > $2::timestamptz
+       where l.purchase_order_id = $1 and a.created_at > $2::timestamptz and a.cancelled_at is null
        order by a.created_at, a.id`,
       [purchase_order_id, period_start],
     )
@@ -3740,6 +3747,51 @@ async function computeSupplement(
   }));
   const revenue = round2(saleRows.reduce((a, r) => a + r.amount, 0));
   const sold_units = saleRows.reduce((a, r) => a + r.quantity, 0);
+
+  // ── Reversas (C-2b): ventas rendidas antes del corte y canceladas en la
+  // ventana. Una venta creada Y cancelada dentro de la misma ventana no entra
+  // ni como venta (cancelled_at la filtra arriba) ni como reversa (su
+  // created_at es posterior al corte): no se cuenta dos veces ni "se anula
+  // sola" por accidente. ─────────────────────────────────────────────────
+  const renderedIn = (createdAt: string) =>
+    createdAt <= String(parent.created_at)
+      ? String(parent.settlement_number)
+      : (previous.find((p) => createdAt > p.period_start && createdAt <= p.period_end)?.supplement_number ??
+        String(parent.settlement_number));
+  const reversalRows = (
+    await sql.query(
+      `select a.id, a.lot_id, l.lot_number, l.unit, a.quantity::text, sol.unit_price::text, a.created_at::text,
+              a.cancelled_at::text, so.so_number, so.cancel_reason, c.name as customer_name,
+              (select i.invoice_number || case when i.status = 'cancelled' then ' (cancelada)' else '' end from invoices i
+                where i.sales_order_id = so.id and coalesce(i.invoice_type,'sale') = 'sale'
+                order by i.id desc limit 1) as invoice_number
+       from sale_line_allocations a
+       join sales_order_lines sol on sol.id = a.sales_order_line_id
+       join sales_orders so on so.id = sol.sales_order_id
+       join customers c on c.id = so.customer_id
+       join lots l on l.id = a.lot_id
+       where l.purchase_order_id = $1 and a.cancelled_at > $2::timestamptz and a.created_at <= $2::timestamptz
+       order by a.cancelled_at, a.id`,
+      [purchase_order_id, period_start],
+    )
+  ).map((r) => ({
+    allocation_id: r.id as number,
+    lot_id: r.lot_id as number,
+    lot_number: String(r.lot_number),
+    unit: String(r.unit ?? ""),
+    quantity: n(r.quantity),
+    unit_price: n(r.unit_price),
+    amount: round2(n(r.quantity) * n(r.unit_price)),
+    shipped_at: String(r.created_at),
+    cancelled_at: String(r.cancelled_at),
+    cancel_reason: r.cancel_reason ? String(r.cancel_reason) : null,
+    so_number: r.so_number ? String(r.so_number) : null,
+    customer_name: r.customer_name ? String(r.customer_name) : null,
+    invoice_number: r.invoice_number ? String(r.invoice_number) : null,
+    rendered_in: renderedIn(String(r.created_at)),
+  }));
+  const reversal_total = round2(reversalRows.reduce((a, r) => a + r.amount, 0));
+  const reversal_units = reversalRows.reduce((a, r) => a + r.quantity, 0);
 
   // ── Gastos del productor creados en la ventana ──────────────────────────
   const expenseRows = (
@@ -3856,6 +3908,8 @@ async function computeSupplement(
     else cur.plein += d.quantity;
     dispByLot.set(d.lot_id, cur);
   }
+  const returnedByLot = new Map<number, number>();
+  for (const r of reversalRows) returnedByLot.set(r.lot_id, (returnedByLot.get(r.lot_id) ?? 0) + r.quantity);
   const lotRows = s.lots.map((l) => {
     const meta = lotMeta.get(l.id);
     const isNew = !openingMap.has(l.id) && meta != null && meta.created_at > period_start;
@@ -3865,11 +3919,19 @@ async function computeSupplement(
     const waste_qty = wasteMap.get(l.id) ?? 0;
     const repacked_out_qty = repackMap.get(l.id) ?? 0;
     const disp = dispByLot.get(l.id) ?? { destroyed: 0, plein: 0 };
+    // Cajas que regresaron al lote por una venta rendida y cancelada (C-2b):
+    // vuelven a pendientes y cierran el cuadre.
+    const returned_qty = returnedByLot.get(l.id) ?? 0;
     const closing_pending = round3(
-      opening_pending - sold.qty - waste_qty - repacked_out_qty - disp.destroyed - disp.plein,
+      opening_pending - sold.qty - waste_qty - repacked_out_qty - disp.destroyed - disp.plein + returned_qty,
     );
     const moved =
-      sold.qty > 0.0005 || waste_qty > 0.0005 || repacked_out_qty > 0.0005 || disp.destroyed > 0.0005 || disp.plein > 0.0005;
+      sold.qty > 0.0005 ||
+      waste_qty > 0.0005 ||
+      repacked_out_qty > 0.0005 ||
+      disp.destroyed > 0.0005 ||
+      disp.plein > 0.0005 ||
+      returned_qty > 0.0005;
     return {
       lot_id: l.id,
       lot_number: l.lot_number,
@@ -3884,6 +3946,7 @@ async function computeSupplement(
       repacked_out_qty,
       destroyed_qty: disp.destroyed,
       plein_bought_qty: disp.plein,
+      returned_qty,
       closing_pending,
       remaining: l.remaining,
       moved,
@@ -3894,9 +3957,9 @@ async function computeSupplement(
   for (const l of lotRows) {
     if (Math.abs(l.closing_pending - l.remaining) > 0.0005) {
       blocks.push(
-        `Lote ${l.lot_number}: al emitir ${since_number} quedaban ${qtyText(l.opening_pending)} ${l.unit} pendientes; desde entonces salieron ${qtyText(l.sold_qty)} vendidas, ${qtyText(l.waste_qty)} a merma, ${qtyText(l.repacked_out_qty)} a reempaque, ${qtyText(l.destroyed_qty)} destruidas y ${qtyText(l.plein_bought_qty)} compradas por Plein, así que debería haber ${qtyText(Math.max(l.closing_pending, 0))} y hoy hay ${qtyText(l.remaining)} en existencia. ${
+        `Lote ${l.lot_number}: al emitir ${since_number} quedaban ${qtyText(l.opening_pending)} ${l.unit} pendientes; desde entonces salieron ${qtyText(l.sold_qty)} vendidas, ${qtyText(l.waste_qty)} a merma, ${qtyText(l.repacked_out_qty)} a reempaque, ${qtyText(l.destroyed_qty)} destruidas y ${qtyText(l.plein_bought_qty)} compradas por Plein, y regresaron ${qtyText(l.returned_qty)} de ventas canceladas, así que debería haber ${qtyText(Math.max(l.closing_pending, 0))} y hoy hay ${qtyText(l.remaining)} en existencia. ${
           l.remaining > l.closing_pending
-            ? "Regresaron cajas de una venta cancelada o de un reempaque deshecho después de rendir cuentas: vuelve a despachar esas cajas (entran a esta complementaria) para poder emitir."
+            ? "Regresaron cajas por un camino que no se puede atribuir a esta ventana (un reempaque deshecho, por ejemplo): revisa los movimientos del lote en Inventario antes de emitir."
             : "Salieron cajas por un camino que no se puede atribuir a esta ventana: revisa los movimientos del lote en Inventario antes de emitir."
         }`,
       );
@@ -3927,6 +3990,13 @@ async function computeSupplement(
         [previous.map((p) => p.id)],
       ),
     );
+  // ESTA lectura NO filtra cancelled_at a propósito (C-2b), y es la única de
+  // las nueve que no lo hace: compara lo que se rindió contra lo que se
+  // despachó antes del corte, CONTANDO las ventas canceladas después. Una
+  // venta rendida y cancelada sigue igualando al congelado aquí y se rinde
+  // como reversa en la ventana donde se canceló. Si alguien "empareja" este
+  // filtro con las demás lecturas, el cruce vuelve a ser un callejón sin
+  // salida para toda carga con una venta rendida cancelada.
   const liveBefore = new Map<number, { qty: number; revenue: number }>(
     (
       await sql.query(
@@ -4073,27 +4143,38 @@ async function computeSupplement(
     );
 
   // ── Desglose de la ventana con la comisión congelada del padre ──────────
+  // La base es NETA (C-2b): ventas de la ventana menos reversas de ventas
+  // rendidas y canceladas. Si Plein cobró comisión sobre una venta que
+  // después se canceló, esa comisión regresa aquí como comisión negativa.
+  // Tope: nunca se devuelve más comisión de la acumulada (padre +
+  // complementarias anteriores). En net_pct el tope en cero del padre solo
+  // aplica cuando no hay reversas; con reversas la base puede ser negativa.
+  const revenue_net = round2(revenue - reversal_total);
+  const units_net = sold_units - reversal_units;
   let commission_base = 0;
   let commission = 0;
   if (frozenType === "per_unit") {
-    commission_base = sold_units;
-    commission = round2(frozenRate * sold_units);
+    commission_base = units_net;
+    commission = round2(frozenRate * units_net);
   } else if (frozenType === "gross_pct") {
-    commission_base = revenue;
-    commission = round2((revenue * frozenRate) / 100);
+    commission_base = revenue_net;
+    commission = round2((revenue_net * frozenRate) / 100);
   } else if (frozenType === "net_pct") {
-    commission_base = revenue - grower_expenses;
-    commission = round2((Math.max(0, commission_base) * frozenRate) / 100);
+    commission_base = revenue_net - grower_expenses;
+    commission = round2(((reversal_units > 0 ? commission_base : Math.max(0, commission_base)) * frozenRate) / 100);
   }
+  const commission_so_far = round2(n(parent.commission) + previous.reduce((a, p) => a + p.commission, 0));
+  if (commission < 0) commission = Math.max(commission, -commission_so_far);
   // El ajuste a favor del productor NO entra a la base de la comisión (igual
   // que la merma pagada por Plein y la compra del remanente): es dinero que
   // se le devuelve, no una venta. Solo suma al neto.
   const net_to_grower = round2(
-    revenue - grower_expenses - commission + shrink_compensation + plein_purchase_total + adjustment_total,
+    revenue - reversal_total - grower_expenses - commission + shrink_compensation + plein_purchase_total + adjustment_total,
   );
   const prior_net = round2(n(parent.net_to_grower) + previous.reduce((a, p) => a + p.net_to_grower, 0));
   const has_activity =
     saleRows.length > 0 ||
+    reversalRows.length > 0 ||
     expenseRows.length > 0 ||
     shrinkRows.length > 0 ||
     dispositionRows.length > 0 ||
@@ -4172,6 +4253,7 @@ async function computeSupplement(
     blocks,
     has_activity,
     sales: saleRows,
+    reversals: reversalRows,
     expenses: expenseRows,
     shrink_rows: shrinkRows,
     dispositions: dispositionRows,
@@ -4181,8 +4263,12 @@ async function computeSupplement(
       commission_type: frozenType,
       commission_rate: frozenRate,
       commission_base,
+      commission_so_far,
       sold_units,
       revenue,
+      reversal_total,
+      reversal_units,
+      revenue_net,
       grower_expenses,
       commission,
       shrink_compensation,
@@ -4345,8 +4431,8 @@ export const issueSettlementSupplement = createServerFn({ method: "POST" })
       await sql.query(
         `insert into grower_settlement_supplement_lots
          (supplement_id, lot_id, lot_number, product_name, calibre, unit, origin, opening_pending, sold_qty, revenue,
-          waste_qty, repacked_out_qty, destroyed_qty, plein_bought_qty, closing_pending)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          waste_qty, repacked_out_qty, destroyed_qty, plein_bought_qty, closing_pending, returned_qty)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
         [
           supplementId,
           l.lot_id,
@@ -4363,8 +4449,37 @@ export const issueSettlementSupplement = createServerFn({ method: "POST" })
           l.destroyed_qty,
           l.plein_bought_qty,
           Math.max(l.closing_pending, 0),
+          l.returned_qty,
         ],
       );
+    // Reversas (C-2b): la venta original, cuándo se canceló, en negativo.
+    for (const r of c.reversals)
+      await sql.query(
+        `insert into grower_settlement_supplement_reversals
+         (supplement_id, allocation_id, rendered_in, so_number, invoice_number, customer_name, lot_number, shipped_at, cancelled_at,
+          cancel_reason, quantity, unit, unit_price, amount)
+         values ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9::timestamptz,$10,$11,$12,$13,$14)`,
+        [
+          supplementId,
+          r.allocation_id,
+          r.rendered_in,
+          r.so_number,
+          r.invoice_number,
+          r.customer_name,
+          r.lot_number,
+          r.shipped_at,
+          r.cancelled_at,
+          r.cancel_reason,
+          r.quantity,
+          r.unit,
+          r.unit_price,
+          -r.amount,
+        ],
+      );
+    await sql.query(
+      `update grower_settlement_supplements set reversal_total = $1, reversal_units = $2 where id = $3`,
+      [c.breakdown.reversal_total, c.breakdown.reversal_units, supplementId],
+    );
     for (const r of c.sales)
       await sql.query(
         `insert into grower_settlement_supplement_sales
@@ -4595,8 +4710,10 @@ export const addLotDisposition = createServerFn({ method: "POST" })
         throw new Error(
           `La carga ${lot.po_number} ya tiene liquidación ${issued.settlement_number}: las cajas que quedaron ya están pendientes de venta. Aquí solo se registra lo destruido o lo comprado por Plein sobre esas cajas.`,
         );
-      const bornAfter = String(lot.created_at) > String(issued.created_at);
-      const pendingLive = bornAfter ? current : Math.min(pendingQty, current);
+      // Tras la LIQ toda la existencia del lote es pendiente de venta (la
+      // emisión exigió cero sin clasificar, y lo que regresa de una venta
+      // cancelada vuelve a pendientes, C-2b).
+      const pendingLive = current;
       if (data.quantity > pendingLive + 1e-9)
         throw new Error(
           `Solo quedan ${qtyText(pendingLive)} ${lot.unit} pendientes de venta de ${lot.lot_number}: lo destruido o comprado por Plein no puede pasar de ahí.`,
@@ -4778,7 +4895,7 @@ export const cancelLotDisposition = createServerFn({ method: "POST" })
       );
       if (!nl) throw new Error("No se encontró el lote propio de Plein de esta compra.");
       const [moved] = await sql.query(
-        `select count(*)::text as c from sale_line_allocations where lot_id = $1`,
+        `select count(*)::text as c from sale_line_allocations where lot_id = $1 and cancelled_at is null`,
         [nl.id],
       );
       if (n(moved?.c) > 0 || Math.abs(n(nl.current_qty) - n(nl.original_qty)) > 1e-6)
@@ -5485,7 +5602,7 @@ export const getVendorPortal = createServerFn({ method: "GET" })
        join sales_orders so on so.id = sol.sales_order_id
        join lots l on l.id = a.lot_id
        join products p on p.id = sol.product_id
-       where l.purchase_order_id = $1
+       where l.purchase_order_id = $1 and a.cancelled_at is null
        group by so.order_date, p.name, l.lot_number, sol.id, sol.unit_price
        order by so.order_date, l.lot_number`,
       [po.id],
@@ -7337,6 +7454,130 @@ export const cancelInvoice = createServerFn({ method: "POST" })
     return { invoice_number: inv.invoice_number };
   });
 
+/**
+ * Aviso ANTES de cancelar una venta (C-2b): si ya se le rindió al productor,
+ * y si esa liquidación ya se le pagó, la pantalla lo dice antes del clic.
+ * No bloquea: la decisión es de Miguel; el sistema solo se asegura de que la
+ * tome sabiendo. "Pagada" = la liquidación pagada al productor (REM- o FAC-),
+ * no la factura cobrada al cliente.
+ */
+export const getSalesOrderCancelImpact = createServerFn({ method: "GET" })
+  .validator(z.object({ sales_order_id: z.number() }))
+  .middleware([moduleMiddleware("orders")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const rows = await sql.query(
+      `select po.id as po_id, po.po_number, coalesce(po.deal_type,'firme') as deal_type,
+              gs.id as settlement_id, gs.settlement_number, gs.created_at::text as parent_at,
+              l.lot_number, a.quantity::text, coalesce(sol.unit_price,0)::text as unit_price, a.created_at::text
+       from sale_line_allocations a
+       join sales_order_lines sol on sol.id = a.sales_order_line_id
+       join lots l on l.id = a.lot_id
+       join purchase_orders po on po.id = l.purchase_order_id
+       join grower_settlements gs on gs.purchase_order_id = po.id
+       where sol.sales_order_id = $1 and a.cancelled_at is null and po.liquidated_at is not null
+       order by a.id`,
+      [data.sales_order_id],
+    );
+    const byPo = new Map<number, any[]>();
+    for (const r of rows) byPo.set(r.po_id, [...(byPo.get(r.po_id) ?? []), r]);
+    const rendered: {
+      po_number: string;
+      settlement_number: string;
+      quantity: number;
+      amount: number;
+      lot_numbers: string[];
+      paid: "paid" | "partial" | "unpaid" | "none";
+      document: string | null;
+    }[] = [];
+    const warnings: string[] = [];
+    const statusOf = (st: string | null | undefined): "paid" | "partial" | "unpaid" =>
+      st === "paid" ? "paid" : st === "partial" ? "partial" : "unpaid";
+    for (const [poId, list] of byPo) {
+      const first = list[0];
+      // Cada venta se rindió en un documento concreto: la LIQ padre o la
+      // complementaria cuya ventana la contiene. "Pagada" se mira en ESE
+      // documento (su REM- o su FAC-), no en el del padre.
+      const sups = await sql.query(
+        `select sup.id, sup.supplement_number, sup.period_start::text, sup.period_end::text,
+                gp.payable_number, gp.status as gp_status, sb.bill_number, sb.status as sb_status
+         from grower_settlement_supplements sup
+         left join grower_payables gp on gp.id = sup.grower_payable_id
+         left join supplier_bills sb on sb.id = sup.supplier_bill_id
+         where sup.purchase_order_id = $1 order by sup.sequence`,
+        [poId],
+      );
+      const cut = sups.length ? String(sups[sups.length - 1].period_end) : String(first.parent_at);
+      const done = list.filter((r) => String(r.created_at) <= cut);
+      if (!done.length) continue;
+      const quantity = done.reduce((s, r) => s + n(r.quantity), 0);
+      const amount = round2(done.reduce((s, r) => s + n(r.quantity) * n(r.unit_price), 0));
+      const lot_numbers = [...new Set(done.map((r) => String(r.lot_number)))];
+      // Documento del padre y su pago.
+      let parentDoc: string | null = null;
+      let parentPaid: "paid" | "partial" | "unpaid" | "none" = "none";
+      if (first.deal_type === "comision") {
+        const [gp] = await sql.query(
+          `select payable_number, status from grower_payables where settlement_id = $1 and supplement_id is null and status <> 'cancelled' order by id desc limit 1`,
+          [first.settlement_id],
+        );
+        if (gp) {
+          parentDoc = String(gp.payable_number);
+          parentPaid = statusOf(gp.status);
+        }
+      } else {
+        const [sb] = await sql.query(
+          `select bill_number, status from supplier_bills where purchase_order_id = $1 and supplement_id is null and status <> 'cancelled' order by id desc limit 1`,
+          [poId],
+        );
+        if (sb) {
+          parentDoc = String(sb.bill_number);
+          parentPaid = statusOf(sb.status);
+        }
+      }
+      const docs = new Map<string, { document: string | null; paid: "paid" | "partial" | "unpaid" | "none" }>();
+      for (const r of done) {
+        const at = String(r.created_at);
+        const sup = at <= String(first.parent_at) ? null : sups.find((x) => at > String(x.period_start) && at <= String(x.period_end));
+        if (!sup) docs.set(String(first.settlement_number), { document: parentDoc, paid: parentPaid });
+        else
+          docs.set(String(sup.supplement_number), {
+            document: sup.payable_number ? String(sup.payable_number) : sup.bill_number ? String(sup.bill_number) : null,
+            paid: sup.payable_number ? statusOf(sup.gp_status) : sup.bill_number ? statusOf(sup.sb_status) : "none",
+          });
+      }
+      const docNames = [...docs.keys()].join(" y ");
+      const paidDocs = [...docs.values()].filter((d) => d.paid === "paid" || d.paid === "partial");
+      const unpaidDocs = [...docs.values()].filter((d) => d.document && d.paid === "unpaid");
+      const paid: "paid" | "partial" | "unpaid" | "none" = paidDocs.some((d) => d.paid === "paid")
+        ? "paid"
+        : paidDocs.length
+          ? "partial"
+          : unpaidDocs.length
+            ? "unpaid"
+            : "none";
+      const document = (paidDocs[0] ?? unpaidDocs[0])?.document ?? null;
+      rendered.push({
+        po_number: String(first.po_number),
+        settlement_number: docNames,
+        quantity,
+        amount,
+        lot_numbers,
+        paid,
+        document,
+      });
+      const what = `${qtyText(quantity)} ${quantity === 1 ? "caja" : "cajas"} de ${lot_numbers.join(", ")} por ${money2(amount)}`;
+      if (paid === "paid" || paid === "partial")
+        warnings.push(
+          `Esta venta ya se le rindió al productor en ${docNames} (${what}) y esa liquidación ya se le pagó (${document} ${paid === "paid" ? "pagada" : "con pago parcial"}). Si la cancelas, la reversa entra a la siguiente cuenta complementaria de ${first.po_number} y el productor quedará debiendo: nacerá un adelanto ADE- sin salida de caja. Las cajas vuelven a pendientes de venta.`,
+        );
+      else
+        warnings.push(
+          `Esta venta ya se le rindió al productor en ${docNames} (${what}). Si la cancelas, la reversa se descuenta en la siguiente cuenta complementaria de ${first.po_number}${document ? `; ${document} sigue sin pagarse` : ""}. Las cajas vuelven a pendientes de venta.`,
+        );
+    }
+    return { rendered, warnings };
+  });
 export const cancelSalesOrder = createServerFn({ method: "POST" })
   .validator(
     z.object({
@@ -7358,7 +7599,7 @@ export const cancelSalesOrder = createServerFn({ method: "POST" })
     );
     if (inv)
       throw new Error(
-        `Esta orden ya tiene la factura ${inv.invoice_number}. Cancela esa factura primero.`,
+        `Esta orden ya tiene la factura ${inv.invoice_number}. Cancela esa factura primero (Finanzas → Cuentas por cobrar); si el cliente devolvió solo una parte, lo correcto es nota de crédito, no cancelar la venta.`,
       );
     const shipMovs = await sql.query(
       `select lot_id, location_id, quantity::text, unit from inventory_movements
@@ -7383,15 +7624,20 @@ export const cancelSalesOrder = createServerFn({ method: "POST" })
         [mv.lot_id, mv.location_id, qty, mv.unit, so.id, `Cancelación ${so.so_number}`],
       );
     }
+    const staffName = await staffNameFor(sql, context.userId);
+    // C-2b: las allocations no se borran, se marcan. Las ocho lecturas de
+    // inventario y dinero las filtran; el cruce de ventas rendidas de la
+    // complementaria las cuenta y las rinde como reversa.
     await sql.query(
-      `delete from sale_line_allocations where sales_order_line_id in (select id from sales_order_lines where sales_order_id = $1)`,
-      [so.id],
+      `update sale_line_allocations set cancelled_at = now(), cancelled_by = $2
+       where cancelled_at is null
+         and sales_order_line_id in (select id from sales_order_lines where sales_order_id = $1)`,
+      [so.id, staffName],
     );
     await sql.query(
       `update sales_order_lines set quantity_shipped = 0, lot_id = null where sales_order_id = $1`,
       [so.id],
     );
-    const staffName = await staffNameFor(sql, context.userId);
     await sql.query(
       `update sales_orders set status='cancelled', cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`,
       [staffName, data.reason || null, so.id],
@@ -7872,6 +8118,7 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
             sup.advance_recovered::text, sup.final_payment::text, sup.balance_due::text, sup.prior_net::text,
             sup.received_qty::text, sup.destroyed_equiv_qty::text, sup.destroyed_cum_equiv_qty::text, sup.destroyed_cum_pct::text,
             sup.certificate_number, sup.certificate_date::text, sup.settlement_id, coalesce(sup.adjustment_total,0)::text as adjustment_total,
+            coalesce(sup.reversal_total,0)::text as reversal_total, coalesce(sup.reversal_units,0)::text as reversal_units,
             po.po_number, s.name, s.contact_name, s.phone, s.email, s.city, s.country, s.paca_number,
             gs.settlement_number as parent_number, gs.issue_date::text as parent_issue_date,
             gp.payable_number, sb.bill_number, a.advance_number
@@ -7898,8 +8145,15 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
   );
   const lots = await sql.query(
     `select lot_number, product_name, calibre, unit, origin, opening_pending::text, sold_qty::text, revenue::text,
-            waste_qty::text, repacked_out_qty::text, destroyed_qty::text, plein_bought_qty::text, closing_pending::text
+            waste_qty::text, repacked_out_qty::text, destroyed_qty::text, plein_bought_qty::text, closing_pending::text,
+            coalesce(returned_qty,0)::text as returned_qty
      from grower_settlement_supplement_lots where supplement_id = $1 order by id`,
+    [sup.id],
+  );
+  const reversals = await sql.query(
+    `select rendered_in, so_number, invoice_number, customer_name, lot_number, shipped_at::text, cancelled_at::text, cancel_reason,
+            quantity::text, unit, unit_price::text, amount::text
+     from grower_settlement_supplement_reversals where supplement_id = $1 order by id`,
     [sup.id],
   );
   const expenses = await sql.query(
@@ -7922,13 +8176,16 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
     [sup.id],
   );
   const dmy = (iso: string | null) => (iso ? iso.slice(0, 10).split("-").reverse().join("/") : "");
+  const reversedUnits = n(sup.reversal_units);
   const commissionLabel =
     sup.commission_type === "per_unit"
-      ? `${money2(n(sup.commission_rate))} por caja × ${qtyText(n(sup.sold_units))} ${boxWord(n(sup.sold_units))}`
+      ? reversedUnits > 0
+        ? `${money2(n(sup.commission_rate))} por caja × (${qtyText(n(sup.sold_units))} vendidas − ${qtyText(reversedUnits)} devueltas)`
+        : `${money2(n(sup.commission_rate))} por caja × ${qtyText(n(sup.sold_units))} ${boxWord(n(sup.sold_units))}`
       : sup.commission_type === "gross_pct"
-        ? `${n(sup.commission_rate)}% sobre venta bruta`
+        ? `${n(sup.commission_rate)}% sobre venta bruta${reversedUnits > 0 ? " (ventas menos reversas)" : ""}`
         : sup.commission_type === "net_pct"
-          ? `${n(sup.commission_rate)}% sobre neto tras gastos`
+          ? `${n(sup.commission_rate)}% sobre neto tras gastos${reversedUnits > 0 ? " (ventas menos reversas)" : ""}`
           : "sin comisión";
   const priorDocs = [sup.parent_number, ...previous.map((p) => p.supplement_number)].join(", ");
   const lines: PrintLine[] = [
@@ -7944,6 +8201,16 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
       sku: r.lot_number,
       description: `Venta ${r.so_number ?? ""}${r.invoice_number ? ` · factura ${r.invoice_number}` : " · sin factura"}${r.customer_name ? ` · ${r.customer_name}` : ""} · despachada el ${dmyStamp(r.shipped_at)}`,
       qty: n(r.quantity),
+      unit: r.unit || "",
+      unit_price: n(r.unit_price),
+      amount: n(r.amount),
+    })),
+    // Reversa (C-2b): venta rendida antes y cancelada en esta ventana. Las
+    // cajas volvieron al lote y quedan pendientes; el monto va en negativo.
+    ...reversals.map((r) => ({
+      sku: "REVERSA",
+      description: `Venta ${r.so_number ?? ""} cancelada el ${dmyStamp(r.cancelled_at)} (rendida en ${r.rendered_in})${r.invoice_number ? ` · factura ${r.invoice_number}` : ""}${r.customer_name ? ` · ${r.customer_name}` : ""} · lote ${r.lot_number}, despachada el ${dmyStamp(r.shipped_at)}${r.cancel_reason ? ` — ${r.cancel_reason}` : ""} — las cajas regresaron a pendientes de venta`,
+      qty: -n(r.quantity),
       unit: r.unit || "",
       unit_price: n(r.unit_price),
       amount: n(r.amount),
@@ -8020,7 +8287,10 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
       ? [
           {
             sku: "COMISIÓN",
-            description: `Comisión Plein — ${commissionLabel} (la misma con la que se rindió ${sup.parent_number})`,
+            description:
+              n(sup.commission) < 0
+                ? `Comisión Plein devuelta — ${commissionLabel} (la misma con la que se rindió ${sup.parent_number}; Plein regresa la comisión de la venta cancelada)`
+                : `Comisión Plein — ${commissionLabel} (la misma con la que se rindió ${sup.parent_number})`,
             qty: 1,
             unit: "",
             unit_price: -n(sup.commission),
@@ -8057,7 +8327,7 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
     .filter((l) => n(l.opening_pending) > 0.0005 || n(l.closing_pending) > 0.0005 || n(l.sold_qty) > 0.0005)
     .map(
       (l) =>
-        `${l.lot_number}: ${qtyText(n(l.opening_pending))} ${l.unit || ""} pendientes al abrir = ${qtyText(n(l.sold_qty))} vendidas + ${qtyText(n(l.waste_qty))} merma de bodega + ${qtyText(n(l.repacked_out_qty))} a reempaque + ${qtyText(n(l.destroyed_qty))} destruidas + ${qtyText(n(l.plein_bought_qty))} compradas por Plein + ${qtyText(n(l.closing_pending))} siguen pendientes`,
+        `${l.lot_number}: ${qtyText(n(l.opening_pending))} ${l.unit || ""} pendientes al abrir${n(l.returned_qty) > 0 ? ` + ${qtyText(n(l.returned_qty))} regresaron de ventas canceladas` : ""} = ${qtyText(n(l.sold_qty))} vendidas + ${qtyText(n(l.waste_qty))} merma de bodega + ${qtyText(n(l.repacked_out_qty))} a reempaque + ${qtyText(n(l.destroyed_qty))} destruidas + ${qtyText(n(l.plein_bought_qty))} compradas por Plein + ${qtyText(n(l.closing_pending))} siguen pendientes`,
     );
   const destructionText =
     sup.received_qty != null && n(sup.destroyed_equiv_qty) > 0
@@ -8088,7 +8358,7 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
     lines,
     subtotal: n(sup.net_to_grower),
     total: n(sup.balance_due) > 0.009 ? -n(sup.balance_due) : n(sup.final_payment),
-    notes: `Complementa ${sup.parent_number} (ya rendido: ${money2(n(sup.prior_net))}). Periodo de esta cuenta: del ${dmyStamp(sup.period_start)} al ${dmyStamp(sup.period_end)}. Ingreso de la ventana ${money2(n(sup.revenue))} - gastos del productor ${money2(n(sup.grower_expenses))} - comisión Plein ${money2(n(sup.commission))}${n(sup.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(sup.shrink_compensation))}` : ""}${n(sup.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(sup.plein_purchase_total))}` : ""}${n(sup.adjustment_total) > 0.009 ? ` + ajustes a favor del productor ${money2(n(sup.adjustment_total))}` : ""} = neto de esta cuenta ${money2(n(sup.net_to_grower))}. Adelantos recuperados: ${money2(n(sup.advance_recovered))}.${closeText}${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
+    notes: `Complementa ${sup.parent_number} (ya rendido: ${money2(n(sup.prior_net))}). Periodo de esta cuenta: del ${dmyStamp(sup.period_start)} al ${dmyStamp(sup.period_end)}. Ingreso de la ventana ${money2(n(sup.revenue))}${n(sup.reversal_total) > 0.009 ? ` - reversas de ventas canceladas ${money2(n(sup.reversal_total))}` : ""} - gastos del productor ${money2(n(sup.grower_expenses))}${n(sup.commission) < 0 ? ` + comisión devuelta por Plein ${money2(-n(sup.commission))}` : ` - comisión Plein ${money2(n(sup.commission))}`}${n(sup.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(sup.shrink_compensation))}` : ""}${n(sup.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(sup.plein_purchase_total))}` : ""}${n(sup.adjustment_total) > 0.009 ? ` + ajustes a favor del productor ${money2(n(sup.adjustment_total))}` : ""} = neto de esta cuenta ${n(sup.net_to_grower) < 0 ? `-${money2(-n(sup.net_to_grower))}` : money2(n(sup.net_to_grower))}. Adelantos recuperados: ${money2(n(sup.advance_recovered))}.${closeText}${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
     warning: warningText,
     showPaca: false,
     company,
@@ -9181,6 +9451,7 @@ export const getFinancials = createServerFn({ method: "GET" })
            coalesce((select sum(sol.quantity_shipped * coalesce(sol.unit_price,0)) from sales_order_lines sol),0)::text as sales
     from sale_line_allocations a
     left join lots on lots.id = a.lot_id
+    where a.cancelled_at is null
   `);
     const expenses = await sql.query(
       `select category, amount::text from expenses where cancelled_at is null`,
@@ -10277,6 +10548,7 @@ async function wipeLiveActivity(sql: any) {
   await sql.query(`delete from grower_settlement_supplement_expenses`);
   await sql.query(`delete from grower_settlement_supplement_sales`);
   await sql.query(`delete from grower_settlement_supplement_lots`);
+  await sql.query(`delete from grower_settlement_supplement_reversals`);
   await sql.query(`delete from grower_settlement_supplement_adjustments`);
   // Los ajustes (C-2a) apuntan a la complementaria que los rindió.
   await sql.query(`delete from grower_adjustments`);
