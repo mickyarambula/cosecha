@@ -15,6 +15,7 @@ import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
   cancelSalesOrder,
+  getSalesOrderCancelImpact,
   createCreditInvoice,
   createInvoiceFromSO,
   createPurchaseFromSO,
@@ -81,6 +82,15 @@ function Page() {
   );
   const [credit, setCredit] = useState<number | null>(null);
   const [cancelSo, setCancelSo] = useState<{ id: number; so_number: string } | null>(null);
+  // C-2b: si la venta ya se le rindió al productor (y si ya se le pagó), el
+  // diálogo lo avisa antes del clic. Informa, no bloquea.
+  const cancelImpact = useAsync(
+    () =>
+      cancelSo
+        ? getSalesOrderCancelImpact({ data: { sales_order_id: cancelSo.id } })
+        : Promise.resolve(null),
+    [cancelSo?.id],
+  );
   const [placed, setPlaced] = useState<{
     id: number;
     so_number: string;
@@ -889,6 +899,7 @@ function Page() {
           subtitle={t(
             "If anything was shipped from a lot, it returns to inventory. Blocked if this order already has an invoice.",
           )}
+          warning={cancelImpact.data?.warnings.length ? cancelImpact.data.warnings.join(" ") : null}
           onClose={() => setCancelSo(null)}
           onConfirm={async (reason) => {
             await cancelSalesOrder({

@@ -3517,6 +3517,19 @@ function SupplementPanel({
                 ))}
               </div>
             ) : null}
+            {ok.reversals.map((r) => (
+              <div key={r.allocation_id} className="flex justify-between border-b border-border py-1.5">
+                <span>
+                  − Reversa: venta {r.so_number} cancelada el {stamp(r.cancelled_at)}
+                  <span className="ml-2 text-xs text-muted">
+                    rendida en {r.rendered_in} · {r.customer_name} · lote {r.lot_number} · {r.quantity} {r.unit} ×{" "}
+                    {money(r.unit_price, 2)}
+                    {r.cancel_reason ? ` · ${r.cancel_reason}` : ""} · las cajas volvieron a pendientes
+                  </span>
+                </span>
+                <span className="tabular-nums text-danger">−{money(r.amount)}</span>
+              </div>
+            ))}
             {ok.expenses.map((e) => (
               <div key={e.id} className="flex justify-between border-b border-border py-1.5">
                 <span>
@@ -3531,19 +3544,23 @@ function SupplementPanel({
             ))}
             <div className="flex justify-between border-b border-border py-1.5">
               <span>
-                Comisión Plein
+                {ok.breakdown.commission < -0.009 ? "Comisión Plein devuelta" : "Comisión Plein"}
                 <span className="ml-2 text-xs text-muted">
                   {ok.breakdown.commission_type === "per_unit"
-                    ? `${money(ok.breakdown.commission_rate, 2)} × ${ok.breakdown.sold_units} ${boxWord(ok.breakdown.sold_units)}`
+                    ? ok.breakdown.reversal_units > 0
+                      ? `${money(ok.breakdown.commission_rate, 2)} × (${ok.breakdown.sold_units} vendidas − ${ok.breakdown.reversal_units} devueltas)`
+                      : `${money(ok.breakdown.commission_rate, 2)} × ${ok.breakdown.sold_units} ${boxWord(ok.breakdown.sold_units)}`
                     : ok.breakdown.commission_type === "gross_pct"
-                      ? `${ok.breakdown.commission_rate}% de ${money(ok.breakdown.commission_base)} (venta bruta)`
+                      ? `${ok.breakdown.commission_rate}% de ${money(ok.breakdown.commission_base)} (venta bruta${ok.breakdown.reversal_units > 0 ? `: ${money(ok.breakdown.revenue)} vendido − ${money(ok.breakdown.reversal_total)} de reversas` : ""})`
                       : ok.breakdown.commission_type === "net_pct"
-                        ? `${ok.breakdown.commission_rate}% de ${money(ok.breakdown.commission_base)} (neto tras gastos)`
+                        ? `${ok.breakdown.commission_rate}% de ${money(ok.breakdown.commission_base)} (neto tras gastos${ok.breakdown.reversal_units > 0 ? ", ventas menos reversas" : ""})`
                         : "sin comisión"}{" "}
                   · la misma de {ok.parent.settlement_number}
                 </span>
               </span>
-              <span className="tabular-nums">−{money(ok.breakdown.commission)}</span>
+              <span className={`tabular-nums ${ok.breakdown.commission < -0.009 ? "text-ok" : ""}`}>
+                {ok.breakdown.commission < -0.009 ? `+${money(-ok.breakdown.commission)}` : `−${money(ok.breakdown.commission)}`}
+              </span>
             </div>
             {ok.shrink_rows.map((v) => (
               <div key={v.pack_out_id} className="flex items-start justify-between gap-3 border-b border-border py-1.5">
@@ -3629,7 +3646,7 @@ function SupplementPanel({
               <table className="w-full min-w-[720px] text-left text-xs">
                 <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
                   <tr>
-                    {["Lote", "Abre pendientes", "Vendidas", "Merma", "A reempaque", "Destruidas", "Compró Plein", "Cierra pendientes"].map((h) => (
+                    {["Lote", "Abre pendientes", "Regresaron", "Vendidas", "Merma", "A reempaque", "Destruidas", "Compró Plein", "Cierra pendientes"].map((h) => (
                       <th key={h} className="px-2 py-1.5 font-medium">
                         {h}
                       </th>
@@ -3650,6 +3667,7 @@ function SupplementPanel({
                           ) : null}
                         </td>
                         <td className="px-2 py-1.5 tabular-nums">{l.opening_pending}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{l.returned_qty}</td>
                         <td className="px-2 py-1.5 tabular-nums">{l.sold_qty}</td>
                         <td className="px-2 py-1.5 tabular-nums">{l.waste_qty}</td>
                         <td className="px-2 py-1.5 tabular-nums">{l.repacked_out_qty}</td>

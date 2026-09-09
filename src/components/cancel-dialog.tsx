@@ -12,11 +12,14 @@ import { useT } from "@/lib/i18n";
 export function CancelDialog({
   title,
   subtitle,
+  warning,
   onClose,
   onConfirm,
 }: {
   title: string;
   subtitle?: string;
+  /** Aviso previo (C-2b): informa antes del clic, no bloquea. */
+  warning?: string | null;
   onClose: () => void;
   onConfirm: (reason: string) => Promise<void>;
 }) {
@@ -39,6 +42,9 @@ export function CancelDialog({
   return (
     <Modal title={title} subtitle={subtitle} onClose={onClose}>
       <div className="grid gap-3">
+        {warning ? (
+          <p className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-sm text-warn">{warning}</p>
+        ) : null}
         <Field label={t("Motivo (opcional)")}>
           <Textarea value={reason} onChange={(e) => setReason(e.target.value)} className="min-h-20" />
         </Field>
