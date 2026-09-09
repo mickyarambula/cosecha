@@ -45,7 +45,6 @@ export const MODULES: ModuleDef[] = [
       },
       { to: "/cpo", label: "Online Orders" },
       { to: "/listas", label: "Price Sheets" },
-      { to: "/destinos", label: "Delivery Routes" },
       { to: "/embarques", label: "Embarques" },
       { to: "/agencias", label: "Agencias aduanales" },
       { to: "/cruces", label: "Puntos de cruce" },
@@ -75,6 +74,7 @@ export const MODULES: ModuleDef[] = [
       { to: "/inventario", label: "Lots", search: { tab: "lots" } },
       { to: "/inventario", label: "Oversold", search: { tab: "oversold" } },
       { to: "/inventario", label: "Fulfillment", search: { tab: "fulfillment" } },
+      { to: "/destinos", label: "Ubicaciones" },
       {
         to: "/productos",
         label: "Products & SKUs",

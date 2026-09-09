@@ -1042,16 +1042,17 @@ export const setDefaultCustomerLocation = createServerFn({ method: "POST" })
     return { ok: true };
   });
 export const listLocations = createServerFn({ method: "GET" })
+  .validator(z.object({ include_inactive: z.boolean().optional() }).optional())
   .middleware([authMiddleware])
-  .handler(async () => {
+  .handler(async ({ data }) => {
     return (await getSql())
       .query(
         `
     select loc.id, loc.code, loc.name, loc.location_type, loc.city, loc.owner_kind, loc.contact_name, loc.notes,
-           loc.set_point_temp::text, loc.set_point_unit,
+           loc.is_active, loc.set_point_temp::text, loc.set_point_unit,
            coalesce((select sum(quantity) from inventory where location_id = loc.id), 0)::text as lot_qty
     from locations loc
-    where loc.is_active
+    ${data?.include_inactive ? "" : "where loc.is_active"}
     order by loc.id
   `,
       )
@@ -1072,6 +1073,8 @@ export const createLocation = createServerFn({ method: "POST" })
       city: z.string().optional(),
       contact_name: z.string().optional(),
       notes: z.string().optional(),
+      set_point_temp: z.number().nullable().optional(),
+      set_point_unit: z.enum(["C", "F"]).nullable().optional(),
     }),
   )
   .middleware([authMiddleware])
@@ -1092,8 +1095,8 @@ export const createLocation = createServerFn({ method: "POST" })
     return {
       id: (
         await sql.query(
-          `insert into locations (code, name, location_type, city, owner_kind, contact_name, notes)
-       values ($1,$2,$3,$4,$5,$6,$7) returning id`,
+          `insert into locations (code, name, location_type, city, owner_kind, contact_name, notes, set_point_temp, set_point_unit)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
           [
             code,
             data.name.trim(),
@@ -1102,11 +1105,67 @@ export const createLocation = createServerFn({ method: "POST" })
             data.owner_kind || "propia",
             data.contact_name?.trim() || null,
             data.notes?.trim() || null,
+            data.set_point_temp ?? null,
+            data.set_point_temp != null ? (data.set_point_unit ?? "F") : null,
           ],
         )
       )[0].id,
       code,
     };
+  });
+export const updateLocation = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.number(),
+      name: z.string().min(1),
+      code: z.string().min(1),
+      location_type: z.string(),
+      owner_kind: z.string(),
+      city: z.string().optional(),
+      contact_name: z.string().optional(),
+      notes: z.string().optional(),
+      set_point_temp: z.number().nullable().optional(),
+      set_point_unit: z.enum(["C", "F"]).nullable().optional(),
+    }),
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const code = data.code.trim();
+    const [loc] = await sql.query(`select id from locations where id = $1`, [data.id]);
+    if (!loc) throw new Error("Ubicación no encontrada");
+    const [dup] = await sql.query(`select id from locations where code = $1 and id <> $2`, [
+      code,
+      data.id,
+    ]);
+    if (dup) throw new Error(`El código ${code} ya lo usa otra ubicación — captura uno distinto.`);
+    await sql.query(
+      `update locations set name=$1, code=$2, location_type=$3, owner_kind=$4, city=$5, contact_name=$6, notes=$7,
+         set_point_temp=$8, set_point_unit=$9
+       where id=$10`,
+      [
+        data.name.trim(),
+        code,
+        data.location_type,
+        data.owner_kind,
+        data.city?.trim() || null,
+        data.contact_name?.trim() || null,
+        data.notes?.trim() || null,
+        data.set_point_temp ?? null,
+        data.set_point_temp != null ? (data.set_point_unit ?? "F") : null,
+        data.id,
+      ],
+    );
+    return { ok: true };
+  });
+export const setLocationActive = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.number(), is_active: z.boolean() }))
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    await (
+      await getSql()
+    ).query(`update locations set is_active = $1 where id = $2`, [data.is_active, data.id]);
+    return { ok: true };
   });
 export const listValueLists = createServerFn({ method: "GET" })
   .middleware([authMiddleware])

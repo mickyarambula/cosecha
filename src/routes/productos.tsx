@@ -395,7 +395,7 @@ function PackOutTab() {
   const t = useT();
   const lots = useAsync(() => listLots(), []);
   const products = useAsync(() => listProducts(), []);
-  const locs = useAsync(() => listLocations(), []);
+  const locs = useAsync(() => listLocations({ data: {} }), []);
   const history = useAsync(() => listPackOuts(), []);
   const [open, setOpen] = useState(false);
   const [src, setSrc] = useState<Record<number, string>>({});
