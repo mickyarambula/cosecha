@@ -143,7 +143,7 @@ function Page() {
   const orders = useAsync(() => listPurchaseOrders(), []);
   const products = useAsync(() => listProducts(), []);
   const suppliers = useAsync(() => listSuppliers(), []);
-  const locations = useAsync(() => listLocations(), []);
+  const locations = useAsync(() => listLocations({ data: {} }), []);
   const skus = packsToSkus(products.data ?? []);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
