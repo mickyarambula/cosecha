@@ -10,6 +10,8 @@ Criterio de severidad (el que pediste):
 
 Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan como *(ya documentado, sigue abierto)*. Lo que parece intencional se dice.
 
+**Actualizado 9 Sep 2026** (no se re-auditó el repo completo — se verificó contra el código actual solo lo que las sesiones de trabajo tocaron desde el 3 Sep; lo demás sigue como se describió). Hallazgos con **✅ RESUELTO** o **⚠️ PARCIAL** llevan una nota después del texto original, que no se toca. Todo lo que sigue sin marca sigue abierto tal como se describe — no se re-verificó línea por línea, solo se confirmó que ningún bloque de esta sesión lo tocó de pasada.
+
 ---
 
 ## Hallazgos
@@ -18,7 +20,11 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 1. **La nota de crédito ignora todo lo que capturas y siempre acredita la orden completa.** `src/routes/ventas.tsx:899-948`. El modal muestra tipo (Restock/Loss/Price Adjustment), cantidad a acreditar y dos notas, pero ninguno está ligado a estado (líneas 904-911, 924-927). Al pulsar "Create credit" se manda cada línea con `quantity_ordered × unit_price` (942-947). Hoy: si el cliente rechazó 20 cajas de 800, sale una nota de crédito por las 800 y viaja al cliente. Debería: acreditar lo capturado.
 
+**✅ RESUELTO — PR #13 `fix-facturacion-creditos` (4 Sep 2026), antes de que arrancara la sesión con bloques A/B/C.** `createCreditInvoice` ahora acredita cantidad × precio por línea, tal como se captura, topado a lo facturado y a lo ya acreditado.
+
 2. **Después de la primera nota de crédito ya no se pueden emitir facturas.** `produce-server.ts:124-135` (`nextCode`) y `4827-4833`. El folio de factura busca la última fila con `like 'PP-2026-%'` ordenada por id; la nota de crédito `PP-2026-CR-001` (6094-6100) cae en ese patrón. Con facturas 0001..0010 y CR-001 recién creada, la siguiente factura calcula `PP-2026-0002`, que ya existe → error crudo `duplicate key`, y se repite en cada intento hasta que existan más créditos que facturas. Debería: secuencia independiente por tipo de documento.
+
+**✅ RESUELTO — PR #13 (4 Sep 2026).** `migrations/0033_folio_counters.sql`: contador propio por serie/prefijo (`folio_counters`), independiente entre facturas y notas de crédito.
 
 3. **La misma compra se puede pagar dos veces y sin tope.** *(ya documentado, sigue abierto)*. `listPayables` (5782-5856) sigue devolviendo cada OC como "por pagar" valuada a pedido × costo, y `registerVendorPayment` (5940-6009) acepta pagos a `kind: "po"` que suben `purchase_orders.paid`; CxP paga la misma compra contra la bill (`cxp.tsx:53`, `registerPago` 5306-5352). Ninguna de las dos rutas ve a la otra. Además `registerVendorPayment` no valida que el monto por renglón no rebase el saldo (5976-5999) ni que el gasto/OC sea del proveedor elegido. El KPI "Total expenses" de Gastos suma las OCs de fruta como si fueran gastos (`gastos.tsx:65-78`) y la antigüedad de CxP cuenta OC + bill de la misma carga.
 
@@ -26,11 +32,19 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 5. **Reempacar saca las cajas de la liquidación del productor.** `createPackOut` (6697-6828): el lote nuevo nace sin `purchase_order_id` (6788-6806) y la liquidación solo lee lotes de la OC (`loadPoLots` 2346-2356). Al lote origen se le baja `current_qty` como `repack_out` (6759-6762): no cuenta como vendido, ni merma, ni remanente. Hoy: en consignación o comisión, cada caja reempacada desaparece del account of sales y el productor no cobra por ella. Debería: heredar la OC / prorratear ventas del lote hijo al lote padre.
 
+**✅ RESUELTO — PR #14 `reempaque-liquidacion` (Bloque A).** El lote hijo hereda la carga de origen; la merma del reempaque se liquida con `charged_to` (Plein o productor), ya no desaparece del account of sales.
+
 6. **En comisión pura el P&L se queda con el dinero del productor.** `getFinancials` (6217-6332): ingreso = total facturado (6259-6261); costo = allocations × `lots.unit_cost` (6224-6229), pero en comisión el costo del lote se queda en cero a propósito (`applySettlement` 2740-2743). Existe el pasivo 21000 "por remitir" (6305) pero no hay contrapartida en resultados. Hoy: utilidad neta sobreestimada por el neto al productor; el Balance no cuadra por ese monto. Debería: el neto al productor entra como costo/remisión al emitir la liquidación.
+
+**Sigue abierto (9 Sep 2026).** Se tocó todo el motor de liquidación esta sesión (bloques C-1/C-2) y esto no se corrigió — verificado explícitamente: `getFinancials` sigue sin ninguna contrapartida del neto al productor en el P&L. Pendiente de decisión de producto (ver "Preguntas para Miguel" #1, sigue sin responder).
 
 7. **"Apply target %" y "Update lot costs" reescriben el costo pactado de una compra en firme.** `compras.tsx:2349-2378, 2670-2685` → `applySettlement` (2717-2785). Solo bloquea comisión (2740); en firme el `target_profit_pct` sobreescribe `t_cost` (2269-2270) y se escribe en `lots.unit_cost` y en `purchase_order_lines.unit_cost` **por producto** (2771-2776), así que dos calibres del mismo producto quedan con el mismo costo. `createBillFromPO` en firme factura recibido × ese costo (4895-4897). Hoy: una "herramienta de análisis" (texto en 2375-2376) cambia el costo real y el monto de la factura al productor. Debería: no escribir en firme; y escribir por línea, nunca por producto.
 
+**⚠️ PARCIAL — PR #19 `candados-liquidacion` (Bloque C-2a).** En **consignación**, `applySettlement` ya está bloqueado cuando la carga tiene `liquidated_at`: el costo del lote lo escribe una sola vez `issueGrowerSettlement` al emitir, desde el neto congelado, y ya no se puede recalcular después. El caso de **firme** no se tocó: en trato firme, "Update lot costs" sigue reescribiendo `lots.unit_cost` y `purchase_order_lines.unit_cost` **por producto**, con el mismo problema de dos calibres compartiendo costo. Sigue pendiente.
+
 8. **La liquidación emitida no congela la carga.** `issueGrowerSettlement` (2573-2716) crea el documento y el pasivo `grower_payables` (2687-2703), pero nada impide después: despachar más cajas de esos lotes (`shipSalesLine` 4702-4791), cancelar una venta ya liquidada (`cancelSalesOrder` 4965-5025 borra las allocations), cambiar quién absorbe un gasto o la comisión (`setExpenseChargedTo` 2818-2835, `setPoCommission` 2786-2817), editar/cancelar gastos (3781-3917 solo bloquean si hay bill, no si hay LIQ). En consignación la bill se calcula en vivo (4895-4898), no desde el documento congelado. Hoy: LIQ-001 dice $10,000 y REM-001 nace por $10,000; se venden 50 cajas más y ese ingreso ya nunca le llega al productor; o la bill sale distinta del account of sales que ya se le mandó. Debería: cerrar la carga al emitir, o liquidación complementaria explícita.
+
+**✅ RESUELTO — PR #18/#19/#20 (bloques C-1a, C-2a/C-2c, C-2b).** Se eligió liquidación complementaria explícita (pregunta #2 de abajo, respondida). `purchase_orders.liquidated_at` congela la carga al emitir; despachar más cajas, gastos nuevos, y ventas canceladas después ya no se pierden — todo se rinde en la siguiente complementaria (`LIQ-004-C1`, `-C2`…), incluida la comisión devuelta si se cancela una venta ya rendida. La bill de consignación nace del documento congelado. Quedó fuera de este arreglo: hallazgo 7 en trato firme (arriba) y hallazgo 14 (gastos ligados a varias OCs, abajo) — ninguno de los dos se tocó.
 
 9. **El BOL imprime lo pedido, no lo embarcado, y cambia de fecha al reimprimir.** `getBolDoc` (1752-1819) lista todas las líneas de la OV con `quantity_ordered` (1789-1802) sin importar de qué embarque es; `bol-pdf.ts:142` imprime `Fecha: hoy`. Hoy: un embarque parcial o el segundo camión de la misma OV llevan un BOL con todas las cajas de la orden; el mismo folio BOL sale con fechas distintas. Debería: cantidades del embarque y fecha de emisión congelada.
 
@@ -46,6 +60,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 14. **Conectar un gasto a varias OCs o desconectarlo no cambia la liquidación.** La liquidación lee `expenses.purchase_order_id` con el monto completo (2420-2425) e ignora `expense_po_links.amount_applied`; "Disconnect" (`disconnectExpensePo` 5923-5939) borra el link pero deja `purchase_order_id`. UI: `gastos.tsx:776-800, 904-963`. Hoy: un flete de dos cargas se le descuenta entero al productor de la primera y nada al de la segunda; "Not connected to a PO" mientras la OC lo sigue listando.
 
+**Sigue abierto (9 Sep 2026), verificado.** Aunque los bloques C-1/C-2 tocaron mucho del motor de gastos-en-liquidación (candados sobre gastos ya rendidos, ajuste a favor del productor), la liquidación sigue leyendo `expenses` por `purchase_order_id` con el monto completo — `expense_po_links.amount_applied` sigue sin usarse.
+
 15. **La recepción ignora lo que capturas y hardcodea el resto.** `insertLot` (162-179) fija `received_date` y `pack_date` a hoy aunque el modal pida fecha; `origin_country` es 'México' fijo (168) aunque la línea de OC traiga origen; `grade` nunca se pasa. `inspection_folio` y `unloaded` no tienen input en el modal (`compras.tsx:1002-1147`), así que el aviso PACA asume siempre "carga descargada" (4009-4012). Las etiquetas de lote imprimen esos datos (`etiquetas.lotes.$poId.tsx:24-28`): "Empacado" = fecha de recepción, "Origen: México" para producto de Carrifoods USA.
 
 16. **Los candados de rol siguen solo en la UI para la mitad de las funciones.** `moduleMiddleware` (`src/lib/auth/middleware.ts`, `access.server.ts`) protege finanzas y cancelaciones, pero estas usan solo `authMiddleware`: `createInvoiceFromSO` (4794), `createBillFromPO` (4856), `receiveMerchandise` (3990), `shipSalesLine` (4711), `wasteLot` (3103), `createPurchaseOrder` (3440), `updatePurchaseOrder` (3542), `createPackOut` (6698), `setLotQuality` (2234), `holdLot` (3142), `closeLot` (3160), `createSalesOrder` (4261). Un login nuevo queda `pending` (6581-6595) y puede llamarlas directo. *(parcialmente documentado)*.
@@ -58,6 +74,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 20. **Editar un gasto resetea su prorrateo y "Ya pagado" paga sin caja.** `updateExpense`: `alloc_by` vuelve a 'pallet' (3841) porque la UI no lo manda (`gastos.tsx:702-713`); marcar "Ya pagado" pone `paid = amount` sin movimiento de tesorería (3827-3846). *(lo segundo ya documentado)*.
 
+**Sigue abierto (9 Sep 2026), verificado.** `updateExpense` se tocó en `candados-liquidacion` (para bloquear editar un gasto ya rendido), pero la línea `data.alloc_by || "pallet"` sigue igual — cualquier edición de un gasto sigue reseteando su prorrateo a pallet si la UI no lo manda, y `gastos.tsx` sigue sin mandarlo.
+
 21. **Una bill con recuperación de adelantos no se puede cancelar ni deshacer.** `applyAdvanceRecovery` sube `supplier_bills.paid` sin cash_movement (3048-3053); `cancelSupplierBill` bloquea por `paid > 0` y pide "cancela ese pago primero" (5112-5117) pero no hay folio que cancelar ni función para revertir la recuperación.
 
 22. **El folio del BOL puede chocar.** `nextCode` toma la última fila por id (128), pero los BOL se emiten en orden de impresión (`issueBol` 1740): embarque 5 recibe BOL-001, luego embarque 3 recibe BOL-002, y el siguiente vuelve a calcular BOL-002 → falla el índice único de `0029`.
@@ -67,6 +85,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 24. **P&L: Ingreso y Utilidad bruta usan bases distintas.** `getFinancials`: la cuenta 40000 es lo facturado (6259-6261) pero la utilidad bruta usa lo embarcado (`salesShipped`, 6226/6275) y el COGS usa allocations aunque no haya factura. Dos números de venta en el mismo reporte.
 
 25. **Las categorías de gasto no llegan a la cuenta contable y "Save mappings" no se lee.** `ConceptSelect` emite nombres del catálogo V8 ("Fletes", "Carton", `concepts.tsx`) mientras `getFinancials.currentOf` (6277-6309) y `EXPENSE_KEYS` (`cuentas.tsx:20-36`) esperan "Freight", "Boxes"…; todo cae en 59999 General. `gl_mappings` se guarda (`persistMaps` 98-113) pero `getFinancials` no lo consulta: las cuentas están fijas en código.
+
+**⚠️ PARCIAL — PR #17 `detalles-bloque-b` (Detalle 4, 4 Sep 2026).** El síntoma visible se corrigió para dos categorías: "Fletes"/"Freight" y "Seguros"/"Insurance" ya caen juntas en su cuenta (51000 y 55000) en vez de irse a 59999 General — verificado, `currentOf` ahora suma ambos nombres explícitamente. La causa de fondo sigue igual y **verificada de nuevo hoy**: `currentOf` sigue con nombres de categoría hardcodeados en el código (una lista de `if (number === ...)`), y `gl_mappings` — que sí se guarda desde Ajustes → Automations — sigue sin ser consultado por `getFinancials`. Cualquier categoría nueva que no esté en esa lista hardcodeada se sigue yendo a 59999 General.
 
 26. **El estado de cuenta al cliente sale sin detalle y sin restar créditos.** `cxc.tsx:178-187` manda `lines` vacías → el PDF "Statement" solo trae el total (`send-doc.tsx:199-222`); `listInvoices.saldo = max(total − paid, 0)` (5173) deja las notas de crédito en saldo 0, así que no rebajan el estado de cuenta. *(créditos ya documentado)*.
 
@@ -98,6 +118,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 39. **Portal del productor.** "No payments found." fijo (183) aunque `paid` existe; estado de cada venta "Unpaid"/"Sale" fijo (3257-3258); `getVendorPortal` devuelve la liquidación completa (comisión, gastos de Plein, utilidad) sin importar el nivel (3218-3261) y la pantalla muestra "Commission $" y gastos en todos los niveles (46-48, 109-174). *(ya documentado)*.
 
+**Sigue abierto (9 Sep 2026), verificado — con un cambio relacionado que no lo resuelve.** `candados-liquidacion` (PR #19) sí tocó `getVendorPortal`: cuando la carga ya tiene liquidación, el portal ahora muestra el documento congelado (LIQ + sus complementarias) en vez del cálculo vivo — eso es nuevo y correcto. Pero el "Commission $" de la tarjeta superior sigue sin respetar `vendor_share_level`, exactamente como decía este hallazgo; solo cambió de dónde saca el número (vivo → congelado), no si debe mostrarse en ese nivel. "No payments found." fijo tampoco se tocó.
+
 40. **Validaciones que solo viven en la UI.** Sin chequeo en servidor: que el pack pertenezca al producto (`createPurchaseOrder` 3424-3437, `createSalesOrder` 4247-4258, `createCustomerPO` 4367-4388); que el destino sea del cliente (`createSalesOrder` 4267-4275 y `createCustomerPO` 4432 — `setSalesOrderDestination` sí lo valida, 4316-4322); lote cerrado/agotado al despachar (`shipSalesLine` 4727-4751 revisa held y calidad, no `closed_at` ni `status`); ubicación existente al recibir/reempacar; clientes/proveedores inactivos (ningún selector filtra `is_active` y el servidor tampoco); OC desde OV con un solo costo para todas las líneas (4683-4694).
 
 41. **Vocabulario mezclado en la base.** `order_type` guarda "Delivery by vendor"/"Pickup"/"Will-call" (`compras.tsx:159, 515-517`) con default 'entrega' en `0007`; `CALIDAD_LABEL` y `DESTINO_*` en `utils.ts` tienen valores en inglés; `kindLabel` de tesorería en inglés (38-43).
@@ -111,6 +133,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 45. **Fechas en UTC del servidor.** *(ya documentado)*. `todayISO` (`utils.ts:74-77`) alimenta folios de lote/CPO, fecha de factura, bill, cobros: después de ~5 pm en Nogales todo se fecha mañana.
 
 46. **La nota de crédito no se liga a la factura que corrige.** `createCreditInvoice` (6065-6139): `parent_invoice_id` nunca se llena, `sales_rep` es 'Miguel' fijo (6104), y no se topa al total facturado.
+
+**✅ RESUELTO — PR #13 (4 Sep 2026).** `parent_invoice_id` se llena al crear la nota, el total se topa contra lo facturado y lo ya acreditado, y `sales_rep` ya toma el nombre real de quien está en sesión (`staffNameFor`) en vez de "Miguel" fijo.
 
 ### BAJO
 
@@ -126,6 +150,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 **1. Liquidación al productor cerrada de punta a punta — grande.**
 Qué falta: candado al emitir (o liquidación complementaria), reempaque y notas de crédito que viajen al productor, devoluciones (`rts_qty` existe desde `0008` y nada lo escribe), y una sola fuente para "cuánto le debo a cada productor" (bill + remisión + adelantos). Por qué importa: es el documento PACA más delicado y hoy tiene cuatro puertas abiertas (hallazgos 5, 7, 8, 14).
 
+**Avance (9 Sep 2026):** de las cuatro puertas, 5 y 8 ya cerraron (PR #14, #18/#19/#20); 7 se cerró solo en consignación, sigue abierta en firme (PR #19); 14 sigue abierta, no se tocó. Lo que faltaba de esta lista y **tampoco se construyó**: notas de crédito que viajen al productor con causa (quedó nombrado como "C-1b", no se hizo) y devoluciones/`rts_qty` (sigue sin nada que lo escriba). "Una sola fuente para cuánto le debo a cada productor" tampoco se construyó — sigue habiendo bill + remisión + adelantos por separado, aunque ahora cada uno sabe si viene de una complementaria.
+
 **2. Un solo número de "cuánto debo" y "cuánto me deben" — mediano.**
 Hoy hay cuatro CxP: dashboard (solo bills, 482), Balance (bills + gastos, 6273), CxP (bills, `cxp.tsx:41`), Gastos (gastos + OCs, `gastos.tsx:68`); y tres CxC: dashboard netea créditos (479), Balance los excluye (6265), lista CxC los deja en 0 (5173). Falta una función única de saldos que lean todas las pantallas, con créditos aplicables a facturas y remisiones incluidas.
 
@@ -137,7 +163,7 @@ Factura con SKU/calibre y destino real; OC con calibres; BOL por embarque con ca
 **5. Cobros y pagos con fecha, método y referencia real, y conciliación importada — mediano.**
 Fecha de depósito capturable, método guardado como campo (no en notas), referencia/folio Chase en el cobro para no capturar el depósito dos veces, importación del estado de cuenta (CSV) y cruce parcial/múltiple. Hoy conciliar es teclear el estado de cuenta línea por línea.
 
-**6. Margen aterrizado visible al vender — mediano.** *(PLAN-PASO-2)*. Costo del lote + prorrateo de gastos de su OC en el selector de lotes y en la línea; "costo por liquidar" en vez de "100%"; margen por allocations, no por el último lote. Requiere primero arreglar 12 y 13.
+**6. Margen aterrizado visible al vender — mediano.** *(PLAN-PASO-2, no construido — ver nota al inicio de `PLAN-PASO-2.md`)*. Costo del lote + prorrateo de gastos de su OC en el selector de lotes y en la línea; "costo por liquidar" en vez de "100%"; margen por allocations, no por el último lote. Requiere primero arreglar 12 y 13.
 
 **7. Preguntas que hoy no se pueden contestar — mediano cada una.**
 - Exposición total por productor (adelantos vivos + remisiones pendientes + bills + inventario consignado sin vender): los datos existen en cuatro tablas y ninguna pantalla los junta.
@@ -181,7 +207,7 @@ Un solo vocabulario para tipo de orden, calidad, ubicación y método de pago (h
 
 ## Preguntas para Miguel antes de tocar nada
 
-1. En comisión pura, ¿el ingreso de Plein en el P&L debe ser solo la comisión (y los gastos que recupera), o quieres ver la venta bruta y una línea de "remitido al productor"? Cambia cómo se corrige el hallazgo 6.
-2. Cuando ya emitiste una liquidación y se venden cajas después, ¿qué esperas: liquidación complementaria con folio nuevo, o que la carga quede cerrada y esas cajas no se puedan despachar? Define el hallazgo 8.
-3. ¿El pago a proveedor por OC (Gastos → Pay vendor) lo usas para algo que la bill no cubra, o se puede quitar ese camino? Define el hallazgo 3.
-4. ¿Las "reservas" de lote al capturar una OV te sirven, o prefieres que el lote se asigne solo al surtir?
+1. En comisión pura, ¿el ingreso de Plein en el P&L debe ser solo la comisión (y los gastos que recupera), o quieres ver la venta bruta y una línea de "remitido al productor"? Cambia cómo se corrige el hallazgo 6. **Sigue sin responder (9 Sep 2026)** — hallazgo 6 sigue abierto por esto.
+2. Cuando ya emitiste una liquidación y se venden cajas después, ¿qué esperas: liquidación complementaria con folio nuevo, o que la carga quede cerrada y esas cajas no se puedan despachar? Define el hallazgo 8. **Respondida (9 Sep 2026): liquidación complementaria con folio nuevo** (`LIQ-004-C1`, `-C2`…). Construida en PR #18/#19/#20 — hallazgo 8 resuelto.
+3. ¿El pago a proveedor por OC (Gastos → Pay vendor) lo usas para algo que la bill no cubra, o se puede quitar ese camino? Define el hallazgo 3. Sigue sin responder.
+4. ¿Las "reservas" de lote al capturar una OV te sirven, o prefieres que el lote se asigne solo al surtir? Sigue sin responder.
