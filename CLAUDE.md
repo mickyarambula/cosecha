@@ -29,7 +29,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 
 TanStack Start + Router + React 19 + Tailwind v4 + Radix.  
 Server fns: `createServerFn` + zod + `authMiddleware` en `src/lib/produce-server.ts`.  
-DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0040` (crece con cada bloque — `ls migrations/` para el número real).  
+DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0041` (crece con cada bloque — `ls migrations/` para el número real).  
 Auth: Better Auth (Google + correo). Staff por módulos.
 
 ## Dónde está qué
