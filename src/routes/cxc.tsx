@@ -484,24 +484,33 @@ function CustomerPayModal({
     paid: number;
     saldo: number;
     invoice_type: string;
+    status: string;
+    overdue: boolean;
   }[];
   customers: { id: number; name: string }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const t = useT();
-  const withBal = invoices.filter((i) => i.invoice_type !== "credit" && i.saldo > 0);
+  // Solo facturas vivas con saldo: ni notas de crédito ni canceladas.
+  const withBal = invoices.filter(
+    (i) => i.invoice_type !== "credit" && i.status !== "cancelled" && i.saldo > 0,
+  );
   const [cid, setCid] = useState(String(withBal[0]?.customer_id ?? customers[0]?.id ?? ""));
-  const rows = invoices.filter((i) => String(i.customer_id) === cid && i.invoice_type !== "credit" && i.saldo > 0);
+  const rows = withBal.filter((i) => String(i.customer_id) === cid);
   const [checks, setChecks] = useState<Record<number, number>>({});
-  const [method, setMethod] = useState("Cash");
+  const [method, setMethod] = useState("ACH");
   const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [reference, setReference] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const applied = Object.values(checks).reduce((s, n) => s + n, 0);
-  const typed = Number(amount) || applied;
+  // Sin monto capturado, el cobro es exactamente lo aplicado.
+  const typed = amount.trim() === "" ? applied : Number(amount) || 0;
   const due = rows.reduce((s, r) => s + r.saldo, 0);
-  const over = typed - applied;
+  const overdue = rows.filter((r) => r.overdue).reduce((s, r) => s + r.saldo, 0);
+  const mismatch = applied > 0 && Math.abs(typed - applied) > 0.05;
 
   async function submit() {
     const apps = Object.entries(checks)
@@ -512,9 +521,17 @@ function CustomerPayModal({
       return;
     }
     setSaving(true);
+    setErr(null);
     try {
       await registerCustomerPayment({
-        data: { customer_id: Number(cid), amount: typed, method, applications: apps },
+        data: {
+          customer_id: Number(cid),
+          amount: typed,
+          method,
+          pay_date: date,
+          reference: reference.trim() || undefined,
+          applications: apps,
+        },
       });
       onSaved();
     } catch (e) {
@@ -525,10 +542,16 @@ function CustomerPayModal({
   }
 
   return (
-    <Modal title="New Customer Payment" onClose={onClose} wide>
+    <Modal title={t("New Customer Payment")} onClose={onClose} wide>
       <div className="grid gap-3 sm:grid-cols-4">
         <Field label="Customer">
-          <Select value={cid} onChange={(e) => { setCid(e.target.value); setChecks({}); }}>
+          <Select
+            value={cid}
+            onChange={(e) => {
+              setCid(e.target.value);
+              setChecks({});
+            }}
+          >
             {customers.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -536,14 +559,21 @@ function CustomerPayModal({
             ))}
           </Select>
         </Field>
-        <Mini label="Current" value={money(0)} />
-        <Mini label="Past due" value={money(due)} warn />
+        <Mini label="Current" value={money(due - overdue)} />
+        <Mini label="Past due" value={money(overdue)} warn />
         <Mini label="Total due" value={money(due)} />
       </div>
-      <div className="mt-4 grid gap-4 lg:grid-cols-[200px_1fr]">
+      <div className="mt-4 grid gap-4 lg:grid-cols-[220px_1fr]">
         <div className="grid gap-3">
           <Field label="Payment amount">
-            <Input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={String(applied)} />
+            <Input
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder={applied ? String(applied) : "0"}
+            />
+          </Field>
+          <Field label="Payment date">
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </Field>
           <Field label="Method">
             <Select value={method} onChange={(e) => setMethod(e.target.value)}>
@@ -554,6 +584,13 @@ function CustomerPayModal({
               ))}
             </Select>
           </Field>
+          <Field label="Reference">
+            <Input
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              placeholder={t("Check # / deposit")}
+            />
+          </Field>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -563,6 +600,7 @@ function CustomerPayModal({
                 <th className="px-2 py-2">{t("Inv #")}</th>
                 <th className="px-2 py-2">{t("Requested")}</th>
                 <th className="px-2 py-2 text-right">{t("Amount")}</th>
+                <th className="px-2 py-2 text-right">{t("Rem. balance")}</th>
                 <th className="px-2 py-2">{t("Status")}</th>
                 <th className="px-3 py-2 text-right">{t("Amt to apply")}</th>
               </tr>
@@ -587,10 +625,19 @@ function CustomerPayModal({
                     <td className="px-2 py-2">{r.invoice_number.replace(/^PP-\d+-/, "")}</td>
                     <td className="px-2 py-2">{fecha(r.issue_date)}</td>
                     <td className="px-2 py-2 text-right">{money(r.total)}</td>
-                    <td className="px-2 py-2">{r.saldo > 0 ? t("Unpaid") : t("Paid")}</td>
+                    <td className="px-2 py-2 text-right">{money(r.saldo)}</td>
+                    <td className="px-2 py-2">{r.overdue ? t("Overdue") : t("Unpaid")}</td>
                     <td className="px-2 py-2 text-right">
                       {on ? (
-                        <Input className="ml-auto w-24" value={String(checks[r.id])} onChange={(e) => setChecks({ ...checks, [r.id]: Number(e.target.value) || 0 })} />
+                        <Input
+                          className="ml-auto w-24"
+                          value={String(checks[r.id])}
+                          onChange={(e) => {
+                            // Nunca más que el saldo de esa factura.
+                            const v = Math.max(0, Math.min(Number(e.target.value) || 0, r.saldo));
+                            setChecks({ ...checks, [r.id]: v });
+                          }}
+                        />
                       ) : (
                         money(0)
                       )}
@@ -602,15 +649,20 @@ function CustomerPayModal({
           </table>
         </div>
       </div>
-      {over > 0.009 ? (
-        <p className="mt-3 text-sm text-warn">{t("Customer is overpaying {amount}. An overpayment tag will be created.", { amount: money(over) })}</p>
+      {mismatch ? (
+        <p className="mt-3 text-sm text-danger">
+          {t("The payment amount ({typed}) must match what is applied to invoices ({applied}).", {
+            typed: money(typed),
+            applied: money(applied),
+          })}
+        </p>
       ) : null}
       {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>
           {t("Cancel")}
         </Button>
-        <Button disabled={saving || applied <= 0} onClick={() => void submit()}>
+        <Button disabled={saving || applied <= 0 || mismatch} onClick={() => void submit()}>
           {t("Record payment")}
         </Button>
       </div>

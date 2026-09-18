@@ -5,7 +5,7 @@ import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, Input } from "@/components/ui/input";
+import { Field, Input, Select } from "@/components/ui/input";
 import { useT } from "@/lib/i18n";
 import {
   cancelSupplierBill,
@@ -15,7 +15,7 @@ import {
   registerPagoProductor,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { fecha, money, qty } from "@/lib/utils";
+import { fecha, money, PAY_METHODS, qty, todayISO } from "@/lib/utils";
 
 export const Route = createFileRoute("/cxp")({ component: Page });
 
@@ -32,6 +32,9 @@ function Page() {
   const [pago, setPago] = useState<{ id: number; number: string; saldo: number } | null>(null);
   const [pagoRem, setPagoRem] = useState<{ id: number; number: string; saldo: number } | null>(null);
   const [amount, setAmount] = useState("");
+  const [payDate, setPayDate] = useState(todayISO());
+  const [payMethod, setPayMethod] = useState("ACH");
+  const [payRef, setPayRef] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [cancelBill, setCancelBill] = useState<{ id: number; number: string } | null>(null);
@@ -50,7 +53,9 @@ function Page() {
     setSaving(true);
     setMsg(null);
     try {
-      const r = await registerPago({ data: { bill_id: pago.id, amount: Number(amount) } });
+      const r = await registerPago({
+        data: { bill_id: pago.id, amount: Number(amount), pay_date: payDate, method: payMethod, reference: payRef.trim() || undefined },
+      });
       setPago(null);
       setMsg(`Pago ${r.folio} · restante ${money(r.remaining)}`);
       await bills.reload();
@@ -68,7 +73,7 @@ function Page() {
     setMsg(null);
     try {
       const r = await registerPagoProductor({
-        data: { payable_id: pagoRem.id, amount: Number(amount) },
+        data: { payable_id: pagoRem.id, amount: Number(amount), pay_date: payDate, method: payMethod, reference: payRef.trim() || undefined },
       });
       setPagoRem(null);
       setMsg(`Pago ${r.folio} · saldo ${money(r.remaining)}`);
@@ -282,6 +287,21 @@ function Page() {
             <Field label="Amount">
               <Input required type="number" min="0.01" step="0.01" max={pago.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
             </Field>
+            <Field label="Payment date">
+              <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+            </Field>
+            <Field label="Method">
+              <Select value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+                {PAY_METHODS.map((m) => (
+                  <option key={m} value={m}>
+                    {t(m)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Reference">
+              <Input value={payRef} onChange={(e) => setPayRef(e.target.value)} placeholder={t("Check # / deposit")} />
+            </Field>
             <Button type="submit" disabled={saving}>
               {saving ? "Saving…" : "Apply payment"}
             </Button>
@@ -295,6 +315,21 @@ function Page() {
             <p className="text-sm text-muted">Saldo {money(pagoRem.saldo)}</p>
             <Field label="Monto">
               <Input required type="number" min="0.01" step="0.01" max={pagoRem.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
+            </Field>
+            <Field label="Payment date">
+              <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+            </Field>
+            <Field label="Method">
+              <Select value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+                {PAY_METHODS.map((m) => (
+                  <option key={m} value={m}>
+                    {t(m)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Reference">
+              <Input value={payRef} onChange={(e) => setPayRef(e.target.value)} placeholder={t("Check # / deposit")} />
             </Field>
             <Button type="submit" disabled={saving}>
               {saving ? "Guardando…" : "Registrar pago"}

@@ -101,7 +101,7 @@ export type LotRow = {
 };
 
 export type PayableRow = {
-  kind: "expense" | "po";
+  kind: "expense";
   id: number;
   number: string;
   category?: string;
@@ -7978,7 +7978,7 @@ export const listCash = createServerFn({ method: "GET" })
         await getSql()
       ).query(`
     select m.id, m.folio, m.mov_date::text, m.kind, m.counterparty,
-           i.invoice_number, b.bill_number, m.amount::text, m.notes,
+           i.invoice_number, b.bill_number, m.amount::text, m.method, m.reference, m.notes,
            m.cancelled_at::text, m.cancelled_by, m.cancel_reason
     from cash_movements m
     left join invoices i on i.id = m.invoice_id
@@ -8046,6 +8046,9 @@ export const registerPago = createServerFn({ method: "POST" })
     z.object({
       bill_id: z.number(),
       amount: z.number().positive(),
+      pay_date: z.string().optional(),
+      method: z.string().optional(),
+      reference: z.string().optional(),
       notes: z.string().optional(),
     }),
   )
@@ -8070,14 +8073,16 @@ export const registerPago = createServerFn({ method: "POST" })
     ]);
     const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
     await sql.query(
-      `insert into cash_movements (folio, mov_date, kind, counterparty, supplier_bill_id, amount, notes)
-       values ($1,$2,'pago',$3,$4,$5,$6)`,
+      `insert into cash_movements (folio, mov_date, kind, counterparty, supplier_bill_id, amount, method, reference, notes)
+       values ($1,$2,'pago',$3,$4,$5,$6,$7,$8)`,
       [
         folio,
-        todayISO(),
+        data.pay_date || todayISO(),
         bill.supplier_name,
         bill.id,
         -data.amount,
+        data.method || null,
+        data.reference?.trim() || null,
         data.notes || `Pago ${bill.bill_number}`,
       ],
     );
@@ -8140,6 +8145,9 @@ export const registerPagoProductor = createServerFn({ method: "POST" })
     z.object({
       payable_id: z.number(),
       amount: z.number().positive(),
+      pay_date: z.string().optional(),
+      method: z.string().optional(),
+      reference: z.string().optional(),
       notes: z.string().optional(),
     }),
   )
@@ -8165,14 +8173,16 @@ export const registerPagoProductor = createServerFn({ method: "POST" })
     ]);
     const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
     await sql.query(
-      `insert into cash_movements (folio, mov_date, kind, counterparty, grower_payable_id, amount, notes)
-       values ($1,$2,'pago',$3,$4,$5,$6)`,
+      `insert into cash_movements (folio, mov_date, kind, counterparty, grower_payable_id, amount, method, reference, notes)
+       values ($1,$2,'pago',$3,$4,$5,$6,$7,$8)`,
       [
         folio,
-        todayISO(),
+        data.pay_date || todayISO(),
         gp.supplier_name,
         gp.id,
         -data.amount,
+        data.method || null,
+        data.reference?.trim() || null,
         data.notes || `Remisión ${gp.payable_number}`,
       ],
     );
@@ -8969,21 +8979,8 @@ export const listPayables = createServerFn({ method: "GET" })
     where e.cancelled_at is null
     order by e.issue_date desc, e.id desc
   `);
-    const pos = await sql.query(`
-    select po.id, po.po_number, po.supplier_id, s.name as supplier_name, po.vendor_invoice,
-           po.order_date::text, coalesce(po.paid,0)::text as paid, po.notes
-    from purchase_orders po
-    join suppliers s on s.id = po.supplier_id
-    where po.status <> 'cancelled'
-    order by po.order_date desc, po.id desc
-  `);
-    const merchRows = await sql.query(`
-    select purchase_order_id, coalesce(sum(quantity_ordered * coalesce(unit_cost,0)),0)::text as merch
-    from purchase_order_lines group by purchase_order_id
-  `);
-    const merchMap = new Map<number, number>(
-      merchRows.map((r) => [r.purchase_order_id, n(r.merch)]),
-    );
+    // Hallazgo 3: la OC ya no es una cuenta por pagar aquí — la fruta se paga
+    // en CxP contra su factura FAC-. Solo gastos.
     const expRows = expenses.map((e) => {
       const amount = n(e.amount);
       const paid = n(e.paid);
@@ -9006,29 +9003,7 @@ export const listPayables = createServerFn({ method: "GET" })
         po_id: e.po_id,
       };
     });
-    const poRows = pos.map((p) => {
-      const amount = merchMap.get(p.id) ?? 0;
-      const paid = n(p.paid);
-      return {
-        kind: "po",
-        id: p.id,
-        number: p.po_number,
-        category: "Purchase Order",
-        supplier_id: p.supplier_id,
-        supplier_name: p.supplier_name,
-        invoice_number: p.vendor_invoice,
-        issue_date: p.order_date,
-        due_date: p.order_date,
-        amount,
-        paid,
-        saldo: Math.max(amount - paid, 0),
-        status: payableStatus(amount, paid),
-        notes: p.notes,
-        po_number: p.po_number,
-        po_id: p.id,
-      };
-    });
-    return [...expRows, ...poRows];
+    return expRows;
   });
 export const listExpenseLinks = createServerFn({ method: "GET" })
   .validator(z.object({ expense_id: z.number() }))
@@ -9129,6 +9104,7 @@ export const registerVendorPayment = createServerFn({ method: "POST" })
       supplier_id: z.number(),
       amount: z.number().positive(),
       method: z.string().default("ACH"),
+      reference: z.string().optional(),
       pay_date: z.string().optional(),
       notes: z.string().optional(),
       applications: z
@@ -9146,46 +9122,66 @@ export const registerVendorPayment = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [sup] = await sql.query(`select name from suppliers where id = $1`, [data.supplier_id]);
-    if (!sup) throw new Error("Vendor not found");
-    const applied = data.applications.reduce((s, a) => s + a.amount, 0);
+    if (!sup) throw new Error("Proveedor no encontrado");
+    // Pagos que cuadran (hallazgo 3): desde Gastos solo se pagan GASTOS. La
+    // fruta se paga en CxP contra su factura FAC- (registerPago, topada al
+    // saldo); pagar "la OC" era el segundo camino que duplicaba el pago.
+    if (data.applications.some((a) => a.kind !== "expense"))
+      throw new Error(
+        "El pago de una compra de fruta se registra en CxP contra su factura de proveedor (FAC-). Desde Gastos solo se pagan gastos.",
+      );
+    const applied = round2(data.applications.reduce((s, a) => s + a.amount, 0));
     if (Math.abs(applied - data.amount) > 0.05)
-      throw new Error("Payment amount must equal the sum applied to invoices");
+      throw new Error(
+        `El monto del pago (${money2(data.amount)}) debe ser igual a lo aplicado a gastos (${money2(applied)}).`,
+      );
+    const seen = new Set<number>();
+    const targets: { id: number; expense_number: string; amount: number; paid: number; apply: number }[] = [];
+    for (const app of data.applications) {
+      if (seen.has(app.id)) throw new Error("El mismo gasto aparece dos veces en el pago.");
+      seen.add(app.id);
+      const [exp] = await sql.query(
+        `select id, expense_number, supplier_id, cancelled_at, amount::text, paid::text from expenses where id = $1`,
+        [app.id],
+      );
+      if (!exp) throw new Error("Gasto no encontrado");
+      if (Number(exp.supplier_id) !== data.supplier_id)
+        throw new Error(`El gasto ${exp.expense_number} no es de ${sup.name}.`);
+      if (exp.cancelled_at) throw new Error(`El gasto ${exp.expense_number} está cancelado.`);
+      const remaining = round2(n(exp.amount) - n(exp.paid));
+      if (app.amount > remaining + 0.009)
+        throw new Error(
+          `El saldo de ${exp.expense_number} es ${money2(remaining)}; no se le puede aplicar ${money2(app.amount)}.`,
+        );
+      targets.push({ id: exp.id, expense_number: exp.expense_number, amount: n(exp.amount), paid: n(exp.paid), apply: app.amount });
+    }
     const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
     const date = data.pay_date || todayISO();
     const movId = (
       await sql.query(
-        `insert into cash_movements (folio, mov_date, kind, counterparty, amount, notes)
-         values ($1,$2,'pago',$3,$4,$5) returning id`,
-        [folio, date, sup.name, -data.amount, data.notes || `${data.method} payment`],
+        `insert into cash_movements (folio, mov_date, kind, counterparty, amount, method, reference, notes)
+         values ($1,$2,'pago',$3,$4,$5,$6,$7) returning id`,
+        [
+          folio,
+          date,
+          sup.name,
+          -data.amount,
+          data.method,
+          data.reference?.trim() || null,
+          data.notes || `Pago ${targets.map((t) => t.expense_number).join(", ")}`,
+        ],
       )
     )[0].id;
-    for (const app of data.applications) {
-      if (app.kind === "expense") {
-        const [exp] = await sql.query(
-          `select amount::text, paid::text from expenses where id = $1`,
-          [app.id],
-        );
-        if (!exp) throw new Error("Expense not found");
-        const paid = n(exp.paid) + app.amount;
-        await sql.query(`update expenses set paid = $1, status = $2 where id = $3`, [
-          paid,
-          moneyStatus(n(exp.amount), paid),
-          app.id,
-        ]);
-      } else {
-        const [po] = await sql.query(
-          `select coalesce(paid,0)::text as paid from purchase_orders where id = $1`,
-          [app.id],
-        );
-        if (!po) throw new Error("PO not found");
-        await sql.query(`update purchase_orders set paid = coalesce(paid,0) + $1 where id = $2`, [
-          app.amount,
-          app.id,
-        ]);
-      }
+    for (const t of targets) {
+      const paid = t.paid + t.apply;
+      await sql.query(`update expenses set paid = $1, status = $2 where id = $3`, [
+        paid,
+        moneyStatus(t.amount, paid),
+        t.id,
+      ]);
       await sql.query(
-        `insert into payment_applications (cash_movement_id, kind, target_kind, target_id, amount) values ($1,'vendor',$2,$3,$4)`,
-        [movId, app.kind, app.id, app.amount],
+        `insert into payment_applications (cash_movement_id, kind, target_kind, target_id, amount) values ($1,'vendor','expense',$2,$3)`,
+        [movId, t.id, t.apply],
       );
     }
     return {
@@ -9198,7 +9194,8 @@ export const registerCustomerPayment = createServerFn({ method: "POST" })
     z.object({
       customer_id: z.number(),
       amount: z.number().positive(),
-      method: z.string().default("Cash"),
+      method: z.string().default("ACH"),
+      reference: z.string().optional(),
       pay_date: z.string().optional(),
       notes: z.string().optional(),
       applications: z
@@ -9215,32 +9212,68 @@ export const registerCustomerPayment = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [cust] = await sql.query(`select name from customers where id = $1`, [data.customer_id]);
-    if (!cust) throw new Error("Customer not found");
-    const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
-    const date = data.pay_date || todayISO();
-    const firstInv = data.applications[0]?.invoice_id ?? null;
-    const movId = (
-      await sql.query(
-        `insert into cash_movements (folio, mov_date, kind, counterparty, invoice_id, amount, notes)
-         values ($1,$2,'cobro',$3,$4,$5,$6) returning id`,
-        [folio, date, cust.name, firstInv, data.amount, data.notes || `${data.method} receipt`],
-      )
-    )[0].id;
+    if (!cust) throw new Error("Cliente no encontrado");
+    // Pagos que cuadran (hallazgo 4): el cobro es exactamente lo que se aplica
+    // a facturas, cada aplicación cabe en el saldo de SU factura, y la factura
+    // es de este cliente y está viva. Todo se valida ANTES de escribir — no
+    // hay transacción, así que ningún cobro queda a medias.
+    const applied = round2(data.applications.reduce((s, a) => s + a.amount, 0));
+    if (Math.abs(applied - data.amount) > 0.05)
+      throw new Error(
+        `El monto del cobro (${money2(data.amount)}) debe ser igual a lo aplicado a facturas (${money2(applied)}). Registra exactamente lo que se aplica.`,
+      );
+    const seen = new Set<number>();
+    const targets: { id: number; invoice_number: string; total: number; paid: number; amount: number }[] = [];
     for (const app of data.applications) {
+      if (seen.has(app.invoice_id)) throw new Error("La misma factura aparece dos veces en el cobro.");
+      seen.add(app.invoice_id);
       const [inv] = await sql.query(
-        `select total::text, paid::text, invoice_type from invoices where id = $1`,
+        `select id, invoice_number, customer_id, status, coalesce(invoice_type,'sale') as invoice_type, total::text, paid::text
+         from invoices where id = $1`,
         [app.invoice_id],
       );
-      if (!inv) throw new Error("Invoice not found");
-      const paid = n(inv.paid) + app.amount;
+      if (!inv) throw new Error("Factura no encontrada");
+      if (Number(inv.customer_id) !== data.customer_id)
+        throw new Error(`La factura ${inv.invoice_number} no es de ${cust.name}.`);
+      if (inv.status === "cancelled") throw new Error(`La factura ${inv.invoice_number} está cancelada.`);
+      if (inv.invoice_type === "credit")
+        throw new Error(`${inv.invoice_number} es una nota de crédito — no se cobra.`);
+      const total = Math.abs(n(inv.total));
+      const remaining = round2(total - n(inv.paid));
+      if (app.amount > remaining + 0.009)
+        throw new Error(
+          `El saldo de ${inv.invoice_number} es ${money2(remaining)}; no se le puede aplicar ${money2(app.amount)}.`,
+        );
+      targets.push({ id: inv.id, invoice_number: inv.invoice_number, total, paid: n(inv.paid), amount: app.amount });
+    }
+    const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
+    const date = data.pay_date || todayISO();
+    const movId = (
+      await sql.query(
+        `insert into cash_movements (folio, mov_date, kind, counterparty, invoice_id, amount, method, reference, notes)
+         values ($1,$2,'cobro',$3,$4,$5,$6,$7,$8) returning id`,
+        [
+          folio,
+          date,
+          cust.name,
+          targets[0].id,
+          data.amount,
+          data.method,
+          data.reference?.trim() || null,
+          data.notes || `Cobro ${targets.map((t) => t.invoice_number).join(", ")}`,
+        ],
+      )
+    )[0].id;
+    for (const t of targets) {
+      const paid = t.paid + t.amount;
       await sql.query(`update invoices set paid = $1, status = $2 where id = $3`, [
         paid,
-        moneyStatus(Math.abs(n(inv.total)), paid),
-        app.invoice_id,
+        moneyStatus(t.total, paid),
+        t.id,
       ]);
       await sql.query(
         `insert into payment_applications (cash_movement_id, kind, target_kind, target_id, amount) values ($1,'customer','invoice',$2,$3)`,
-        [movId, app.invoice_id, app.amount],
+        [movId, t.id, t.amount],
       );
     }
     return {
@@ -9682,7 +9715,7 @@ export const listVendorPayments = createServerFn({ method: "GET" })
   .handler(async () => {
     const sql = await getSql();
     const movs = await sql.query(`
-    select id, folio, mov_date::text, counterparty, amount::text, notes, cancelled_at::text, cancelled_by, cancel_reason
+    select id, folio, mov_date::text, counterparty, amount::text, method, reference, notes, cancelled_at::text, cancelled_by, cancel_reason
     from cash_movements where kind = 'pago' order by mov_date desc, id desc
   `);
     const apps = await sql.query(

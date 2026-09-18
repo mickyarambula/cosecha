@@ -99,6 +99,9 @@ function Page() {
                   </td>
                   <td className="px-4 py-3">
                     <p>{m.counterparty ?? "—"}</p>
+                    {m.method || m.reference ? (
+                      <p className="text-xs text-muted">{[m.method, m.reference].filter(Boolean).join(" · ")}</p>
+                    ) : null}
                     {m.notes ? <p className="text-xs text-muted">{m.notes}</p> : null}
                     {m.invoice_number ? (
                       <Link to="/cxc" className="text-xs text-primary">
