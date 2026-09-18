@@ -16,7 +16,7 @@ Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CL
 
 - TanStack Start + Router + React 19 + Tailwind v4 + Radix/shadcn
 - Server functions: `createServerFn` + zod + `authMiddleware`/`moduleMiddleware(módulo)` en [`src/lib/produce-server.ts`](src/lib/produce-server.ts)
-- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0040` (crece con cada bloque; revisa `ls migrations/` para el número real)
+- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0041` (crece con cada bloque; revisa `ls migrations/` para el número real)
 - Auth: Better Auth, Google + correo. Staff por módulos
 - i18n: [`src/lib/i18n.ts`](src/lib/i18n.ts)
 - PDF: [`src/lib/doc-pdf.ts`](src/lib/doc-pdf.ts) — descarga archivo, no `window.print`
@@ -51,7 +51,7 @@ Chrome: rail de módulos + tabs de sección. Tablas con números tabular. Factur
 ## Flujo operativo
 
 1. OC (`purchase_orders`) → `receiveMerchandise` crea lotes → `createBillFromPO` (CxP). En consignación, la bill nace del **congelado** si la carga ya tiene liquidación (`liquidated_at`), no del cálculo vivo.
-2. OV (`sales_orders`) → `shipSalesLine` descuenta lote → `createInvoiceFromSO` (CxC). Cancelar una venta ya rendida al productor **marca** la asignación (`sale_line_allocations.cancelled_at`), no la borra.
+2. OV (`sales_orders`) → `shipSalesLine` descuenta lote (cada despacho se liga a su camión con `sale_line_allocations.shipment_id`; el BOL ampara solo eso y congela `bol_issued_at`) → `createInvoiceFromSO` (CxC, línea con empaque/calibre y `pack_style_id`; "Enviar a" = destino de la OV). Cancelar una venta ya rendida al productor **marca** la asignación (`sale_line_allocations.cancelled_at`), no la borra.
 3. CPO (`customer_pos`) → `convertCustomerPOToSO`.
 4. Pack-out (`createPackOut`, hereda la carga de origen) / waste / hold / close lote. Ubicación del lote: catálogo en `locations`, pantalla Almacén → Ubicaciones (`listLocations`/`createLocation`/`updateLocation`/`setLocationActive`).
 5. Liquidación al productor (consignación y comisión pura): `getSettlement` calcula en vivo; `issueGrowerSettlement` **congela** el documento y marca `purchase_orders.liquidated_at` (desde ahí la carga solo cambia por complementaria). `issueSettlementSupplement` emite una **complementaria** (`LIQ-004-C1`, `-C2`…) con lo ocurrido después: ventas de cajas pendientes, gastos nuevos, reversas de ventas canceladas (con la comisión devuelta), ajustes a favor del productor. Si la cuenta sale negativa, nace un adelanto (`grower_advances`) **sin salida de caja**.

@@ -1812,24 +1812,129 @@ export const issueBol = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
-    const [s] = await sql.query(`select id, shipment_type, bol_number from shipments where id = $1`, [
-      data.shipment_id,
-    ]);
+    const [s] = await sql.query(
+      `select id, shipment_number, shipment_type, bol_number from shipments where id = $1`,
+      [data.shipment_id],
+    );
     if (!s) throw new Error("Embarque no encontrado");
     if (s.shipment_type !== "salida")
       throw new Error("El BOL de Plein se emite sobre un embarque de salida, no de entrada.");
     if (s.bol_number) return { bol_number: s.bol_number };
+    // Hallazgo 9: el BOL dice lo que va en ESTE camión. Sin mercancía marcada
+    // no hay documento — antes imprimía la orden completa a cantidad pedida.
+    const [{ c }] = await sql.query(
+      `select count(*)::int as c from sale_line_allocations where shipment_id = $1 and cancelled_at is null`,
+      [data.shipment_id],
+    );
+    if (!c)
+      throw new Error(
+        `${s.shipment_number}: marca primero qué cajas van en este camión (botón "Mercancía" del embarque). El BOL solo ampara lo cargado en él.`,
+      );
     const bol_number = await nextCode(sql, "shipments", "bol_number", "BOL-");
-    await sql.query(`update shipments set bol_number = $1 where id = $2 and bol_number is null`, [
-      bol_number,
-      data.shipment_id,
-    ]);
+    // La fecha de emisión se congela aquí: reimprimir baja el mismo documento.
+    await sql.query(
+      `update shipments set bol_number = $1, bol_issued_at = now() where id = $2 and bol_number is null`,
+      [bol_number, data.shipment_id],
+    );
     // Releída tras el update condicional: si dos clics compiten, gana el
     // primero y el segundo regresa el folio que ya quedó persistido.
     const [after] = await sql.query(`select bol_number from shipments where id = $1`, [
       data.shipment_id,
     ]);
     return { bol_number: after.bol_number as string };
+  });
+/**
+ * Mercancía de un embarque de salida: todos los despachos vivos de su orden
+ * de venta, diciendo cuál ya va en este camión, cuál está libre y cuál se lo
+ * llevó otro. Es lo que se marca antes de imprimir el BOL (hallazgo 9).
+ */
+export const listShipmentCargo = createServerFn({ method: "GET" })
+  .validator(z.object({ shipment_id: z.number() }))
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [s] = await sql.query(
+      `select id, sales_order_id, shipment_type, bol_number from shipments where id = $1`,
+      [data.shipment_id],
+    );
+    if (!s || s.shipment_type !== "salida") throw new Error("Embarque de salida no encontrado");
+    const rows = await sql.query(
+      `select a.id, a.quantity::text, a.shipment_id, s2.shipment_number as shipment_number,
+              p.name as product_name, ps.empaque, ps.calibre, ps.sku_code, lo.lot_number, sol.unit
+       from sale_line_allocations a
+       join sales_order_lines sol on sol.id = a.sales_order_line_id
+       join products p on p.id = sol.product_id
+       left join pack_styles ps on ps.id = sol.pack_style_id
+       join lots lo on lo.id = a.lot_id
+       left join shipments s2 on s2.id = a.shipment_id
+       where sol.sales_order_id = $1 and a.cancelled_at is null
+       order by a.id`,
+      [s.sales_order_id],
+    );
+    return rows.map((r) => ({
+      ...r,
+      quantity: n(r.quantity),
+      description: packDescription(r.product_name, r.empaque, r.calibre),
+      /** Ya emitido el BOL, la carga de ese camión queda congelada. */
+      locked: Boolean(s.bol_number),
+    }));
+  });
+/**
+ * Marca qué despachos van en este camión. Nunca le quita mercancía a otro
+ * embarque, y con el BOL ya emitido no se toca (documento entregado): las
+ * cajas que falten salen en un embarque nuevo, con su propio BOL.
+ */
+export const setShipmentCargo = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      shipment_id: z.number(),
+      allocation_ids: z.array(z.number()),
+    }),
+  )
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [s] = await sql.query(
+      `select id, shipment_number, sales_order_id, shipment_type, bol_number from shipments where id = $1`,
+      [data.shipment_id],
+    );
+    if (!s || s.shipment_type !== "salida") throw new Error("Embarque de salida no encontrado");
+    if (s.bol_number)
+      throw new Error(
+        `${s.shipment_number} ya tiene el BOL ${s.bol_number} emitido: la mercancía de ese camión quedó congelada. Captura otro embarque para las cajas que falten — lleva su propio BOL.`,
+      );
+    const ids = [...new Set(data.allocation_ids)];
+    if (ids.length) {
+      const rows = await sql.query(
+        `select a.id, a.shipment_id, a.cancelled_at, sol.sales_order_id, s2.shipment_number
+         from sale_line_allocations a
+         join sales_order_lines sol on sol.id = a.sales_order_line_id
+         left join shipments s2 on s2.id = a.shipment_id
+         where a.id = any($1::int[])`,
+        [ids],
+      );
+      if (rows.length !== ids.length) throw new Error("Despacho no encontrado");
+      for (const r of rows) {
+        if (Number(r.sales_order_id) !== Number(s.sales_order_id))
+          throw new Error("Ese despacho es de otra orden de venta");
+        if (r.cancelled_at) throw new Error("Ese despacho está cancelado");
+        if (r.shipment_id != null && Number(r.shipment_id) !== Number(s.id))
+          throw new Error(
+            `Esas cajas ya van en el embarque ${r.shipment_number}. Quítalas de ahí primero — una caja viaja en un solo camión.`,
+          );
+      }
+      await sql.query(
+        `update sale_line_allocations set shipment_id = $1 where id = any($2::int[])`,
+        [s.id, ids],
+      );
+    }
+    // Lo que estaba en este camión y ya no se marcó, queda libre otra vez.
+    await sql.query(
+      `update sale_line_allocations set shipment_id = null
+       where shipment_id = $1 and not (id = any($2::int[]))`,
+      [s.id, ids],
+    );
+    return { ok: true, count: ids.length };
   });
 export const getBolDoc = createServerFn({ method: "GET" })
   .validator(
@@ -1842,7 +1947,7 @@ export const getBolDoc = createServerFn({ method: "GET" })
     const sql = await getSql();
     const [s] = await sql.query(
       `
-    select s.id, s.shipment_number, s.bol_number, s.pallet_count,
+    select s.id, s.shipment_number, s.bol_number, s.bol_issued_at::text, s.pallet_count,
            s.temp_min::text, s.temp_max::text, s.temp_unit,
            s.ship_date::text, s.load_time, s.seals, s.notes,
            c.name as carrier_name,
@@ -1868,19 +1973,26 @@ export const getBolDoc = createServerFn({ method: "GET" })
       [data.shipment_id],
     );
     if (!s) throw new Error("Embarque de salida no encontrado");
+    // Hallazgo 9: lo EMBARCADO en este camión (despachos ligados a él), con su
+    // lote — no todas las líneas de la orden a cantidad pedida. Las ventas
+    // canceladas (C-2b) no viajan en ningún BOL.
     const lines = await sql.query(
       `
-    select l.id, p.name as product_name, p.variety,
+    select min(a.id) as id, p.name as product_name, p.variety,
            ps.sku_code, ps.empaque, ps.calibre,
            ps.net_weight::text, coalesce(ps.weight_unit, 'lb') as weight_unit,
-           l.quantity_ordered::text, l.unit
-    from sales_order_lines l
-    join products p on p.id = l.product_id
-    left join pack_styles ps on ps.id = l.pack_style_id
-    where l.sales_order_id = $1
-    order by l.id
+           lo.lot_number, sum(a.quantity)::text as quantity_shipped, sol.unit
+    from sale_line_allocations a
+    join sales_order_lines sol on sol.id = a.sales_order_line_id
+    join products p on p.id = sol.product_id
+    left join pack_styles ps on ps.id = sol.pack_style_id
+    join lots lo on lo.id = a.lot_id
+    where a.shipment_id = $1 and a.cancelled_at is null
+    group by p.name, p.variety, ps.sku_code, ps.empaque, ps.calibre, ps.net_weight, ps.weight_unit,
+             lo.lot_number, sol.unit
+    order by min(a.id)
   `,
-      [s.sales_order_id],
+      [data.shipment_id],
     );
     const [company] = await sql.query(
       `select legal_name, tagline, city, country, email, phone, address_line, paca_license from company_profile where id = 1`,
@@ -1893,7 +2005,7 @@ export const getBolDoc = createServerFn({ method: "GET" })
       },
       lines: lines.map((l) => ({
         ...l,
-        quantity: n(l.quantity_ordered),
+        quantity: n(l.quantity_shipped),
         net_weight: l.net_weight == null ? null : n(l.net_weight),
       })),
       company: company ?? null,
@@ -7382,8 +7494,13 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" })
     if (so.status === "cancelled") throw new Error("Esta orden de venta está cancelada");
     const billable = (
       await sql.query(
-        `select l.product_id, p.name as product_name, l.quantity_ordered::text, l.quantity_shipped::text, l.unit, l.unit_price::text
-       from sales_order_lines l join products p on p.id = l.product_id where l.sales_order_id = $1`,
+        `select l.product_id, p.name as product_name, l.pack_style_id,
+                ps.empaque, ps.calibre,
+                l.quantity_ordered::text, l.quantity_shipped::text, l.unit, l.unit_price::text
+       from sales_order_lines l
+       join products p on p.id = l.product_id
+       left join pack_styles ps on ps.id = l.pack_style_id
+       where l.sales_order_id = $1`,
         [data.sales_order_id],
       )
     )
@@ -7412,11 +7529,23 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" })
         [invoice_number, so.id, so.customer_id, issue, due, subtotal, `Factura de ${so.so_number}`],
       )
     )[0].id;
+    // Hallazgo 10: la línea que ve el cliente lleva empaque y calibre, y
+    // guarda su pack para que el SKU impreso sea el del pack, no el del
+    // producto (dos calibres del mismo producto no se ven iguales).
     for (const l of billable)
       await sql.query(
-        `insert into invoice_lines (invoice_id, product_id, description, quantity, unit, unit_price, amount)
-         values ($1,$2,$3,$4,$5,$6,$7)`,
-        [id, l.product_id, l.product_name, l.qty, l.unit, l.unit_price, l.qty * l.unit_price],
+        `insert into invoice_lines (invoice_id, product_id, pack_style_id, description, quantity, unit, unit_price, amount)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          id,
+          l.product_id,
+          l.pack_style_id ?? null,
+          packDescription(l.product_name, l.empaque, l.calibre),
+          l.qty,
+          l.unit,
+          l.unit_price,
+          l.qty * l.unit_price,
+        ],
       );
     return {
       id,
@@ -8205,6 +8334,14 @@ function qtyText(v: number) {
 function boxWord(v: number) {
   return Math.round(v * 100) / 100 === 1 ? "caja" : "cajas";
 }
+/**
+ * Descripción de línea que sale a un tercero: el producto NUNCA va solo —
+ * "Papaya · Caja 6 ct", no "Papaya" (hallazgo 10). Sin pack, el producto.
+ */
+function packDescription(productName: string, empaque?: string | null, calibre?: string | null) {
+  const pack = [empaque, calibre].filter((x) => x && String(x).trim()).join(" ");
+  return pack ? `${productName} · ${pack}` : productName;
+}
 function partyOf(row) {
   const loc = [row.city, row.country].filter(Boolean).join(", ");
   return {
@@ -8791,10 +8928,13 @@ export const getPrintDoc = createServerFn({ method: "GET" })
       const [inv] = await sql.query(
         `select i.id, i.invoice_number, i.issue_date::text, i.due_date::text, i.subtotal::text, i.total::text, i.notes,
                 coalesce(i.invoice_type,'sale') as invoice_type, p.invoice_number as parent_invoice_number,
-                so.so_number, c.name as customer_name, c.contact_name, c.phone, c.email, c.city, c.payment_terms
+                so.so_number, c.name as customer_name, c.contact_name, c.phone, c.email, c.city, c.payment_terms,
+                cl.label as ship_label, cl.address_line as ship_address, cl.city as ship_city,
+                cl.state as ship_state, cl.zip as ship_zip
          from invoices i
          join customers c on c.id = i.customer_id
          left join sales_orders so on so.id = i.sales_order_id
+         left join customer_locations cl on cl.id = so.ship_to_location_id
          left join invoices p on p.id = i.parent_invoice_id
          where i.share_token = $1`,
         [data.token],
@@ -8802,8 +8942,11 @@ export const getPrintDoc = createServerFn({ method: "GET" })
       if (!inv) throw new Error("Factura no encontrada");
       const lines = (
         await sql.query(
-          `select il.description, il.quantity::text, il.unit, il.unit_price::text, il.amount::text, p.sku
-         from invoice_lines il left join products p on p.id = il.product_id
+          `select il.description, il.quantity::text, il.unit, il.unit_price::text, il.amount::text,
+                  coalesce(ps.sku_code, p.sku) as sku
+         from invoice_lines il
+         left join products p on p.id = il.product_id
+         left join pack_styles ps on ps.id = il.pack_style_id
          where il.invoice_id = $1 order by il.id`,
           [inv.id],
         )
@@ -8822,6 +8965,21 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         email: inv.email,
         city: inv.city,
       });
+      // Hallazgo 10: "Enviar a" es el DESTINO de la orden, no la dirección de
+      // facturación. Sin destino capturado no se imprime el bloque — antes
+      // repetía la dirección de facturación como si fuera el destino.
+      const ship = inv.ship_address
+        ? {
+            name: inv.customer_name,
+            lines: [
+              inv.ship_label,
+              inv.ship_address,
+              [inv.ship_city, inv.ship_state, inv.ship_zip].filter(Boolean).join(", "),
+            ].filter((x) => Boolean(x && String(x).trim())),
+            phone: null,
+            email: null,
+          }
+        : null;
       // La nota de crédito se imprime con su nombre, referencia a la factura
       // que corrige, sin términos de pago y sin la leyenda PACA (no es venta).
       const isCredit = inv.invoice_type === "credit";
@@ -8843,8 +9001,8 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         reference: isCredit ? inv.parent_invoice_number || inv.so_number : inv.so_number,
         partyTitle: "Facturar a",
         party,
-        shipTitle: "Enviar a",
-        ship: party,
+        shipTitle: ship ? "Enviar a" : null,
+        ship,
         lines,
         subtotal: n(inv.subtotal),
         total: n(inv.total),
@@ -8864,14 +9022,20 @@ export const getPrintDoc = createServerFn({ method: "GET" })
       if (!po) throw new Error("Orden de compra no encontrada");
       const lines = (
         await sql.query(
-          `select p.name as product_name, p.sku, l.quantity_ordered::text, l.unit, l.unit_cost::text
-         from purchase_order_lines l join products p on p.id = l.product_id
+          `select p.name as product_name, coalesce(ps.sku_code, p.sku) as sku,
+                  ps.empaque, ps.calibre,
+                  l.quantity_ordered::text, l.unit, l.unit_cost::text
+         from purchase_order_lines l
+         join products p on p.id = l.product_id
+         left join pack_styles ps on ps.id = l.pack_style_id
          where l.purchase_order_id = $1 order by l.id`,
           [po.id],
         )
       ).map((l) => ({
         sku: l.sku || "",
-        description: l.product_name,
+        // Hallazgo 10: al productor le llegaba "Papaya, Papaya, Papaya" sin
+        // decir cuál calibre es cuál.
+        description: packDescription(l.product_name, l.empaque, l.calibre),
         qty: n(l.quantity_ordered),
         unit: l.unit,
         unit_price: n(l.unit_cost),
@@ -9307,7 +9471,7 @@ async function loadSaleInvoiceForCredit(sql, sales_order_id: number) {
   );
   if (!inv) return null;
   const lines = await sql.query(
-    `select il.product_id, il.description, il.quantity::text, il.unit, il.unit_price::text, il.amount::text
+    `select il.product_id, il.pack_style_id, il.description, il.quantity::text, il.unit, il.unit_price::text, il.amount::text
      from invoice_lines il where il.invoice_id = $1 order by il.id`,
     [inv.id],
   );
@@ -9330,11 +9494,12 @@ async function loadSaleInvoiceForCredit(sql, sales_order_id: number) {
   // solo tope; el crédito por unidad se compara contra el mayor precio facturado.
   const byProduct = new Map<
     number,
-    { product_id: number; description: string; unit: string; quantity: number; unit_price: number; amount: number }
+    { product_id: number; pack_style_id: number | null; description: string; unit: string; quantity: number; unit_price: number; amount: number }
   >();
   for (const l of lines) {
     const cur = byProduct.get(l.product_id) ?? {
       product_id: l.product_id,
+      pack_style_id: l.pack_style_id ?? null,
       description: l.description || "",
       unit: l.unit || "",
       quantity: 0,
@@ -9474,11 +9639,12 @@ export const createCreditInvoice = createServerFn({ method: "POST" })
     for (const l of data.lines) {
       const inv = byProduct.get(l.product_id)!;
       await sql.query(
-        `insert into invoice_lines (invoice_id, product_id, description, quantity, unit, unit_price, amount, credit_type)
-         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `insert into invoice_lines (invoice_id, product_id, pack_style_id, description, quantity, unit, unit_price, amount, credit_type)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           id,
           l.product_id,
+          inv.pack_style_id ?? null,
           `${inv.description} — ${CREDIT_TYPE_LABEL[l.credit_type]}`,
           l.qty,
           inv.unit,
