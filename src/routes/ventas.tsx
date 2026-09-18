@@ -17,6 +17,7 @@ import {
   cancelSalesOrder,
   getSalesOrderCancelImpact,
   createCreditInvoice,
+  getCreditTargets,
   createInvoiceFromSO,
   createPurchaseFromSO,
   createSalesOrder,
@@ -1241,6 +1242,12 @@ type CreditType = "devolucion" | "merma" | "precio";
 type CreditDraft = { credit_type: CreditType; qty: string; per_unit: string };
 type CreditLine = Awaited<ReturnType<typeof getInvoiceForCredit>>["lines"][number];
 
+/** Mismas etiquetas de trato que Compras; ahí el mapa es privado del módulo. */
+const TRATO_LABEL: Record<string, string> = {
+  firme: "Firme",
+  consignacion: "Consignación",
+  comision: "Comisión pura",
+};
 function CreditNoteModal({
   soId,
   onClose,
@@ -1255,7 +1262,11 @@ function CreditNoteModal({
   }) => Promise<void>;
 }) {
   const data = useAsync(() => getInvoiceForCredit({ data: { sales_order_id: soId } }), [soId]);
+  // C-1b: las cargas que surtieron esta venta, para poder decir a quién se le
+  // carga el golpe y de quién fue la culpa.
+  const targets = useAsync(() => getCreditTargets({ data: { sales_order_id: soId } }), [soId]);
   const [drafts, setDrafts] = useState<Record<number, CreditDraft>>({});
+  const [attrDrafts, setAttrDrafts] = useState<Record<number, { amount: string; cause: string; reason: string }>>({});
   const [internalNote, setInternalNote] = useState("");
   const [customerNote, setCustomerNote] = useState("");
   const [saving, setSaving] = useState(false);
@@ -1286,8 +1297,73 @@ function CreditNoteModal({
   const total = rows.reduce((s, r) => s + (r.qtyN > 0 ? r.amount : 0), 0);
   const invRemaining = inv ? Math.max(inv.total - inv.credited_total, 0) : 0;
   const overInvoice = total > invRemaining + 0.009;
+
+  // ── C-1b: ¿quién absorbe este crédito? ────────────────────────────────
+  // Una carga por renglón, con lo que aportó a esta venta. Se propone el
+  // reparto a prorrata de esa aportación; el último renglón absorbe el
+  // redondeo para que la suma cuadre exacto con la nota.
+  const cargas = useMemo(() => {
+    const byPo = new Map<number, { po_number: string; supplier_name: string; deal_type: string; liquidated_at: string | null; attributable: boolean; amount: number; lots: string[]; lot_id: number | null }>();
+    for (const t of targets.data ?? []) {
+      const cur = byPo.get(t.purchase_order_id) ?? {
+        po_number: t.po_number, supplier_name: t.supplier_name, deal_type: t.deal_type,
+        liquidated_at: t.liquidated_at, attributable: t.attributable, amount: 0, lots: [] as string[], lot_id: null as number | null,
+      };
+      cur.amount += t.amount;
+      cur.lots.push(t.lot_number);
+      cur.lot_id = cur.lots.length === 1 ? t.lot_id : null;
+      byPo.set(t.purchase_order_id, cur);
+    }
+    return [...byPo.entries()].map(([purchase_order_id, v]) => ({ purchase_order_id, ...v }));
+  }, [targets.data]);
+  const attributable = cargas.filter((c) => c.attributable);
+  // La propuesta nunca puede pasar del tope de cada carga (si la venta la
+  // surtió también una carga en firme, el crédito puede ser mayor que lo que
+  // aportaron las atribuibles): se reparte a prorrata, se topa, y lo que sobra
+  // se reacomoda entre las que todavía tienen espacio.
+  const proposals = useMemo(() => {
+    const out = new Map<number, number>();
+    const base = attributable.reduce((s, c) => s + c.amount, 0);
+    if (!(base > 0) || !(total > 0)) return out;
+    const capCents = new Map(attributable.map((c) => [c.purchase_order_id, Math.round(c.amount * 100)]));
+    let left = Math.min(Math.round(total * 100), Math.round(base * 100));
+    // Primer reparto a prorrata, topado.
+    for (const c of attributable) {
+      const cap = capCents.get(c.purchase_order_id) ?? 0;
+      const cents = Math.min(cap, Math.round(Math.min(total, base) * (c.amount / base) * 100));
+      out.set(c.purchase_order_id, cents);
+      left -= cents;
+    }
+    // El redondeo y los topes dejan centavos sueltos: van a la primera carga
+    // con espacio, para que la suma cuadre exacto.
+    for (const c of attributable) {
+      if (left <= 0) break;
+      const cap = capCents.get(c.purchase_order_id) ?? 0;
+      const cur = out.get(c.purchase_order_id) ?? 0;
+      const room = cap - cur;
+      if (room <= 0) continue;
+      const add = Math.min(room, left);
+      out.set(c.purchase_order_id, cur + add);
+      left -= add;
+    }
+    return new Map([...out].map(([k, cents]) => [k, cents / 100]));
+  }, [attributable, total]);
+  const attrFor = (poId: number) =>
+    attrDrafts[poId] ?? { amount: "", cause: "", reason: "" };
+  const attrRows = attributable.map((c) => {
+    const d = attrFor(c.purchase_order_id);
+    const amount = d.amount.trim() === "" ? 0 : Number(d.amount) || 0;
+    const problems: string[] = [];
+    if (amount > c.amount + 0.009) problems.push(`esta carga solo aportó ${money(c.amount)} a la venta`);
+    if (amount > 0 && !d.cause) problems.push("falta decir de quién fue la culpa");
+    if (amount > 0 && !d.reason.trim()) problems.push("falta el motivo");
+    return { c, d, amount, problems };
+  });
+  const attributedTotal = attrRows.reduce((s, r) => s + r.amount, 0);
+  const overAttributed = attributedTotal > total + 0.009;
+  const attrInvalid = overAttributed || attrRows.some((r) => r.problems.length > 0);
   const invalid =
-    total <= 0 || overInvoice || rows.some((r) => r.qtyN > 0 && r.problems.length > 0);
+    total <= 0 || overInvoice || attrInvalid || rows.some((r) => r.qtyN > 0 && r.problems.length > 0);
 
   async function submit() {
     if (!inv || invalid) return;
@@ -1306,6 +1382,15 @@ function CreditNoteModal({
               credit_type: r.d.credit_type,
               qty: r.qtyN,
               credit_per_unit: r.cpu,
+            })),
+          attributions: attrRows
+            .filter((r) => r.amount > 0)
+            .map((r) => ({
+              purchase_order_id: r.c.purchase_order_id,
+              lot_id: r.c.lot_id,
+              cause: r.d.cause as "grower" | "plein",
+              reason: r.d.reason.trim(),
+              amount: r.amount,
             })),
         },
       });
@@ -1432,6 +1517,103 @@ function CreditNoteModal({
                 .map((c: { invoice_number: string; total: number }) => `${c.invoice_number} (${money(c.total)})`)
                 .join(", ")}
             </p>
+          ) : null}
+          {/* C-1b: quién absorbe el golpe. Sin causa preseleccionada a
+              propósito — si viniera en "productor", todo acabaría en él. */}
+          {cargas.length ? (
+            <div className="mt-5">
+              <p className="text-sm font-semibold">¿Quién absorbe este crédito?</p>
+              <p className="mt-1 text-xs text-muted">
+                Si la fruta venía mal del productor, el crédito le baja su liquidación (y la comisión
+                de Plein sobre esa parte). Si el golpe fue de Plein, lo absorbe Plein. Lo que dejes
+                en cero se lo queda Plein.
+              </p>
+              <div className="mt-2 overflow-x-auto rounded-md border border-border">
+                <table className="w-full min-w-[820px] text-left text-sm">
+                  <thead className="bg-surface-2 text-xs text-muted">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Carga</th>
+                      <th className="px-3 py-2 text-right font-medium">Aportó a esta venta</th>
+                      <th className="px-3 py-2 text-right font-medium">Se le carga</th>
+                      <th className="px-3 py-2 font-medium">Culpa</th>
+                      <th className="px-3 py-2 font-medium">Motivo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cargas.map((c) => {
+                      const row = attrRows.find((r) => r.c.purchase_order_id === c.purchase_order_id);
+                      const d = attrFor(c.purchase_order_id);
+                      const set = (p: Partial<{ amount: string; cause: string; reason: string }>) =>
+                        setAttrDrafts((prev) => ({ ...prev, [c.purchase_order_id]: { ...d, ...p } }));
+                      return (
+                        <tr key={c.purchase_order_id} className="border-t border-border align-top">
+                          <td className="px-3 py-2">
+                            <span className="font-mono text-xs">{c.po_number}</span> · {c.supplier_name}
+                            <div className="text-[11px] text-subtle">
+                              {TRATO_LABEL[c.deal_type] ?? c.deal_type} · lote {c.lots.join(", ")}
+                              {c.liquidated_at ? " · ya liquidada: entra a la complementaria" : ""}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">{money(c.amount)}</td>
+                          {c.attributable ? (
+                            <>
+                              <td className="px-3 py-2 text-right">
+                                <Input
+                                  className="ml-auto w-28 text-right"
+                                  value={d.amount}
+                                  onChange={(e) => set({ amount: e.target.value })}
+                                  placeholder={String(proposals.get(c.purchase_order_id) ?? 0)}
+                                />
+                                {total > 0 && d.amount.trim() === "" ? (
+                                  <button
+                                    type="button"
+                                    className="mt-1 cursor-pointer text-[11px] text-link"
+                                    onClick={() => set({ amount: String(proposals.get(c.purchase_order_id) ?? 0) })}
+                                  >
+                                    usar {money(proposals.get(c.purchase_order_id) ?? 0)}
+                                  </button>
+                                ) : null}
+                              </td>
+                              <td className="px-3 py-2">
+                                <Select value={d.cause} onChange={(e) => set({ cause: e.target.value })}>
+                                  <option value="">— elige —</option>
+                                  <option value="grower">Del productor</option>
+                                  <option value="plein">De Plein</option>
+                                </Select>
+                              </td>
+                              <td className="px-3 py-2">
+                                <Input
+                                  value={d.reason}
+                                  onChange={(e) => set({ reason: e.target.value })}
+                                  placeholder="Por qué — sale impreso en su liquidación"
+                                />
+                                {row?.problems.length ? (
+                                  <div className="mt-1 text-xs text-danger">{row.problems.join(" · ")}</div>
+                                ) : null}
+                              </td>
+                            </>
+                          ) : (
+                            <td className="px-3 py-2 text-xs text-muted" colSpan={3}>
+                              Trato en firme: esa fruta ya es de Plein, el crédito lo absorbe Plein.
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {overAttributed ? (
+                <p className="mt-2 text-xs text-danger">
+                  Estás repartiendo {money(attributedTotal)} y la nota es de {money(total)}.
+                </p>
+              ) : attributedTotal > 0 ? (
+                <p className="mt-2 text-xs text-muted">
+                  Se le carga a productores {money(attributedTotal)} de {money(total)}; el resto
+                  ({money(Math.max(total - attributedTotal, 0))}) lo absorbe Plein.
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <Field label="Nota interna">

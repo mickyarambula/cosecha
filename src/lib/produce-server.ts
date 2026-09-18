@@ -2518,6 +2518,7 @@ function computeCommissionBreakdown(
   expenseRows,
   shrinkRows: ShrinkRow[] = [],
   purchaseRows: DispositionRow[] = [],
+  creditRows: CreditAttributionRow[] = [],
 ) {
   if (!po.commission_type || po.deal_type === "firme") return null;
   const revenue = lotsRaw.reduce((s, l) => s + l.revenue, 0);
@@ -2540,6 +2541,19 @@ function computeCommissionBreakdown(
   const plein_purchase_total = purchaseRows
     .filter((r) => r.kind === "plein_purchase")
     .reduce((s, r) => s + n(r.amount), 0);
+  // C-1b: nota de crédito al cliente atribuida a ESTA carga por culpa del
+  // productor. Es "esa venta valió menos": baja su neto y también la BASE de
+  // la comisión — decisión de Miguel (18 Sep 2026): la comisión se gana sobre
+  // lo que de verdad entró, igual que la reversa de una venta cancelada.
+  // Excepción por naturaleza: en per_unit la comisión es por CAJA manejada,
+  // no un % del dinero; esas cajas se recibieron, guardaron y despacharon
+  // igual, así que un crédito no la mueve.
+  const credit_to_grower = round2(
+    creditRows.filter((r) => r.cause === "grower").reduce((s, r) => s + r.amount, 0),
+  );
+  const credit_to_plein = round2(
+    creditRows.filter((r) => r.cause !== "grower").reduce((s, r) => s + r.amount, 0),
+  );
   const rate = n(po.commission_rate);
   let commission = 0;
   let commission_base = 0;
@@ -2547,10 +2561,12 @@ function computeCommissionBreakdown(
     commission_base = soldUnits;
     commission = rate * soldUnits;
   } else if (po.commission_type === "gross_pct") {
-    commission_base = revenue;
-    commission = (revenue * rate) / 100;
+    // Math.max: con los topes por carga la base no debería salir negativa; si
+    // saliera, Plein no le "paga comisión" al productor en su propio documento.
+    commission_base = revenue - credit_to_grower;
+    commission = (Math.max(0, commission_base) * rate) / 100;
   } else if (po.commission_type === "net_pct") {
-    commission_base = revenue - grower_expenses;
+    commission_base = revenue - credit_to_grower - grower_expenses;
     commission = (Math.max(0, commission_base) * rate) / 100;
   }
   return {
@@ -2572,7 +2588,12 @@ function computeCommissionBreakdown(
     shrink_compensation,
     purchase_rows: purchaseRows,
     plein_purchase_total,
-    net_to_grower: revenue - grower_expenses - commission + shrink_compensation + plein_purchase_total,
+    credit_rows: creditRows,
+    credit_to_grower,
+    credit_to_plein,
+    net_to_grower: round2(
+      revenue - grower_expenses - commission + shrink_compensation + plein_purchase_total - credit_to_grower,
+    ),
   };
 }
 /**
@@ -3048,9 +3069,22 @@ async function loadSettlement(
   const dispositions = await loadDispositions(sql, purchase_order_id);
   const activeDispositions = dispositions.filter((d) => !d.cancelled_at);
   const purchaseRows = activeDispositions.filter((d) => d.kind === "plein_purchase");
+  // C-1b: créditos atribuidos a esta carga. Al cálculo vivo solo entran los
+  // que todavía no se le rindieron al productor en ningún documento.
+  const creditAttributions = await loadCreditAttributions(sql, purchase_order_id);
+  // Al breakdown van las dos causas: él separa lo que le baja al productor de
+  // lo que absorbe Plein. Congelar y marcar solo toca a las del productor.
+  const pendingCredits = pendingCreditAttributions(creditAttributions);
   // La liquidación por comisión (la secuencia real de Plein) manda; el
   // target % queda solo como camino legado cuando no hay comisión definida.
-  const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows, purchaseRows);
+  const breakdown = computeCommissionBreakdown(
+    po,
+    lotsRaw,
+    expenses,
+    shrink.rows,
+    purchaseRows,
+    pendingCredits,
+  );
   // Hallazgo 7: en firme el costo es el capturado en la OC; un % objetivo
   // guardado (camino legado) no lo sustituye ni en pantalla ni en reportes.
   const target =
@@ -3269,6 +3303,10 @@ async function loadSettlement(
       : null,
     supplements,
     adjustments,
+    credit_attributions: creditAttributions,
+    pending_credit_total: round2(
+      pendingCredits.filter((r) => r.cause === "grower").reduce((s, r) => s + r.amount, 0),
+    ),
     liquidated_at: po.liquidated_at ? String(po.liquidated_at) : null,
     parent_payable: parentPayable
       ? {
@@ -3388,8 +3426,8 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
           issue_date, sold_units, revenue, grower_expenses, commission, net_to_grower,
           advance_recovered, final_payment, created_by, shrink_compensation,
           received_qty, destroyed_equiv_qty, destroyed_pct, plein_purchase_total, is_partial,
-          certificate_id, certificate_number, certificate_date)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) returning id`,
+          certificate_id, certificate_number, certificate_date, credit_total)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) returning id`,
         [
           settlement_number,
           data.purchase_order_id,
@@ -3415,6 +3453,7 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
           s.destruction.certificate?.id ?? null,
           s.destruction.certificate?.certificate_number ?? null,
           s.destruction.certificate?.certificate_date ?? null,
+          s.breakdown.credit_to_grower,
         ],
       )
     )[0].id;
@@ -3540,6 +3579,34 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
          values ($1,$2,$3,$4,$5)`,
         [settlementId, e.category, e.notes ?? null, e.amount, e.id ?? null],
       );
+    // C-1b: notas de crédito atribuidas al productor, congeladas con su
+    // factura, su cliente, su causa y su motivo — PACA pide justificar cada
+    // peso que se le baja. Desde aquí la atribución ya no se deshace.
+    for (const cr of s.breakdown.credit_rows.filter((r) => r.cause === "grower")) {
+      await sql.query(
+        `insert into grower_settlement_credits
+         (settlement_id, attribution_id, invoice_number, parent_invoice_number, customer_name, so_number,
+          lot_number, credit_type, cause, reason, amount)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          settlementId,
+          cr.id,
+          cr.invoice_number,
+          cr.parent_invoice_number,
+          cr.customer_name,
+          cr.so_number,
+          cr.lot_number,
+          cr.credit_type,
+          cr.cause,
+          cr.reason,
+          cr.amount,
+        ],
+      );
+      await sql.query(`update grower_credit_attributions set settlement_id = $1 where id = $2`, [
+        settlementId,
+        cr.id,
+      ]);
+    }
     // En comisión pura no hay bill (Plein nunca compró la fruta), así que el
     // final_payment quedaría sin registrarse en ningún libro. Nace aquí como
     // pasivo propio — dinero del productor en tránsito, por remitir. En
@@ -3664,6 +3731,97 @@ function renderedExpenseMessage(label: string, doc: string, amount: number, kind
 }
 function oldExpenseLinkMessage(info: LiquidatedInfo) {
   return `${info.po_number} ya tiene liquidación ${info.settlement_number} y este gasto es anterior a esa fecha: no se puede ligar después de rendir cuentas. Captúralo como gasto nuevo con fecha de hoy para que entre a la cuenta complementaria.`;
+}
+/**
+ * C-1b: una nota de crédito al cliente atribuida a la carga de un productor.
+ * `cause` dice de quién fue la culpa: 'grower' le baja el neto al productor,
+ * 'plein' deja el rastro de que Plein decidió absorberlo (no toca su neto).
+ * Un crédito que abarca cajas de dos cargas se parte en dos filas.
+ */
+type CreditAttributionRow = {
+  id: number;
+  invoice_id: number;
+  invoice_number: string;
+  parent_invoice_number: string | null;
+  customer_name: string | null;
+  so_number: string | null;
+  lot_id: number | null;
+  lot_number: string | null;
+  credit_type: string | null;
+  cause: "grower" | "plein";
+  reason: string;
+  amount: number;
+  settlement_id: number | null;
+  settlement_number: string | null;
+  supplement_id: number | null;
+  supplement_number: string | null;
+  created_at: string;
+  cancelled_at: string | null;
+  /** La nota de crédito misma cancelada: la atribución deja de contar. */
+  invoice_cancelled_at: string | null;
+};
+async function loadCreditAttributions(
+  sql,
+  purchase_order_id: number,
+): Promise<CreditAttributionRow[]> {
+  const rows = await sql.query(
+    `select a.id, a.invoice_id, i.invoice_number, i.cancelled_at::text as invoice_cancelled_at,
+            p.invoice_number as parent_invoice_number, c.name as customer_name, so.so_number,
+            a.lot_id, lo.lot_number, a.cause, a.reason, a.amount::text,
+            a.settlement_id, gs.settlement_number, a.supplement_id, sup.supplement_number,
+            a.created_at::text, a.cancelled_at::text,
+            (select string_agg(distinct il.credit_type, ', ') from invoice_lines il
+              where il.invoice_id = a.invoice_id and il.credit_type is not null) as credit_type
+     from grower_credit_attributions a
+     join invoices i on i.id = a.invoice_id
+     left join invoices p on p.id = a.parent_invoice_id
+     left join customers c on c.id = i.customer_id
+     left join sales_orders so on so.id = i.sales_order_id
+     left join lots lo on lo.id = a.lot_id
+     left join grower_settlements gs on gs.id = a.settlement_id
+     left join grower_settlement_supplements sup on sup.id = a.supplement_id
+     where a.purchase_order_id = $1 order by a.id`,
+    [purchase_order_id],
+  );
+  return rows.map((r) => ({
+    id: r.id as number,
+    invoice_id: r.invoice_id as number,
+    invoice_number: String(r.invoice_number),
+    parent_invoice_number: r.parent_invoice_number ? String(r.parent_invoice_number) : null,
+    customer_name: r.customer_name ? String(r.customer_name) : null,
+    so_number: r.so_number ? String(r.so_number) : null,
+    lot_id: r.lot_id ?? null,
+    lot_number: r.lot_number ? String(r.lot_number) : null,
+    credit_type: r.credit_type ? String(r.credit_type) : null,
+    cause: r.cause === "grower" ? "grower" : "plein",
+    reason: String(r.reason),
+    amount: n(r.amount),
+    settlement_id: r.settlement_id ?? null,
+    settlement_number: r.settlement_number ? String(r.settlement_number) : null,
+    supplement_id: r.supplement_id ?? null,
+    supplement_number: r.supplement_number ? String(r.supplement_number) : null,
+    created_at: String(r.created_at),
+    cancelled_at: r.cancelled_at ?? null,
+    invoice_cancelled_at: r.invoice_cancelled_at ?? null,
+  }));
+}
+/**
+ * Vivas y sin rendir todavía, de las dos causas. Las de causa 'plein' nunca se
+ * rinden (no le bajan nada al productor), pero sí se muestran: dejan a la
+ * vista que ese golpe se decidió absorber, en vez de desaparecer.
+ */
+function pendingCreditAttributions(rows: CreditAttributionRow[]): CreditAttributionRow[] {
+  return rows.filter(
+    (r) =>
+      !r.cancelled_at &&
+      !r.invoice_cancelled_at &&
+      r.settlement_id == null &&
+      r.supplement_id == null,
+  );
+}
+/** Solo las que le tocan al próximo documento del productor. */
+function pendingGrowerCredits(rows: CreditAttributionRow[]): CreditAttributionRow[] {
+  return pendingCreditAttributions(rows).filter((r) => r.cause === "grower");
 }
 type AdjustmentRow = {
   id: number;
@@ -4060,6 +4218,14 @@ async function computeSupplement(
   );
   const adjustment_total = round2(adjustmentRows.reduce((s, a) => s + a.amount, 0));
 
+  // ── C-1b: créditos al cliente atribuidos al productor, aún sin rendir ───
+  // Bandera, no ventana (igual que disposiciones y ajustes): la atribución
+  // puede capturarse hoy sobre una nota de crédito de la semana pasada, y
+  // leerla por fecha la perdería en silencio.
+  const creditAttributionRows = await loadCreditAttributions(sql, purchase_order_id);
+  const creditRows = pendingGrowerCredits(creditAttributionRows);
+  const credit_total = round2(creditRows.reduce((s, c) => s + c.amount, 0));
+
   // ── Merma de bodega y salidas a reempaque de la ventana, por lote ───────
   const wasteMap = new Map<number, number>(
     (
@@ -4358,6 +4524,10 @@ async function computeSupplement(
   // complementarias anteriores). En net_pct el tope en cero del padre solo
   // aplica cuando no hay reversas; con reversas la base puede ser negativa.
   const revenue_net = round2(revenue - reversal_total);
+  // La comisión se gana sobre lo que de verdad entró: reversas Y créditos
+  // atribuidos al productor bajan la base (C-1b). En per_unit no aplica —
+  // esa comisión es por caja manejada, no un % del dinero.
+  const commission_revenue_base = round2(revenue_net - credit_total);
   const units_net = sold_units - reversal_units;
   let commission_base = 0;
   let commission = 0;
@@ -4365,11 +4535,11 @@ async function computeSupplement(
     commission_base = units_net;
     commission = round2(frozenRate * units_net);
   } else if (frozenType === "gross_pct") {
-    commission_base = revenue_net;
-    commission = round2((revenue_net * frozenRate) / 100);
+    commission_base = commission_revenue_base;
+    commission = round2((commission_revenue_base * frozenRate) / 100);
   } else if (frozenType === "net_pct") {
-    commission_base = revenue_net - grower_expenses;
-    commission = round2(((reversal_units > 0 ? commission_base : Math.max(0, commission_base)) * frozenRate) / 100);
+    commission_base = commission_revenue_base - grower_expenses;
+    commission = round2(((reversal_units > 0 || credit_total > 0.009 ? commission_base : Math.max(0, commission_base)) * frozenRate) / 100);
   }
   const commission_so_far = round2(n(parent.commission) + previous.reduce((a, p) => a + p.commission, 0));
   if (commission < 0) commission = Math.max(commission, -commission_so_far);
@@ -4377,7 +4547,7 @@ async function computeSupplement(
   // que la merma pagada por Plein y la compra del remanente): es dinero que
   // se le devuelve, no una venta. Solo suma al neto.
   const net_to_grower = round2(
-    revenue - reversal_total - grower_expenses - commission + shrink_compensation + plein_purchase_total + adjustment_total,
+    revenue - reversal_total - grower_expenses - commission + shrink_compensation + plein_purchase_total + adjustment_total - credit_total,
   );
   const prior_net = round2(n(parent.net_to_grower) + previous.reduce((a, p) => a + p.net_to_grower, 0));
   const has_activity =
@@ -4387,6 +4557,7 @@ async function computeSupplement(
     shrinkRows.length > 0 ||
     dispositionRows.length > 0 ||
     adjustmentRows.length > 0 ||
+    creditRows.length > 0 ||
     lotRows.some((l) => l.moved);
   if (!has_activity)
     blocks.push(`No hay movimientos nuevos desde ${since_number}: no hay nada que rendir todavía.`);
@@ -4466,6 +4637,7 @@ async function computeSupplement(
     shrink_rows: shrinkRows,
     dispositions: dispositionRows,
     adjustments: adjustmentRows,
+    credits: creditRows,
     lots: lotRows,
     breakdown: {
       commission_type: frozenType,
@@ -4482,6 +4654,7 @@ async function computeSupplement(
       shrink_compensation,
       plein_purchase_total,
       adjustment_total,
+      credit_total,
       net_to_grower,
     },
     prior_net,
@@ -4768,6 +4941,36 @@ export const issueSettlementSupplement = createServerFn({ method: "POST" })
     }
     await sql.query(`update grower_settlement_supplements set adjustment_total = $1 where id = $2`, [
       c.breakdown.adjustment_total,
+      supplementId,
+    ]);
+    // C-1b: créditos atribuidos al productor que nacieron después de la LIQ.
+    for (const cr of c.credits) {
+      await sql.query(
+        `insert into grower_settlement_supplement_credits
+         (supplement_id, attribution_id, invoice_number, parent_invoice_number, customer_name, so_number,
+          lot_number, credit_type, cause, reason, amount)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          supplementId,
+          cr.id,
+          cr.invoice_number,
+          cr.parent_invoice_number,
+          cr.customer_name,
+          cr.so_number,
+          cr.lot_number,
+          cr.credit_type,
+          cr.cause,
+          cr.reason,
+          cr.amount,
+        ],
+      );
+      await sql.query(`update grower_credit_attributions set supplement_id = $1 where id = $2`, [
+        supplementId,
+        cr.id,
+      ]);
+    }
+    await sql.query(`update grower_settlement_supplements set credit_total = $1 where id = $2`, [
+      c.breakdown.credit_total,
       supplementId,
     ]);
     // El dinero: REM- (comisión pura) o FAC- adicional (consignación) si el
@@ -5262,7 +5465,19 @@ export const applySettlement = createServerFn({ method: "POST" })
     );
     // Si la OC tiene comisión definida, esa es la liquidación que se escribe;
     // el target % es solo el camino legado sin comisión.
-    const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows, purchases);
+    // C-1b: los mismos créditos que ve el modal — si no, este botón escribiría
+    // al lote un costo calculado sobre un neto que la pantalla ya mostró menor.
+    const creditsForCost = pendingGrowerCredits(
+      await loadCreditAttributions(sql, data.purchase_order_id),
+    );
+    const breakdown = computeCommissionBreakdown(
+      po,
+      lotsRaw,
+      expenses,
+      shrink.rows,
+      purchases,
+      creditsForCost,
+    );
     const computed = computeSettlementLots(
       lotsRaw,
       expense_total,
@@ -5853,8 +6068,13 @@ export const getVendorPortal = createServerFn({ method: "GET" })
           net_total: round2(parentLiq.net_to_grower + settlement.supplements.reduce((s, x) => s + x.net_to_grower, 0)),
         }
       : null;
+    // C-1b: el portal va por share_token, sin sesión. `credit_attributions`
+    // trae nombre del cliente, folio de su factura y el motivo interno — nada
+    // de eso es del productor. Lo que sí le toca saber (el crédito que le
+    // bajaron y por qué) viaja en su documento emitido, no en este payload.
+    const { credit_attributions: _creditAttributions, ...settlementForVendor } = settlement;
     return {
-      ...settlement,
+      ...settlementForVendor,
       liquidation,
       expected_date: po.expected_date,
       vendor_invoice: po.vendor_invoice,
@@ -7659,6 +7879,25 @@ export const cancelInvoice = createServerFn({ method: "POST" })
       throw new Error(`La factura ${inv.invoice_number} ya está cancelada`);
     if (inv.invoice_type === "opening")
       throw new Error("Es una factura del corte de apertura — no se puede cancelar");
+    // C-1b: una nota de crédito ya rendida al productor no se cancela — el
+    // documento que se le entregó ya bajó ese monto de su neto.
+    if (inv.invoice_type === "credit") {
+      const [rendida] = await sql.query(
+        `select coalesce(gs.settlement_number, sup.supplement_number) as doc, po.po_number
+         from grower_credit_attributions a
+         join purchase_orders po on po.id = a.purchase_order_id
+         left join grower_settlements gs on gs.id = a.settlement_id
+         left join grower_settlement_supplements sup on sup.id = a.supplement_id
+         where a.invoice_id = $1 and a.cancelled_at is null
+           and (a.settlement_id is not null or a.supplement_id is not null)
+         order by a.id limit 1`,
+        [inv.id],
+      );
+      if (rendida)
+        throw new Error(
+          `${inv.invoice_number} ya se le rindió al productor en ${rendida.doc} de ${rendida.po_number}: ese documento ya bajó el monto de su neto y no se reescribe. Si hay que devolvérselo, captura un ajuste a favor del productor en esa carga.`,
+        );
+    }
     // Una factura cancelada con notas de crédito colgando deja el saldo del
     // cliente mal: las notas restan contra algo que ya no existe.
     const liveCredits = await sql.query(
@@ -8365,6 +8604,7 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
             sup.advance_recovered::text, sup.final_payment::text, sup.balance_due::text, sup.prior_net::text,
             sup.received_qty::text, sup.destroyed_equiv_qty::text, sup.destroyed_cum_equiv_qty::text, sup.destroyed_cum_pct::text,
             sup.certificate_number, sup.certificate_date::text, sup.settlement_id, coalesce(sup.adjustment_total,0)::text as adjustment_total,
+            coalesce(sup.credit_total,0)::text as credit_total,
             coalesce(sup.reversal_total,0)::text as reversal_total, coalesce(sup.reversal_units,0)::text as reversal_units,
             po.po_number, s.name, s.contact_name, s.phone, s.email, s.city, s.country, s.paca_number,
             gs.settlement_number as parent_number, gs.issue_date::text as parent_issue_date,
@@ -8420,6 +8660,13 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
   );
   const adjustments = await sql.query(
     `select expense_number, reason, amount::text from grower_settlement_supplement_adjustments where supplement_id = $1 order by id`,
+    [sup.id],
+  );
+  // C-1b: notas de crédito al cliente atribuidas al productor en esta ventana.
+  const credits = await sql.query(
+    `select invoice_number, parent_invoice_number, customer_name, so_number, lot_number,
+            credit_type, reason, amount::text
+     from grower_settlement_supplement_credits where supplement_id = $1 order by id`,
     [sup.id],
   );
   const dmy = (iso: string | null) => (iso ? iso.slice(0, 10).split("-").reverse().join("/") : "");
@@ -8530,6 +8777,15 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
       unit_price: n(a.amount),
       amount: n(a.amount),
     })),
+    // C-1b: el cliente pagó menos por esta fruta y el golpe es del productor.
+    ...credits.map((c) => ({
+      sku: "CRÉDITO",
+      description: `Nota de crédito ${c.invoice_number}${c.parent_invoice_number ? ` sobre la factura ${c.parent_invoice_number}` : ""}${c.customer_name ? ` · ${c.customer_name}` : ""}${c.lot_number ? ` · lote ${c.lot_number}` : ""}${c.credit_type ? ` · ${CREDIT_TYPE_LABEL[String(c.credit_type)] ?? c.credit_type}` : ""} — ${c.reason}`,
+      qty: 1,
+      unit: "",
+      unit_price: -n(c.amount),
+      amount: -n(c.amount),
+    })),
     ...(n(sup.commission) !== 0 || n(sup.sold_units) > 0
       ? [
           {
@@ -8605,7 +8861,7 @@ async function buildSupplementPrintDoc(sql, token: string, company) {
     lines,
     subtotal: n(sup.net_to_grower),
     total: n(sup.balance_due) > 0.009 ? -n(sup.balance_due) : n(sup.final_payment),
-    notes: `Complementa ${sup.parent_number} (ya rendido: ${money2(n(sup.prior_net))}). Periodo de esta cuenta: del ${dmyStamp(sup.period_start)} al ${dmyStamp(sup.period_end)}. Ingreso de la ventana ${money2(n(sup.revenue))}${n(sup.reversal_total) > 0.009 ? ` - reversas de ventas canceladas ${money2(n(sup.reversal_total))}` : ""} - gastos del productor ${money2(n(sup.grower_expenses))}${n(sup.commission) < 0 ? ` + comisión devuelta por Plein ${money2(-n(sup.commission))}` : ` - comisión Plein ${money2(n(sup.commission))}`}${n(sup.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(sup.shrink_compensation))}` : ""}${n(sup.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(sup.plein_purchase_total))}` : ""}${n(sup.adjustment_total) > 0.009 ? ` + ajustes a favor del productor ${money2(n(sup.adjustment_total))}` : ""} = neto de esta cuenta ${n(sup.net_to_grower) < 0 ? `-${money2(-n(sup.net_to_grower))}` : money2(n(sup.net_to_grower))}. Adelantos recuperados: ${money2(n(sup.advance_recovered))}.${closeText}${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
+    notes: `Complementa ${sup.parent_number} (ya rendido: ${money2(n(sup.prior_net))}). Periodo de esta cuenta: del ${dmyStamp(sup.period_start)} al ${dmyStamp(sup.period_end)}. Ingreso de la ventana ${money2(n(sup.revenue))}${n(sup.reversal_total) > 0.009 ? ` - reversas de ventas canceladas ${money2(n(sup.reversal_total))}` : ""} - gastos del productor ${money2(n(sup.grower_expenses))}${n(sup.commission) < 0 ? ` + comisión devuelta por Plein ${money2(-n(sup.commission))}` : ` - comisión Plein ${money2(n(sup.commission))}`}${n(sup.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(sup.shrink_compensation))}` : ""}${n(sup.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(sup.plein_purchase_total))}` : ""}${n(sup.adjustment_total) > 0.009 ? ` + ajustes a favor del productor ${money2(n(sup.adjustment_total))}` : ""}${n(sup.credit_total) > 0.009 ? ` - notas de crédito al cliente ${money2(n(sup.credit_total))}` : ""} = neto de esta cuenta ${n(sup.net_to_grower) < 0 ? `-${money2(-n(sup.net_to_grower))}` : money2(n(sup.net_to_grower))}. Adelantos recuperados: ${money2(n(sup.advance_recovered))}.${closeText}${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
     warning: warningText,
     showPaca: false,
     company,
@@ -8653,6 +8909,13 @@ export const getPrintDoc = createServerFn({ method: "GET" })
       const expenses = await sql.query(
         `select category, notes, amount::text from grower_settlement_expenses
          where settlement_id = $1 order by id`,
+        [liq.id],
+      );
+      // C-1b: notas de crédito al cliente que se le cargaron al productor.
+      const credits = await sql.query(
+        `select invoice_number, parent_invoice_number, customer_name, so_number, lot_number,
+                credit_type, reason, amount::text
+         from grower_settlement_credits where settlement_id = $1 order by id`,
         [liq.id],
       );
       // El peso del SKU hijo solo sirve para imprimir la equivalencia en
@@ -8779,6 +9042,16 @@ export const getPrintDoc = createServerFn({ method: "GET" })
           unit_price: -n(e.amount),
           amount: -n(e.amount),
         })),
+        // C-1b: el cliente pagó menos por esta fruta. El renglón dice qué
+        // nota, sobre qué factura, a qué cliente y por qué.
+        ...credits.map((c) => ({
+          sku: "CRÉDITO",
+          description: `Nota de crédito ${c.invoice_number}${c.parent_invoice_number ? ` sobre la factura ${c.parent_invoice_number}` : ""}${c.customer_name ? ` · ${c.customer_name}` : ""}${c.lot_number ? ` · lote ${c.lot_number}` : ""}${c.credit_type ? ` · ${CREDIT_TYPE_LABEL[String(c.credit_type)] ?? c.credit_type}` : ""} — ${c.reason}`,
+          qty: 1,
+          unit: "",
+          unit_price: -n(c.amount),
+          amount: -n(c.amount),
+        })),
         {
           sku: "COMISIÓN",
           description: `Comisión Plein — ${commissionLabel}`,
@@ -8851,7 +9124,7 @@ export const getPrintDoc = createServerFn({ method: "GET" })
         total: n(liq.final_payment),
         // Guion ASCII a propósito: la helvetica de jsPDF no trae el signo menos
         // tipográfico (U+2212) y lo imprime como comillas.
-        notes: `Ingreso bruto ${money2(n(liq.revenue))} - gastos del productor ${money2(n(liq.grower_expenses))} - comisión Plein ${money2(n(liq.commission))}${n(liq.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(liq.shrink_compensation))}` : ""}${n(liq.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(liq.plein_purchase_total))}` : ""} = neto al productor ${money2(n(liq.net_to_grower))}. Adelantos recuperados: ${money2(n(liq.advance_recovered))}. Pago final al productor: ${money2(n(liq.final_payment))}.${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
+        notes: `Ingreso bruto ${money2(n(liq.revenue))} - gastos del productor ${money2(n(liq.grower_expenses))}${n(liq.credit_total) > 0.009 ? ` - notas de crédito al cliente ${money2(n(liq.credit_total))}` : ""} - comisión Plein ${money2(n(liq.commission))}${n(liq.shrink_compensation) > 0.009 ? ` + merma pagada por Plein ${money2(n(liq.shrink_compensation))}` : ""}${n(liq.plein_purchase_total) > 0.009 ? ` + remanente comprado por Plein ${money2(n(liq.plein_purchase_total))}` : ""} = neto al productor ${money2(n(liq.net_to_grower))}. Adelantos recuperados: ${money2(n(liq.advance_recovered))}. Pago final al productor: ${money2(n(liq.final_payment))}.${destructionText}${cuadre.length ? ` Cuadre por lote: ${cuadre.join("; ")}.` : ""}`,
         warning: warningText,
         showPaca: false,
         company,
@@ -9544,12 +9817,295 @@ export const getInvoiceForCredit = createServerFn({ method: "GET" })
       }
     );
   });
+/**
+ * C-1b: valida un lote completo de atribuciones SIN escribir nada. Se corre
+ * antes de crear la nota de crédito, para que una atribución rechazada no deje
+ * una nota viva colgando (y un reintento creando una segunda nota al cliente).
+ * Devuelve los datos ya resueltos para escribirlos después.
+ */
+async function validateCreditRows(
+  sql,
+  ctx: { sales_order_id: number; credit_total: number; invoice_id: number | null; invoice_number: string },
+  rows: {
+    purchase_order_id: number;
+    lot_id?: number | null;
+    cause: "grower" | "plein";
+    reason: string;
+    amount: number;
+  }[],
+) {
+  const resolved: {
+    purchase_order_id: number;
+    supplier_id: number;
+    po_number: string;
+    supplier_name: string;
+    lot_id: number | null;
+    cause: "grower" | "plein";
+    reason: string;
+    amount: number;
+    goes_to_supplement: boolean;
+  }[] = [];
+  // Lo ya atribuido a esta misma nota (si existe) y a cada carga en esta venta.
+  let attributedInNote = 0;
+  if (ctx.invoice_id != null) {
+    const [already] = await sql.query(
+      `select coalesce(sum(amount),0)::text as v from grower_credit_attributions
+       where invoice_id = $1 and cancelled_at is null`,
+      [ctx.invoice_id],
+    );
+    attributedInNote = round2(n(already?.v));
+  }
+  const batchByPo = new Map<number, number>();
+  for (const row of rows) {
+    if (!row.reason.trim())
+      throw new Error(
+        "La atribución exige un motivo: PACA pide justificar cada peso que se le baja al productor.",
+      );
+    if (!(row.amount > 0)) throw new Error("El monto de la atribución tiene que ser mayor a cero.");
+    const [po] = await sql.query(
+      `select po.id, po.po_number, po.supplier_id, coalesce(po.deal_type,'firme') as deal_type,
+              po.liquidated_at::text, s.name as supplier_name
+       from purchase_orders po join suppliers s on s.id = po.supplier_id where po.id = $1`,
+      [row.purchase_order_id],
+    );
+    if (!po) throw new Error("Orden de compra no encontrada");
+    if (po.deal_type === "firme")
+      throw new Error(
+        `${po.po_number} es un trato en firme: esa fruta ya es de Plein, así que el crédito al cliente lo absorbe Plein. La atribución al productor solo aplica a consignación y comisión pura.`,
+      );
+    // La carga tiene que haber surtido de verdad esa venta, y con cajas vivas:
+    // si sus despachos ya se cancelaron, la reversa (C-2b) devuelve ese dinero
+    // y atribuir aquí lo descontaría dos veces.
+    const [live] = await sql.query(
+      `select coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as amount
+       from sale_line_allocations a
+       join sales_order_lines sol on sol.id = a.sales_order_line_id
+       join lots lo on lo.id = a.lot_id
+       where sol.sales_order_id = $1 and lo.purchase_order_id = $2 and a.cancelled_at is null`,
+      [ctx.sales_order_id, po.id],
+    );
+    const contributed = round2(n(live?.amount));
+    if (contributed <= 0.009)
+      throw new Error(
+        `${po.po_number} no surtió cajas vivas de esa venta (o ya se cancelaron): no se le puede atribuir este crédito. Una venta cancelada se le rinde al productor como reversa, no como crédito.`,
+      );
+    // Tope ACUMULADO por carga sobre toda la venta: incluye lo ya atribuido en
+    // otras notas de crédito y lo que va en este mismo lote. Sin esto, dos
+    // notas podrían cargarle al productor el doble de lo que su fruta produjo.
+    const [prevPo] = await sql.query(
+      `select coalesce(sum(a.amount),0)::text as v
+       from grower_credit_attributions a
+       join invoices ci on ci.id = a.invoice_id
+       where a.purchase_order_id = $1 and a.cancelled_at is null and ci.status <> 'cancelled'
+         and ci.sales_order_id = $2`,
+      [po.id, ctx.sales_order_id],
+    );
+    const yaEnLaCarga = round2(n(prevPo?.v)) + (batchByPo.get(po.id) ?? 0);
+    if (yaEnLaCarga + row.amount > contributed + 0.009)
+      throw new Error(
+        `${po.po_number} aportó ${money2(contributed)} a esa venta y ya tiene ${money2(yaEnLaCarga)} atribuidos: quedan ${money2(Math.max(contributed - yaEnLaCarga, 0))}.`,
+      );
+    batchByPo.set(po.id, yaEnLaCarga + row.amount - round2(n(prevPo?.v)));
+    if (row.lot_id != null) {
+      const [lot] = await sql.query(
+        `select id, lot_number, purchase_order_id from lots where id = $1`,
+        [row.lot_id],
+      );
+      if (!lot) throw new Error("Lote no encontrado");
+      if (Number(lot.purchase_order_id) !== Number(po.id))
+        throw new Error(`El lote ${lot.lot_number} no es de ${po.po_number}.`);
+    }
+    resolved.push({
+      purchase_order_id: po.id as number,
+      supplier_id: po.supplier_id as number,
+      po_number: String(po.po_number),
+      supplier_name: String(po.supplier_name),
+      lot_id: row.lot_id ?? null,
+      cause: row.cause,
+      reason: row.reason.trim(),
+      amount: round2(row.amount),
+      goes_to_supplement: Boolean(po.liquidated_at),
+    });
+  }
+  const batchTotal = round2(resolved.reduce((a, r) => a + r.amount, 0));
+  if (attributedInNote + batchTotal > ctx.credit_total + 0.009)
+    throw new Error(
+      `La nota ${ctx.invoice_number} es por ${money2(ctx.credit_total)} y ya tiene ${money2(attributedInNote)} atribuidos: quedan ${money2(Math.max(ctx.credit_total - attributedInNote, 0))}.`,
+    );
+  return resolved;
+}
+/** Escribe lo que validateCreditRows ya resolvió. No valida: eso ya pasó. */
+async function writeCreditRows(
+  sql,
+  context,
+  ctx: { invoice_id: number; parent_invoice_id: number | null },
+  resolved: Awaited<ReturnType<typeof validateCreditRows>>,
+) {
+  const staffName = await staffNameFor(sql, context.userId);
+  const out: { id: number; po_number: string; supplier_name: string; amount: number; goes_to_supplement: boolean }[] = [];
+  for (const r of resolved) {
+    const id = (
+      await sql.query(
+        `insert into grower_credit_attributions
+         (invoice_id, parent_invoice_id, purchase_order_id, supplier_id, lot_id, cause, reason, amount, created_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
+        [
+          ctx.invoice_id,
+          ctx.parent_invoice_id,
+          r.purchase_order_id,
+          r.supplier_id,
+          r.lot_id,
+          r.cause,
+          r.reason,
+          r.amount,
+          staffName,
+        ],
+      )
+    )[0].id as number;
+    out.push({
+      id,
+      po_number: r.po_number,
+      supplier_name: r.supplier_name,
+      amount: r.amount,
+      goes_to_supplement: r.goes_to_supplement,
+    });
+  }
+  return out;
+}
+/**
+ * Las cargas que surtieron una venta, para que el modal de nota de crédito
+ * proponga a quién atribuirle el golpe. Las de trato FIRME se marcan pero no
+ * se pueden atribuir: esa fruta ya es de Plein.
+ */
+export const getCreditTargets = createServerFn({ method: "GET" })
+  .validator(z.object({ sales_order_id: z.number() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const rows = await sql.query(
+      `select po.id as purchase_order_id, po.po_number, coalesce(po.deal_type,'firme') as deal_type,
+              po.liquidated_at::text, s.name as supplier_name,
+              lo.id as lot_id, lo.lot_number, p.name as product_name, ps.calibre,
+              coalesce(sum(a.quantity),0)::text as qty,
+              coalesce(sum(a.quantity * coalesce(sol.unit_price,0)),0)::text as amount
+       from sale_line_allocations a
+       join sales_order_lines sol on sol.id = a.sales_order_line_id
+       join lots lo on lo.id = a.lot_id
+       join products p on p.id = lo.product_id
+       left join pack_styles ps on ps.id = lo.pack_style_id
+       join purchase_orders po on po.id = lo.purchase_order_id
+       join suppliers s on s.id = po.supplier_id
+       where sol.sales_order_id = $1 and a.cancelled_at is null
+       group by po.id, po.po_number, po.deal_type, po.liquidated_at, s.name, lo.id, lo.lot_number, p.name, ps.calibre
+       order by po.id, lo.id`,
+      [data.sales_order_id],
+    );
+    return rows.map((r) => ({
+      purchase_order_id: r.purchase_order_id as number,
+      po_number: String(r.po_number),
+      deal_type: String(r.deal_type),
+      liquidated_at: r.liquidated_at ?? null,
+      supplier_name: String(r.supplier_name),
+      lot_id: r.lot_id as number,
+      lot_number: String(r.lot_number),
+      description: packDescription(String(r.product_name), null, r.calibre),
+      qty: n(r.qty),
+      amount: round2(n(r.amount)),
+      attributable: String(r.deal_type) !== "firme",
+    }));
+  });
+/** Atribuir una nota de crédito ya existente (o agregarle otra carga). */
+export const attributeCreditToGrower = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      invoice_id: z.number(),
+      purchase_order_id: z.number(),
+      lot_id: z.number().nullable().optional(),
+      cause: z.enum(["grower", "plein"]),
+      reason: z.string().min(1),
+      amount: z.number().positive(),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [inv] = await sql.query(
+      `select id, invoice_number, coalesce(invoice_type,'sale') as invoice_type, status,
+              total::text, sales_order_id, parent_invoice_id
+       from invoices where id = $1`,
+      [data.invoice_id],
+    );
+    if (!inv) throw new Error("Nota de crédito no encontrada");
+    if (inv.invoice_type !== "credit")
+      throw new Error(`${inv.invoice_number} no es una nota de crédito.`);
+    if (inv.status === "cancelled")
+      throw new Error(`La nota de crédito ${inv.invoice_number} está cancelada.`);
+    const resolved = await validateCreditRows(
+      sql,
+      {
+        sales_order_id: inv.sales_order_id as number,
+        credit_total: Math.abs(n(inv.total)),
+        invoice_id: inv.id as number,
+        invoice_number: String(inv.invoice_number),
+      },
+      [data],
+    );
+    const [written] = await writeCreditRows(
+      sql,
+      context,
+      { invoice_id: inv.id as number, parent_invoice_id: inv.parent_invoice_id ?? null },
+      resolved,
+    );
+    return written;
+  });
+/** Deshacer una atribución que todavía no se le rindió al productor. */
+export const cancelCreditAttribution = createServerFn({ method: "POST" })
+  .validator(z.object({ attribution_id: z.number(), reason: z.string().optional() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [a] = await sql.query(
+      `select a.id, a.amount::text, a.cancelled_at::text, a.settlement_id, a.supplement_id,
+              gs.settlement_number, sup.supplement_number, po.po_number
+       from grower_credit_attributions a
+       join purchase_orders po on po.id = a.purchase_order_id
+       left join grower_settlements gs on gs.id = a.settlement_id
+       left join grower_settlement_supplements sup on sup.id = a.supplement_id
+       where a.id = $1`,
+      [data.attribution_id],
+    );
+    if (!a) throw new Error("Atribución no encontrada");
+    if (a.cancelled_at) throw new Error("Esa atribución ya está cancelada");
+    const rendered = a.settlement_number ?? a.supplement_number;
+    if (rendered)
+      throw new Error(
+        `Ese crédito ya quedó rendido al productor en ${rendered} de ${a.po_number}: lo congelado no se deshace. Si hay que devolvérselo, captura un ajuste a favor del productor.`,
+      );
+    const staffName = await staffNameFor(sql, context.userId);
+    await sql.query(
+      `update grower_credit_attributions set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`,
+      [staffName, data.reason || null, data.attribution_id],
+    );
+    return { ok: true, amount: n(a.amount) };
+  });
 export const createCreditInvoice = createServerFn({ method: "POST" })
   .validator(
     z.object({
       sales_order_id: z.number(),
       internal_note: z.string().optional(),
       customer_note: z.string().optional(),
+      // C-1b: a qué carga(s) se le atribuye el golpe y de quién fue la culpa.
+      attributions: z
+        .array(
+          z.object({
+            purchase_order_id: z.number(),
+            lot_id: z.number().nullable().optional(),
+            cause: z.enum(["grower", "plein"]),
+            reason: z.string().min(1),
+            amount: z.number().positive(),
+          }),
+        )
+        .optional(),
       lines: z
         .array(
           z.object({
@@ -9603,6 +10159,18 @@ export const createCreditInvoice = createServerFn({ method: "POST" })
       throw new Error(
         `La factura ${invoice.invoice_number} ya tiene ${money2(invoice.credited_total)} acreditados — máximo acreditable ${money2(Math.max(invoiceRemaining, 0))}.`,
       );
+    // C-1b: validar la atribución ANTES de crear la nota. Si algo no cuadra,
+    // no nace ningún documento y el reintento no duplica la nota al cliente.
+    const resolvedAttributions = await validateCreditRows(
+      sql,
+      {
+        sales_order_id: data.sales_order_id,
+        credit_total: round2(creditTotal),
+        invoice_id: null,
+        invoice_number: "de esta nota",
+      },
+      data.attributions ?? [],
+    );
     const salesRep = await staffNameFor(sql, context.userId);
     const issue = todayISO();
     const notes =
@@ -9654,11 +10222,21 @@ export const createCreditInvoice = createServerFn({ method: "POST" })
         ],
       );
     }
+    // C-1b: las atribuciones ya se validaron ARRIBA, antes de crear la nota,
+    // así que aquí solo se escriben — una atribución rechazada nunca deja una
+    // nota de crédito viva y sin atribuir colgando del cliente.
+    const attributions = await writeCreditRows(
+      sql,
+      context,
+      { invoice_id: id, parent_invoice_id: invoice.id },
+      resolvedAttributions,
+    );
     return {
       id,
       invoice_number,
       total: -creditTotal,
       parent_invoice_number: invoice.invoice_number,
+      attributions,
     };
   });
 export const listGlAccounts = createServerFn({ method: "GET" })
@@ -9817,7 +10395,12 @@ export const getFinancials = createServerFn({ method: "GET" })
     const remit = n(remitRows[0]?.remit);
     const commissionIncome = n(remitRows[0]?.commission);
     const cogsTotal = cogs + remit;
-    const gp = (salesShipped || sales) - cogsTotal;
+    // C-1b: la nota de crédito al cliente ya bajaba el ingreso facturado
+    // (cuenta 40002) pero NO la utilidad, que se calculaba solo desde lo
+    // despachado. Con el remitido al productor bajando por el mismo crédito,
+    // Plein se llevaba el beneficio dos veces. `credits` es negativo: aquí
+    // resta. (Lo despachado-sin-facturar sigue siendo el hallazgo 24, aparte.)
+    const gp = (salesShipped || sales) + credits - cogsTotal;
     const net = gp - expTotal;
     const currentOf = (number, starting) => {
       if (number === "40000") return sales;
@@ -10876,6 +11459,11 @@ async function wipeLiveActivity(sql: any) {
   await sql.query(`delete from grower_settlement_supplement_lots`);
   await sql.query(`delete from grower_settlement_supplement_reversals`);
   await sql.query(`delete from grower_settlement_supplement_adjustments`);
+  // C-1b: el detalle congelado primero, luego la atribución — que apunta a la
+  // complementaria y a la liquidación, así que tiene que morir ANTES que ellas.
+  await sql.query(`delete from grower_settlement_supplement_credits`);
+  await sql.query(`delete from grower_settlement_credits`);
+  await sql.query(`delete from grower_credit_attributions`);
   // Los ajustes (C-2a) apuntan a la complementaria que los rindió.
   await sql.query(`delete from grower_adjustments`);
   await sql.query(`update lot_dispositions set supplement_id = null where supplement_id is not null`);
@@ -10889,6 +11477,11 @@ async function wipeLiveActivity(sql: any) {
   // Después de grower_settlements: la liquidación guarda FK al certificado.
   await sql.query(`delete from destruction_certificates`);
   await sql.query(`delete from send_events`);
+  // Los despachos guardan en qué camión salieron (bloque documentos-completos,
+  // migración 0041): hay que soltar la referencia antes de borrar el embarque.
+  await sql.query(
+    `update sale_line_allocations set shipment_id = null where shipment_id is not null`,
+  );
   await sql.query(`delete from shipments`);
   await sql.query(`delete from pallets`);
   await sql.query(`delete from expense_po_links`);
