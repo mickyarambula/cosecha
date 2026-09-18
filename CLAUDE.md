@@ -12,7 +12,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 
 ## Prohibido (rompe el negocio)
 
-- Publicar / deploy a producción sin que Miguel diga explícitamente **“publícalo”**.
+- Publicar a producción fuera del cierre de un bloque. Mezclar a `main` = deploy automático en Vercel. Desde el 18 Sep 2026 Miguel autorizó que el agente mezcle y publique **al cerrar cada bloque probado** (commit → merge `--no-ff` → push `main`); nada más se publica sin que él lo diga. La parada antes de migraciones (mostrar SQL, esperar OK) sigue intacta.
 - Tocar facturas `invoice_type=opening`, bills de corte, o el folio **`CORTE-CHASE`**.
 - Replay de movimientos Chase históricos. Chase operativo abre **19 Ago 2026**. Folio **430** no se aplica solo.
 - Netear Papayas & More (es cliente **y** proveedor). Cuentas separadas.
@@ -29,7 +29,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 
 TanStack Start + Router + React 19 + Tailwind v4 + Radix.  
 Server fns: `createServerFn` + zod + `authMiddleware` en `src/lib/produce-server.ts`.  
-DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0039` (crece con cada bloque — `ls migrations/` para el número real).  
+DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0040` (crece con cada bloque — `ls migrations/` para el número real).  
 Auth: Better Auth (Google + correo). Staff por módulos.
 
 ## Dónde está qué

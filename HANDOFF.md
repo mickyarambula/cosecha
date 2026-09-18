@@ -14,7 +14,7 @@ Antes de tocar código, lee también **`AUDITORIA-2026-09-03.md`** (lista vigent
 | https://github.com/mickyarambula/cosecha | **Privado** | **Sí — este** |
 | https://github.com/mickyarambula/erppleinproduce | Privado (mismo código, nombre viejo) | No hace falta |
 
-Rama `main`. Cada bloque de trabajo entra por PR desde una rama nueva; Miguel hace el merge desde GitHub, nunca el agente.
+Rama `main`. Cada bloque va en rama nueva desde `origin/main` y se mezcla a `main` con `--no-ff`. **Desde el 18 Sep 2026 el agente mezcla y publica él mismo al cerrar cada bloque probado** (Miguel lo pidió "para que no se me pase", sabiendo que cada push a `main` despliega a producción en Vercel en automático). La parada antes de cualquier migración sigue igual: SQL + diagnóstico y esperar el OK de Miguel.
 
 Clone:
 
@@ -34,6 +34,7 @@ Repo privado: Claude Code necesita GitHub login de `mickyarambula`.
 - Liquidación al productor (consignación y comisión pura): motor completo con **candados y complementaria** (ver abajo) — ya no es solo el cálculo PAS original.
 - Disposición del remanente al liquidar (PACA 7 CFR 46): pendiente de venta / destruida / comprada por Plein, certificado al 5%.
 - Trato **firme**: el costo es el capturado en la OC y nada lo recalcula desde el modal de liquidación (hallazgo 7 cerrado en firme, sesión 3). El costo de las líneas de OC se escribe por línea, nunca por producto.
+- **Pagos que cuadran** (sesión 3): el cobro de cliente es exactamente lo aplicado, topado al saldo de cada factura, solo facturas vivas del cliente, con fecha, método y referencia. La fruta se paga en CxP contra la FAC- (topada al saldo); desde Gastos solo se pagan gastos con las mismas reglas. La OC ya no aparece como cuenta por pagar.
 - Reempaque ligado a la carga que lo originó — ya no desaparece de la liquidación del productor.
 - Ubicaciones (bodegas/cámaras propias y de terceros): catálogo con alta, edición, desactivar/reactivar y temperatura — pantalla en Almacén → Ubicaciones.
 - CxC / CxP / gastos / tesorería / conciliación Chase / P&L / Balance / trial.
@@ -92,15 +93,19 @@ Migraciones de esta sesión: `0035` a `0039` (`reempaque_carga`, `disposicion_re
 
 | PR | Rama | Qué hace |
 |---|---|---|
-| por abrir | `hallazgo-7-firme` | **Hallazgo 7 en firme**: `applySettlement` ("Aplicar % objetivo", "Borrar meta", "Actualizar costos de lote") se niega en trato firme — el costo es el que se capturó en la OC. El modal de liquidación en firme ya no muestra la cajita "Utilidad objetivo %" ni el botón "Actualizar costos de lote" (solo lectura). Un % objetivo guardado ya no sustituye el costo real ni en pantalla ni en Reportes → Liquidaciones. Donde sí se escribe costo de líneas de OC (consignación, al emitir y en "Actualizar costos" antes de emitir) se hace **por línea** vía `lots.purchase_order_line_id` (promedio ponderado de sus lotes), ya no por producto — dos calibres del mismo producto conservan su costo. |
+| #23 | `hallazgo-7-firme` | **Hallazgo 7 en firme**: `applySettlement` ("Aplicar % objetivo", "Borrar meta", "Actualizar costos de lote") se niega en trato firme — el costo es el que se capturó en la OC. El modal de liquidación en firme ya no muestra la cajita "Utilidad objetivo %" ni el botón "Actualizar costos de lote" (solo lectura). Un % objetivo guardado ya no sustituye el costo real ni en pantalla ni en Reportes → Liquidaciones. Donde sí se escribe costo de líneas de OC (consignación, al emitir y en "Actualizar costos" antes de emitir) se hace **por línea** vía `lots.purchase_order_line_id` (promedio ponderado de sus lotes), ya no por producto — dos calibres del mismo producto conservan su costo. |
 
 Sin migración. Verificado en Chrome contra base local (10/10): firme con dos calibres de Papaya ($10 y $12) — las tres acciones se niegan y los costos de lote y línea quedan intactos; consignación con dos calibres vendidos a $20 y $30 con comisión 10 % — al emitir, la línea del 6 ct queda en $18 y la del 8 ct en $27 (antes las dos quedaban en $27). Anclas iguales antes/después.
+
+| directo a `main` | `pagos-que-cuadran` | **Hallazgos 3 y 4 — pagos que cuadran.** Cobro de cliente (`registerCustomerPayment`): el monto debe ser igual a lo aplicado (±$0.05), cada aplicación se topa al saldo de su factura, la factura debe ser del cliente, viva y no nota de crédito, sin repetir factura; todo se valida antes de escribir. Fecha de depósito, método y referencia capturables en CxC → Registrar pago; desapareció el aviso falso de "etiqueta de sobrepago". Pago a proveedor: `listPayables` ya no lista las OCs como cuentas por pagar y `registerVendorPayment` solo acepta gastos (la fruta se paga en CxP contra la FAC-, `registerPago`, que ya se topaba al saldo) con tope al saldo, proveedor correcto y sin repetir; `registerPago` y `registerPagoProductor` aceptan fecha, método y referencia. Gastos → Pagos muestra el método real (antes "ACH" fijo) y la referencia; Tesorería también. |
+
+Migración de esta parte: `0040_pagos_metodo_referencia` — dos columnas nullable en `cash_movements` (`method`, `reference`); no toca filas. Verificado en Chrome contra base local (29/29): cobro de 100 con cheque y referencia; cuatro cobros negados (monto ≠ aplicado, más que el saldo, factura de otro cliente, factura repetida) que no tocaron nada; dos parciales de 30 cierran una factura de 60; cancelar el cobro regresa el saldo; la OC ya no aparece en Gastos ni se puede pagar desde ahí; gasto de 200 negado a 250 / a otro proveedor / con monto distinto, pagado con Wire y referencia; FAC- de 300 pagada en CxP con fecha, método y referencia; Chase cuadra en cada paso. Anclas iguales antes/después con la migración aplicada. Decisión de producto: un cobro que no cuadra con lo aplicado **se niega** (no nace crédito de cliente por sobrepago — eso es el Área de mejora #2, no construida).
 
 ### Qué sigue pendiente (al 18 Sep 2026)
 
 - **C-1b**: notas de crédito atribuidas al productor con causa (Plein vs productor) — no se construyó.
 - **Hallazgo 6** (`AUDITORIA-2026-09-03.md`): en comisión pura el P&L sigue inflando la utilidad con dinero del productor (el neto al productor no entra como costo/remisión al P&L).
-- Sesiones 3 y 4 del plan de `AUDITORIA-2026-09-03.md` (pagos que cuadran, documentos completos) — no empezadas.
+- Sesión 4 del plan de `AUDITORIA-2026-09-03.md` (documentos completos) — no empezada. De la sesión 3 (pagos) quedó fuera: importación del estado de cuenta Chase (CSV) y cruce parcial/múltiple; crédito de cliente por sobrepago (hoy el cobro se niega si no cuadra); hallazgo 3 en su parte de `purchase_orders.paid` (columna queda sin uso, no se borra).
 
 Detalles chicos, anotados y sin resolver (no bloquean nada, no se construyeron):
 - "Quality dump" sigue en inglés en el account of sales (el catálogo de motivos se tradujo, el valor ya guardado en filas viejas no).
