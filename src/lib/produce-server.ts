@@ -9776,6 +9776,21 @@ export const getFinancials = createServerFn({ method: "GET" })
     const transitRows = await sql.query(
       `select coalesce(sum(total - paid),0)::text as v from grower_payables where status <> 'cancelled'`,
     );
+    // Hallazgo 6: la parte del productor sale del P&L como costo (cuenta
+    // 50100), contra el mismo evento que crea el pasivo 21000: la liquidación
+    // EMITIDA (y sus complementarias, que pueden ser negativas por una venta
+    // cancelada). Sólo comisión pura — en consignación Plein sí compra la
+    // fruta y ese costo ya está en lots.unit_cost (cuenta 50000): sumarlo
+    // aquí lo contaría dos veces.
+    const remitRows = await sql.query(`
+    select coalesce(sum(net_to_grower),0)::text as remit,
+           coalesce(sum(commission),0)::text as commission
+    from (
+      select net_to_grower, commission from grower_settlements where deal_type = 'comision'
+      union all
+      select net_to_grower, commission from grower_settlement_supplements where deal_type = 'comision'
+    ) t
+  `);
     const accounts = await sql.query(`
     select number, name, kind, statement, subtype, parent_number, starting_balance::text, sort_order, description, tracking_start::text
     from gl_accounts where is_active = true order by sort_order
@@ -9797,12 +9812,18 @@ export const getFinancials = createServerFn({ method: "GET" })
     const inventory = n(invVal[0]?.v);
     const ap = n(billPayable[0]?.v) + n(expPayable[0]?.v);
     const income = sales + credits;
-    const gp = (salesShipped || sales) - cogs;
+    // Lo remitido al productor es costo de la venta: sale antes de la utilidad
+    // bruta, igual que el COGS de la fruta propia.
+    const remit = n(remitRows[0]?.remit);
+    const commissionIncome = n(remitRows[0]?.commission);
+    const cogsTotal = cogs + remit;
+    const gp = (salesShipped || sales) - cogsTotal;
     const net = gp - expTotal;
     const currentOf = (number, starting) => {
       if (number === "40000") return sales;
       if (number === "40002") return credits;
       if (number === "50000") return cogs;
+      if (number === "50100") return remit;
       // "Freight" (inglés) y "Fletes" (español, sembrado desde el inicio en
       // money_concepts bajo Costo) son el MISMO concepto — el código solo
       // buscaba el inglés y "Fletes" se iba al cajón 59999 desde siempre.
@@ -9858,6 +9879,12 @@ export const getFinancials = createServerFn({ method: "GET" })
       credits,
       income,
       cogs,
+      /** Neto al productor de cargas a comisión pura ya liquidadas (cuenta 50100). */
+      remit,
+      /** Lo que de verdad gana Plein en esas cargas: su comisión. Informativo. */
+      commission_income: commissionIncome,
+      /** COGS de la fruta propia + remitido al productor: el total del bloque. */
+      cogs_total: cogsTotal,
       gp,
       expenses: expTotal,
       expByCat,

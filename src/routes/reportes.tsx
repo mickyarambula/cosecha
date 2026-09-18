@@ -228,12 +228,26 @@ function Page() {
               ))}
               <tr className="border-t border-border font-semibold">
                 <td className="py-2">{t("Total Cost of Goods Sold")}</td>
-                <td className="py-2 text-right">{money(f?.cogs ?? 0)}</td>
+                <td className="py-2 text-right">{money(f?.cogs_total ?? f?.cogs ?? 0)}</td>
               </tr>
               <tr className="bg-surface-2 font-semibold">
                 <td className="py-2">{t("Gross Profit")}</td>
                 <td className="py-2 text-right">{money(f?.gp ?? 0)}</td>
               </tr>
+              {/* Hallazgo 6: la venta bruta de una carga a comisión entra al
+                  ingreso y la parte del productor sale en la 50100. Esta línea
+                  deja a la vista lo que de verdad ganó Plein en esas cargas —
+                  el número que pide el contador. */}
+              {(f?.remit ?? 0) !== 0 ? (
+                <tr>
+                  <td className="py-1 pl-4 text-xs text-muted">
+                    De lo anterior, ingreso propio de Plein en cargas a comisión pura (su comisión)
+                  </td>
+                  <td className="py-1 text-right text-xs tabular-nums text-muted">
+                    {money(f?.commission_income ?? 0)}
+                  </td>
+                </tr>
+              ) : null}
               <tr>
                 <td className="py-3 font-semibold">{t("Expenses")}</td>
                 <td />
