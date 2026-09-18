@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { BarSplit, Drawer, Modal, TabActions } from "@/components/app-shell";
 import { ConceptSelect } from "@/components/concepts";
@@ -246,8 +246,8 @@ function Page() {
           <KpiMini label="Payments" value={money(movs.reduce((s, m) => s + m.amount, 0))} />
           <KpiMini label="Terms accounts" value={money(0)} />
           <KpiMini label="Cash accounts" value={money(movs.reduce((s, m) => s + m.amount, 0))} />
-          <KpiMini label="Paid via ACH" value={money(movs.reduce((s, m) => s + m.amount, 0))} />
-          <KpiMini label="Paid via other" value={money(0)} />
+          <KpiMini label="Paid via ACH" value={money(movs.filter((m) => !m.cancelled_at && m.method === "ACH").reduce((s, m) => s + m.amount, 0))} />
+          <KpiMini label="Paid via other" value={money(movs.filter((m) => !m.cancelled_at && m.method !== "ACH").reduce((s, m) => s + m.amount, 0))} />
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[800px] text-left text-sm">
@@ -274,8 +274,8 @@ function Page() {
                     <td className="px-3 py-2">{fecha(m.mov_date)}</td>
                     <td className="px-3 py-2">{m.counterparty}</td>
                     <td className="px-3 py-2 text-right">{money(m.amount)}</td>
-                    <td className="px-3 py-2">ACH</td>
-                    <td className="px-3 py-2 text-muted">{m.notes}</td>
+                    <td className="px-3 py-2">{m.method || "—"}</td>
+                    <td className="px-3 py-2 text-muted">{[m.reference, m.notes].filter(Boolean).join(" · ")}</td>
                     <td className="px-3 py-2 font-mono text-xs text-link">{m.folio.replace(/\D/g, "") || m.id}</td>
                   </tr>
                 ))
@@ -374,7 +374,7 @@ function Page() {
           <tbody>
             {rows.map((e) => {
               const k = keyOf(e);
-              const label = e.kind === "po" ? poShort(e.number) : e.number.replace(/^EXP-/, "EXP #");
+              const label = e.number.replace(/^EXP-/, "EXP #");
               return (
                 <tr key={k} className="border-b border-border bg-surface">
                   <td className="px-3 py-2">
@@ -390,15 +390,9 @@ function Page() {
                     />
                   </td>
                   <td className="px-3 py-2">
-                    {e.kind === "po" ? (
-                      <Link to="/compras" className="text-ok">
-                        {label}
-                      </Link>
-                    ) : (
-                      <button type="button" className="text-warn" onClick={() => setDetailId(e.id)}>
-                        {label}
-                      </button>
-                    )}
+                    <button type="button" className="text-warn" onClick={() => setDetailId(e.id)}>
+                      {label}
+                    </button>
                   </td>
                   <td className="px-3 py-2">{e.invoice_number || "—"}</td>
                   <td className="px-3 py-2">{e.category}</td>
@@ -984,6 +978,7 @@ function VendorPayModal({
   const [checks, setChecks] = useState<Record<string, number>>({});
   const [method, setMethod] = useState("ACH");
   const [notes, setNotes] = useState("");
+  const [reference, setReference] = useState("");
   const [date, setDate] = useState(todayISO());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -997,7 +992,7 @@ function VendorPayModal({
       .filter(([, amt]) => amt > 0)
       .map(([k, amount]) => {
         const [kind, id] = k.split("-");
-        return { kind: kind as "expense" | "po", id: Number(id), amount };
+        return { kind: kind as "expense", id: Number(id), amount };
       });
     if (!apps.length) {
       setErr(t("Select at least one invoice"));
@@ -1011,6 +1006,7 @@ function VendorPayModal({
           amount: applied,
           method,
           pay_date: date,
+          reference: reference.trim() || undefined,
           notes: notes || undefined,
           applications: apps,
         },
@@ -1074,6 +1070,9 @@ function VendorPayModal({
             <Field label="Payment date">
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </Field>
+            <Field label="Reference">
+              <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder={t("Check # / deposit")} />
+            </Field>
             <Field label="Notes">
               <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} />
             </Field>
@@ -1108,7 +1107,7 @@ function VendorPayModal({
                           }}
                         />
                       </td>
-                      <td className="px-2 py-2">{r.kind === "po" ? `${t("PO #")}${poShort(r.number)}` : r.number}</td>
+                      <td className="px-2 py-2">{r.number}</td>
                       <td className="px-2 py-2">{fecha(r.issue_date)}</td>
                       <td className="px-2 py-2 text-right">{money(r.amount)}</td>
                       <td className="px-2 py-2">{r.status}</td>

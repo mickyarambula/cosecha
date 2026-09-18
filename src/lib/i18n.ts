@@ -1025,8 +1025,9 @@ const ES: Record<string, string> = {
   Due: "Vence",
   "Rem. balance": "Saldo rest.",
   "New Customer Payment": "Nuevo pago de cliente",
-  "Customer is overpaying {amount}. An overpayment tag will be created.":
-    "El cliente está pagando de más {amount}. Se creará una etiqueta de sobrepago.",
+  "Reference": "Referencia",
+  "Check # / deposit": "No. de cheque / depósito",
+  "The payment amount ({typed}) must match what is applied to invoices ({applied}).": "El monto del cobro ({typed}) debe ser igual a lo aplicado a facturas ({applied}).",
   "Inventory is not touched — invoicing doesn't move stock. This only voids the billing document.":
     "El inventario no se toca — facturar no mueve existencia. Esto solo anula el documento de facturación.",
   "Total sales cash": "Ventas de contado",
