@@ -120,12 +120,45 @@ Migración de documentos: `0041_documentos_completos` — `invoice_lines.pack_st
 
 Migración de la parte de pagos: `0040_pagos_metodo_referencia` — dos columnas nullable en `cash_movements` (`method`, `reference`); no toca filas. Verificado en Chrome contra base local (29/29): cobro de 100 con cheque y referencia; cuatro cobros negados (monto ≠ aplicado, más que el saldo, factura de otro cliente, factura repetida) que no tocaron nada; dos parciales de 30 cierran una factura de 60; cancelar el cobro regresa el saldo; la OC ya no aparece en Gastos ni se puede pagar desde ahí; gasto de 200 negado a 250 / a otro proveedor / con monto distinto, pagado con Wire y referencia; FAC- de 300 pagada en CxP con fecha, método y referencia; Chase cuadra en cada paso. Anclas iguales antes/después con la migración aplicada. Decisión de producto: un cobro que no cuadra con lo aplicado **se niega** (no nace crédito de cliente por sobrepago — eso es el Área de mejora #2, no construida).
 
-### Qué sigue pendiente (al 18 Sep 2026)
+### Qué sigue pendiente (al 18 Sep 2026, cierre de la sesión 3)
 
-- **C-1b**: notas de crédito atribuidas al productor con causa (Plein vs productor) — no se construyó.
-- **Hallazgo 6** (`AUDITORIA-2026-09-03.md`): en comisión pura el P&L sigue inflando la utilidad con dinero del productor (el neto al productor no entra como costo/remisión al P&L).
-- De documentos quedó fuera (Área de mejora #4): pick ticket y confirmación de pedido siguen imprimiendo la OV; el estado de cuenta sigue sin detalle ni fecha "al".
-- De la sesión 3 (pagos) quedó fuera: importación del estado de cuenta Chase (CSV) y cruce parcial/múltiple; crédito de cliente por sobrepago (hoy el cobro se niega si no cuadra); hallazgo 3 en su parte de `purchase_orders.paid` (columna queda sin uso, no se borra).
+**Los seis bloques de la sesión 3 están construidos, probados y en `main`** (hallazgo 7 en firme, pagos
+que cuadran, documentos completos, P&L en comisión pura, C-1b y hallazgo 14). Con eso **no queda ningún
+hallazgo CRÍTICO abierto** en `AUDITORIA-2026-09-03.md`. Lo que sigue, por valor:
+
+- **Área de mejora #1 — última puerta**: devoluciones al productor. `lots.rts_qty` existe desde
+  `migrations/0008` y **nada la escribe**: una devolución de cliente que regresa fruta al productor no
+  tiene camino en el ERP.
+- **Área de mejora #3 — devoluciones y rechazos del cliente** (grande, no existe): rechazo parcial con
+  destino de la fruta (regresa a lote / se destruye documentado / se revende), ajuste de precio por
+  condición, y que el golpe llegue al margen. Hoy todo reclamo termina en nota de crédito.
+- **Área de mejora #2 — un solo número de "cuánto debo" y "cuánto me deben"**: siguen existiendo varias
+  lecturas de CxC/CxP que no coinciden entre dashboard, Balance, CxC/CxP y Gastos. Aquí entra el
+  crédito de cliente por sobrepago (hoy un cobro que no cuadra **se niega**, a propósito).
+- **Área de mejora #4 — documentos que faltan**: pick ticket y confirmación de pedido siguen imprimiendo
+  la OV; el estado de cuenta sigue sin detalle ni fecha "al".
+- **Área de mejora #5 — conciliación**: importar el estado de cuenta de Chase (CSV) y cruce
+  parcial/múltiple. Fecha, método y referencia ya se capturan (bloque de pagos).
+- Hallazgos ALTOS que siguen abiertos y no se tocaron: **11** (gasto capturado desde "Nueva OC" queda
+  huérfano), **12** (corregir costo en una OC ya recibida no llega a los lotes), **13** ("distribuir por
+  pallet" nunca opera porque `lots.pallets` es null), **15** (la recepción hardcodea fecha y origen),
+  **16** (12 server fns sin candado de rol), **17/18** (OV con precio $35 inventado y campos que se
+  pierden), **19/20** (fecha del gasto ignorada; editar un gasto resetea su prorrateo), **21**, **22**,
+  **23**, **24**, **26**. Están descritos con archivo y línea en `AUDITORIA-2026-09-03.md`.
+- `purchase_orders.paid` quedó sin escritores tras el bloque de pagos: la columna existe y ya no se usa
+  (no se borró a propósito).
+
+**Límites conocidos, decididos y documentados** (no son bugs por corregir, son fronteras del diseño):
+
+- **Comisión pura**: el costo "Remitido al productor" se reconoce al **emitir** la liquidación, así que
+  entre la venta y la liquidación ni el P&L ni el Balance tienen la parte del productor. Es la misma
+  ventana en los dos, nunca se contradicen.
+- **Consignación con crédito tardío**: si la nota de crédito llega después de emitir, el costo del lote
+  ya quedó escrito y no se reescribe; la complementaria le baja el neto al productor y nace un `ADE-`,
+  pero ese ajuste no toca el P&L, así que el COGS queda alto por ese monto. Mismo hueco que ya tenían
+  reversas y ajustes; cerrarlo pide una línea de "ajustes de costo de cargas liquidadas" en el P&L.
+- **BOL anterior a `documentos-completos`**: un embarque cuyo BOL se emitió antes de ese bloque no tiene
+  mercancía ligada y su BOL saldría vacío. En producción no aplica (cero órdenes de venta).
 
 Detalles chicos, anotados y sin resolver (no bloquean nada, no se construyeron):
 - "Quality dump" sigue en inglés en el account of sales (el catálogo de motivos se tradujo, el valor ya guardado en filas viejas no).
