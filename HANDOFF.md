@@ -1,6 +1,6 @@
 # Handoff — Cosecha → Claude
 
-**Fecha:** 9 Sep 2026 (actualizado; versión anterior era del 27 Ago y ya tenía números de corte viejos — ver nota abajo).
+**Fecha:** 18 Sep 2026 (actualizado con la sesión 3; la versión del 27 Ago tenía números de corte viejos — ver nota abajo).
 **Dueño:** Miguel Arambula · Plein Produce LLC · Nogales, AZ
 **Producto:** Cosecha (ERP). Membrete de documentos: Plein Produce LLC.
 
@@ -33,6 +33,7 @@ Repo privado: Claude Code necesita GitHub login de `mickyarambula`.
 - CPO → OV → OC → recepción PACA → lote. Ship → factura. Bill desde OC.
 - Liquidación al productor (consignación y comisión pura): motor completo con **candados y complementaria** (ver abajo) — ya no es solo el cálculo PAS original.
 - Disposición del remanente al liquidar (PACA 7 CFR 46): pendiente de venta / destruida / comprada por Plein, certificado al 5%.
+- Trato **firme**: el costo es el capturado en la OC y nada lo recalcula desde el modal de liquidación (hallazgo 7 cerrado en firme, sesión 3). El costo de las líneas de OC se escribe por línea, nunca por producto.
 - Reempaque ligado a la carga que lo originó — ya no desaparece de la liquidación del productor.
 - Ubicaciones (bodegas/cámaras propias y de terceros): catálogo con alta, edición, desactivar/reactivar y temperatura — pantalla en Almacén → Ubicaciones.
 - CxC / CxP / gastos / tesorería / conciliación Chase / P&L / Balance / trial.
@@ -87,11 +88,18 @@ Después de `AUDITORIA-2026-09-03.md`, el trabajo se enfocó en su "Área de mej
 
 Migraciones de esta sesión: `0035` a `0039` (`reempaque_carga`, `disposicion_remanente`, `liquidacion_complementaria`, `candados_liquidacion`, `reversa_venta_rendida`). `ubicaciones-admin` **no** agregó migración — las columnas ya existían.
 
-### Qué sigue pendiente de esta sesión
+## Sesión 3 (18 Sep 2026) — qué se construyó
+
+| PR | Rama | Qué hace |
+|---|---|---|
+| por abrir | `hallazgo-7-firme` | **Hallazgo 7 en firme**: `applySettlement` ("Aplicar % objetivo", "Borrar meta", "Actualizar costos de lote") se niega en trato firme — el costo es el que se capturó en la OC. El modal de liquidación en firme ya no muestra la cajita "Utilidad objetivo %" ni el botón "Actualizar costos de lote" (solo lectura). Un % objetivo guardado ya no sustituye el costo real ni en pantalla ni en Reportes → Liquidaciones. Donde sí se escribe costo de líneas de OC (consignación, al emitir y en "Actualizar costos" antes de emitir) se hace **por línea** vía `lots.purchase_order_line_id` (promedio ponderado de sus lotes), ya no por producto — dos calibres del mismo producto conservan su costo. |
+
+Sin migración. Verificado en Chrome contra base local (10/10): firme con dos calibres de Papaya ($10 y $12) — las tres acciones se niegan y los costos de lote y línea quedan intactos; consignación con dos calibres vendidos a $20 y $30 con comisión 10 % — al emitir, la línea del 6 ct queda en $18 y la del 8 ct en $27 (antes las dos quedaban en $27). Anclas iguales antes/después.
+
+### Qué sigue pendiente (al 18 Sep 2026)
 
 - **C-1b**: notas de crédito atribuidas al productor con causa (Plein vs productor) — no se construyó.
 - **Hallazgo 6** (`AUDITORIA-2026-09-03.md`): en comisión pura el P&L sigue inflando la utilidad con dinero del productor (el neto al productor no entra como costo/remisión al P&L).
-- **Hallazgo 7, la parte de FIRME**: "Update lot costs" ya está bloqueado en consignación (candados-liquidacion), pero en trato **firme** sigue reescribiendo el costo pactado — no se tocó.
 - Sesiones 3 y 4 del plan de `AUDITORIA-2026-09-03.md` (pagos que cuadran, documentos completos) — no empezadas.
 
 Detalles chicos, anotados y sin resolver (no bloquean nada, no se construyeron):

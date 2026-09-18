@@ -2194,7 +2194,6 @@ function SettlementModal({
 }) {
   const t = useT();
   const data = useAsync(() => getSettlement({ data: { purchase_order_id: poId } }), [poId]);
-  const [target, setTarget] = useState("");
   const [ctype, setCtype] = useState("");
   const [crate, setCrate] = useState("");
   const [recover, setRecover] = useState("");
@@ -2323,14 +2322,13 @@ function SettlementModal({
     }
   }
 
-  async function apply(pctVal?: number) {
+  async function apply() {
     setSaving(true);
     setMsg(null);
     try {
       await applySettlement({
         data: {
           purchase_order_id: poId,
-          target_profit_pct: pctVal,
         },
       });
       await data.reload();
@@ -2403,34 +2401,10 @@ function SettlementModal({
             <MiniKpi label="Balance due" value={money(s.balance_due)} />
           </div>
           {s.deal_type === "firme" ? (
-            <div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface-2 p-3">
-              <Field label="Target profit %">
-                <Input
-                  className="w-24"
-                  value={target}
-                  onChange={(e) => setTarget(e.target.value)}
-                  placeholder={s.target_profit_pct != null ? String(s.target_profit_pct) : ""}
-                />
-              </Field>
-              <Button
-                size="sm"
-                disabled={saving || !target}
-                onClick={() => void apply(Number(target))}
-              >
-                {t("Apply")}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={saving}
-                onClick={() => void apply(undefined)}
-              >
-                {t("Clear target")}
-              </Button>
-              <p className="ml-auto max-w-sm text-xs text-muted">
-                Trato en firme: el costo ya está cerrado. El target % es solo una herramienta de
-                análisis.
-              </p>
+            <div className="mt-3 rounded-md border border-border bg-surface-2 p-3 text-xs text-muted">
+              Trato en firme: el costo de cada línea es el que capturaste en la orden de compra —
+              precio cerrado. La factura de proveedor sale de lo recibido × ese costo; aquí no hay
+              nada que recalcular.
             </div>
           ) : (
             <>
@@ -2873,18 +2847,10 @@ function SettlementModal({
             <Button variant="outline" onClick={onClose}>
               {t("Go back")}
             </Button>
-            {s.deal_type !== "comision" && !s.settlement ? (
+            {s.deal_type === "consignacion" && !s.settlement ? (
               <Button
-                disabled={saving || (s.deal_type !== "firme" && !s.breakdown)}
-                onClick={() =>
-                  void apply(
-                    s.breakdown
-                      ? undefined
-                      : target
-                        ? Number(target)
-                        : (s.target_profit_pct ?? undefined),
-                  ).then(onSaved)
-                }
+                disabled={saving || !s.breakdown}
+                onClick={() => void apply().then(onSaved)}
               >
                 {t("Update lot costs")}
               </Button>
