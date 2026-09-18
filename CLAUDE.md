@@ -21,6 +21,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 - Contar dos veces la fruta del productor: en **comisión pura** el neto al productor sale por la cuenta `50100` al emitir la liquidación; en **consignación** ese costo ya vive en `lots.unit_cost` (50000) — nunca los dos.
 - Cambiar `saldo = total − paid`.
 - Atribuirle a un productor más crédito del que su carga aportó a esa venta: el tope es **acumulado** sobre la venta, entre todas las notas de crédito.
+- Cobrarle a un productor el monto COMPLETO de un gasto compartido: lo que se le descuenta es `expense_po_links.amount_applied` de SU carga. `expenses.purchase_order_id` ya solo es "la carga principal", no la fuente del dinero.
 - Mandar correo desde la app. Enviar = Outlook `mailto` + WhatsApp `wa.me` + PDF descargado.
 - `window.print()` como camino de PDF. Usar `src/lib/doc-pdf.ts` (jspdf, descarga).
 - Modales hijos de sticky / `backdrop-filter`. Portal a `document.body`.
@@ -31,7 +32,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 
 TanStack Start + Router + React 19 + Tailwind v4 + Radix.  
 Server fns: `createServerFn` + zod + `authMiddleware` en `src/lib/produce-server.ts`.  
-DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0043` (crece con cada bloque — `ls migrations/` para el número real).  
+DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0044` (crece con cada bloque — `ls migrations/` para el número real).  
 Auth: Better Auth (Google + correo). Staff por módulos.
 
 ## Dónde está qué
