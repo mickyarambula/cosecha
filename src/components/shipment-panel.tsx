@@ -8,6 +8,7 @@ import {
   createShipment,
   getBolDoc,
   issueBol,
+  listShipmentCargo,
   listBorderCrossings,
   listCarrierUnits,
   listCarriers,
@@ -15,6 +16,7 @@ import {
   listDrivers,
   listShipments,
   listValueLists,
+  setShipmentCargo,
   updateShipment,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
@@ -64,6 +66,7 @@ export function ShipmentsPanel({
     [purchaseOrderId, salesOrderId],
   );
   const [editing, setEditing] = useState<Shipment | "new" | null>(null);
+  const [cargoFor, setCargoFor] = useState<Shipment | null>(null);
   const [bolBusy, setBolBusy] = useState<number | null>(null);
   const [bolErr, setBolErr] = useState<string | null>(null);
   const rows = shipments.data ?? [];
@@ -160,6 +163,15 @@ export function ShipmentsPanel({
                     {tipo === "salida" ? (
                       <button
                         type="button"
+                        className="mr-3 cursor-pointer text-xs text-link"
+                        onClick={() => setCargoFor(s)}
+                      >
+                        Mercancía
+                      </button>
+                    ) : null}
+                    {tipo === "salida" ? (
+                      <button
+                        type="button"
                         className="mr-3 cursor-pointer text-xs text-link disabled:opacity-50"
                         disabled={bolBusy != null}
                         onClick={() => void printBol(s)}
@@ -194,6 +206,16 @@ export function ShipmentsPanel({
           {bolErr}
         </p>
       ) : null}
+      {cargoFor ? (
+        <CargoModal
+          shipment={cargoFor}
+          onClose={() => setCargoFor(null)}
+          onSaved={async () => {
+            setCargoFor(null);
+            await shipments.reload();
+          }}
+        />
+      ) : null}
       {editing ? (
         <ShipmentModal
           tipo={tipo}
@@ -210,6 +232,150 @@ export function ShipmentsPanel({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * "Mercancía de este camión": los despachos vivos de la orden de venta, con
+ * los libres pre-marcados. El BOL ampara exactamente lo que se marque aquí
+ * (hallazgo 9). Emitido el BOL, la lista se ve pero no se cambia.
+ */
+function CargoModal({
+  shipment,
+  onClose,
+  onSaved,
+}: {
+  shipment: Shipment;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const cargo = useAsync(
+    () => listShipmentCargo({ data: { shipment_id: shipment.id } }),
+    [shipment.id],
+  );
+  const rows = useMemo(() => cargo.data ?? [], [cargo.data]);
+  const [picked, setPicked] = useState<Set<number> | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const locked = Boolean(shipment.bol_number);
+
+  // Pre-marcado: lo que ya va en este camión y lo que está libre.
+  const initial = useMemo(
+    () =>
+      new Set<number>(
+        rows
+          .filter((r) => r.shipment_id == null || r.shipment_id === shipment.id)
+          .map((r) => Number(r.id)),
+      ),
+    [rows, shipment.id],
+  );
+  const marks = picked ?? initial;
+  const total = rows.filter((r) => marks.has(Number(r.id))).reduce((s, r) => s + r.quantity, 0);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      await setShipmentCargo({
+        data: { shipment_id: shipment.id, allocation_ids: [...marks] },
+      });
+      await onSaved();
+    } catch (e) {
+      setErr(errorMessage(e, "No se pudo guardar la mercancía del embarque."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Mercancía de ${shipment.shipment_number}`}
+      subtitle={
+        locked
+          ? `BOL ${shipment.bol_number} ya emitido — la carga de este camión quedó congelada.`
+          : "Marca qué cajas ya surtidas van en este camión. El BOL ampara solo lo marcado."
+      }
+      onClose={onClose}
+      wide
+    >
+      {cargo.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {cargo.error ? <p className="text-sm text-danger">{cargo.error}</p> : null}
+      {!cargo.loading && rows.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border p-3 text-sm text-muted">
+          Esta orden todavía no tiene mercancía surtida. Surte las líneas en Ventas y regresa.
+        </p>
+      ) : null}
+      {rows.length ? (
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead className="bg-surface-2 text-xs text-muted">
+              <tr>
+                <th className="px-3 py-2" />
+                <th className="px-3 py-2 font-medium">Lote</th>
+                <th className="px-3 py-2 font-medium">Producto</th>
+                <th className="px-3 py-2 text-right font-medium">Cajas</th>
+                <th className="px-3 py-2 font-medium">Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const otro = r.shipment_id != null && r.shipment_id !== shipment.id;
+                return (
+                  <tr key={r.id} className="border-t border-border">
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        disabled={otro || locked}
+                        checked={marks.has(Number(r.id))}
+                        onChange={(e) => {
+                          const next = new Set<number>(marks);
+                          if (e.target.checked) next.add(Number(r.id));
+                          else next.delete(Number(r.id));
+                          setPicked(next);
+                        }}
+                      />
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.lot_number}</td>
+                    <td className="px-3 py-2">
+                      {r.description}
+                      {r.sku_code ? (
+                        <div className="text-xs text-muted">{r.sku_code}</div>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {r.quantity} {r.unit}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted">
+                      {otro ? `Va en ${r.shipment_number}` : marks.has(Number(r.id)) ? "En este camión" : "Libre"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {err ? (
+        <p className="mt-3 rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">
+          {err}
+        </p>
+      ) : null}
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <p className="text-sm text-muted">
+          En este camión: <span className="font-semibold tabular-nums text-fg">{total}</span> cajas
+        </p>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onClose}>
+            {locked ? "Cerrar" : "Cancelar"}
+          </Button>
+          {locked ? null : (
+            <Button disabled={saving || cargo.loading} onClick={() => void save()}>
+              {saving ? "Guardando…" : "Guardar mercancía"}
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

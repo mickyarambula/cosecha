@@ -14,6 +14,12 @@ import type { getBolDoc } from "@/lib/produce-server";
 import { convertTemp, convertWeight } from "@/lib/units";
 import { fecha, todayISO } from "@/lib/utils";
 
+/** Fecha de emisión congelada del BOL: reimprimir no la mueve (hallazgo 9). */
+function bolDate(s: BolDoc["shipment"]): string {
+  const frozen = s.bol_issued_at ? String(s.bol_issued_at).slice(0, 10) : null;
+  return frozen || s.ship_date || todayISO();
+}
+
 /**
  * BOL propio de Plein: el documento de embarque que Plein emite al despachar
  * una venta. TODO el peso se imprime en libras — el catálogo mezcla lb y kg
@@ -139,7 +145,7 @@ function buildBolPdf(
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(9);
   pdf.setTextColor(...MUTED);
-  pdf.text(`Fecha: ${fecha(todayISO())}`, PAGE_W - M, y + 53, { align: "right" });
+  pdf.text(`Fecha: ${fecha(bolDate(s))}`, PAGE_W - M, y + 53, { align: "right" });
 
   y += 34;
   pdf.setFont("helvetica", "normal");
@@ -270,7 +276,10 @@ function buildBolPdf(
   const missingWeight: string[] = [];
   for (const l of doc.lines) {
     const pack = [l.empaque, l.calibre].filter(Boolean).join(" · ") || "—";
-    const desc = [l.product_name, l.variety].filter(Boolean).join(" ") + (l.sku_code ? `\n${l.sku_code}` : "");
+    const desc =
+      [l.product_name, l.variety].filter(Boolean).join(" ") +
+      (l.sku_code ? `\n${l.sku_code}` : "") +
+      (l.lot_number ? `\nLote ${l.lot_number}` : "");
     const lineLb =
       l.net_weight != null ? convertWeight(l.quantity * l.net_weight, l.weight_unit, "lb") : null;
     totalCases += l.quantity;
