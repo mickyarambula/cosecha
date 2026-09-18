@@ -2463,6 +2463,39 @@ function computeCommissionBreakdown(
     net_to_grower: revenue - grower_expenses - commission + shrink_compensation + plein_purchase_total,
   };
 }
+/**
+ * Escribe el costo de las líneas de la OC a partir del costo de SUS lotes
+ * (promedio ponderado por cajas recibidas, vía lots.purchase_order_line_id).
+ * Por línea, nunca por producto: dos calibres del mismo producto no comparten
+ * costo (hallazgo 7). Un lote sin línea (no debería existir) no toca nada.
+ */
+async function writePoLineCostsFromLots(
+  sql,
+  poId: number,
+  lotCosts: { lot_id: number; unit_cost: number }[],
+) {
+  if (!lotCosts.length) return;
+  const costOf = new Map(lotCosts.map((c) => [c.lot_id, c.unit_cost]));
+  const rows = await sql.query(
+    `select id, purchase_order_line_id, original_qty::text from lots where purchase_order_id = $1`,
+    [poId],
+  );
+  const byLine = new Map<number, { value: number; qty: number }>();
+  for (const r of rows) {
+    if (!costOf.has(r.id) || r.purchase_order_line_id == null) continue;
+    const qty = n(r.original_qty);
+    if (!(qty > 0)) continue;
+    const acc = byLine.get(r.purchase_order_line_id) ?? { value: 0, qty: 0 };
+    acc.value += (costOf.get(r.id) as number) * qty;
+    acc.qty += qty;
+    byLine.set(r.purchase_order_line_id, acc);
+  }
+  for (const [lineId, acc] of byLine)
+    await sql.query(
+      `update purchase_order_lines set unit_cost = $1 where id = $2 and purchase_order_id = $3`,
+      [acc.value / acc.qty, lineId, poId],
+    );
+}
 async function loadPoLots(sql, poId) {
   const lots = await sql.query(
     `select l.id, l.lot_number, l.status, p.name as product_name, ps.name as pack_name,
@@ -2906,7 +2939,12 @@ async function loadSettlement(
   // La liquidación por comisión (la secuencia real de Plein) manda; el
   // target % queda solo como camino legado cuando no hay comisión definida.
   const breakdown = computeCommissionBreakdown(po, lotsRaw, expenses, shrink.rows, purchaseRows);
-  const target = breakdown == null && po.target_profit_pct != null ? n(po.target_profit_pct) : null;
+  // Hallazgo 7: en firme el costo es el capturado en la OC; un % objetivo
+  // guardado (camino legado) no lo sustituye ni en pantalla ni en reportes.
+  const target =
+    breakdown == null && po.deal_type !== "firme" && po.target_profit_pct != null
+      ? n(po.target_profit_pct)
+      : null;
   // El costo de las cajas que Plein compró vive en el lote propio que nació
   // (unit_cost = precio pagado): no se reparte otra vez entre los lotes de la
   // carga. La factura de proveedor sí lo incluye (inventory_total).
@@ -3281,14 +3319,13 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
     // hacía "Update lot costs", que queda bloqueado tras emitir). En comisión
     // pura Plein no toma título: el costo se queda en cero a propósito.
     if (s.deal_type === "consignacion") {
-      for (const lot of s.lots) {
+      for (const lot of s.lots)
         await sql.query(`update lots set unit_cost = $1 where id = $2`, [lot.cost_unit, lot.id]);
-        await sql.query(
-          `update purchase_order_lines set unit_cost = $1
-           where purchase_order_id = $2 and product_id = (select product_id from lots where id = $3)`,
-          [lot.cost_unit, data.purchase_order_id, lot.id],
-        );
-      }
+      await writePoLineCostsFromLots(
+        sql,
+        data.purchase_order_id,
+        s.lots.map((lot) => ({ lot_id: lot.id, unit_cost: lot.cost_unit })),
+      );
       await sql.query(`update purchase_orders set costing_mode = 'pas' where id = $1`, [
         data.purchase_order_id,
       ]);
@@ -5066,6 +5103,12 @@ export const applySettlement = createServerFn({ method: "POST" })
       throw new Error(
         "Comisión pura: el costo de estos lotes se queda en cero — no hay compra que liquidar.",
       );
+    // Hallazgo 7: en firme el costo es el precio cerrado que se capturó en la
+    // OC (y que ya viaja a cada lote al recibir). Nada lo recalcula.
+    if (po.deal_type === "firme")
+      throw new Error(
+        "Trato en firme: el costo de cada línea es el que capturaste en la orden de compra — precio cerrado. La factura de proveedor sale de lo recibido × ese costo; no hay nada que recalcular.",
+      );
     // C-2a: con liquidación emitida el costo ya quedó escrito desde el
     // documento (issueGrowerSettlement); nada lo reescribe después.
     const liq = await liquidatedInfo(sql, data.purchase_order_id);
@@ -5116,15 +5159,13 @@ export const applySettlement = createServerFn({ method: "POST" })
       breakdown ? breakdown.net_to_grower - breakdown.plein_purchase_total : null,
     );
     const overrides = new Map((data.lot_costs ?? []).map((c) => [c.lot_id, c.unit_cost]));
-    for (const lot of computed) {
-      const cost = overrides.get(lot.id) ?? lot.cost_unit;
-      await sql.query(`update lots set unit_cost = $1 where id = $2`, [cost, lot.id]);
-      await sql.query(
-        `update purchase_order_lines set unit_cost = $1
-         where purchase_order_id = $2 and product_id = (select product_id from lots where id = $3)`,
-        [cost, data.purchase_order_id, lot.id],
-      );
-    }
+    const lotCosts = computed.map((lot) => ({
+      lot_id: lot.id,
+      unit_cost: overrides.get(lot.id) ?? lot.cost_unit,
+    }));
+    for (const lc of lotCosts)
+      await sql.query(`update lots set unit_cost = $1 where id = $2`, [lc.unit_cost, lc.lot_id]);
+    await writePoLineCostsFromLots(sql, data.purchase_order_id, lotCosts);
     await sql.query(`update purchase_orders set costing_mode = 'pas' where id = $1`, [
       data.purchase_order_id,
     ]);
