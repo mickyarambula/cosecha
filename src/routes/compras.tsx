@@ -2593,6 +2593,28 @@ function SettlementModal({
                         <span className="tabular-nums">+{money(s.plein_purchase_total)}</span>
                       </div>
                     ) : null}
+                    {/* C-1b: notas de crédito al cliente que se le cargan al
+                        productor. Bajan su neto y la base de la comisión. */}
+                    {(s.breakdown?.credit_rows ?? [])
+                      .filter((c) => c.cause === "grower")
+                      .map((c) => (
+                        <div key={c.id} className="flex justify-between border-b border-border py-1.5">
+                          <span>
+                            Nota de crédito {c.invoice_number}
+                            <span className="ml-2 text-xs text-muted">
+                              {c.customer_name ? `${c.customer_name} · ` : ""}
+                              {c.reason} · culpa del productor
+                            </span>
+                          </span>
+                          <span className="tabular-nums">−{money(c.amount)}</span>
+                        </div>
+                      ))}
+                    {(s.breakdown?.credit_to_plein ?? 0) > 0.009 ? (
+                      <div className="flex justify-between border-b border-border py-1.5 text-xs text-muted">
+                        <span>Notas de crédito que absorbe Plein (no se le descuentan al productor)</span>
+                        <span className="tabular-nums">{money(s.breakdown?.credit_to_plein ?? 0)}</span>
+                      </div>
+                    ) : null}
                     {anyDeviation ? (
                       <label className="flex cursor-pointer items-center gap-2 border-b border-border py-1.5 text-xs">
                         <input
@@ -3506,6 +3528,18 @@ function SupplementPanel({
                   </span>
                 </span>
                 <span className="tabular-nums">−{money(e.amount)}</span>
+              </div>
+            ))}
+            {(ok.credits ?? []).map((c) => (
+              <div key={c.id} className="flex justify-between border-b border-border py-1.5">
+                <span>
+                  Nota de crédito {c.invoice_number}
+                  <span className="ml-2 text-xs text-muted">
+                    {c.customer_name ? `${c.customer_name} · ` : ""}
+                    {c.reason} · culpa del productor
+                  </span>
+                </span>
+                <span className="tabular-nums">−{money(c.amount)}</span>
               </div>
             ))}
             <div className="flex justify-between border-b border-border py-1.5">
