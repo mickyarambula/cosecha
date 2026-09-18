@@ -16,7 +16,7 @@ Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CL
 
 - TanStack Start + Router + React 19 + Tailwind v4 + Radix/shadcn
 - Server functions: `createServerFn` + zod + `authMiddleware`/`moduleMiddleware(módulo)` en [`src/lib/produce-server.ts`](src/lib/produce-server.ts)
-- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0041` (crece con cada bloque; revisa `ls migrations/` para el número real)
+- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0042` (crece con cada bloque; revisa `ls migrations/` para el número real)
 - Auth: Better Auth, Google + correo. Staff por módulos
 - i18n: [`src/lib/i18n.ts`](src/lib/i18n.ts)
 - PDF: [`src/lib/doc-pdf.ts`](src/lib/doc-pdf.ts) — descarga archivo, no `window.print`
@@ -72,6 +72,7 @@ Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquid
    - JEAMS `$52,447.33` (GL `20250`)
    - Equity plug `$59,830.59` (GL `30000`)
 3. `invoice_type=opening` **no entra al P&L**. El corte vive en Balance Sheet. P&L en ceros es correcto hasta ventas live.
+3b. **Comisión pura**: la venta bruta entra al ingreso y el neto al productor sale como costo en la cuenta `50100` al **emitir** la liquidación (mismo evento que crea el pasivo `21000`). La utilidad de esas cargas es la comisión. En consignación NO aplica: ahí el costo ya vive en `lots.unit_cost` (50000).
 4. Saldo CxC/CxP = `total − paid`. Nunca netear.
 5. **Papayas & More** es cliente **y** proveedor. Cuentas separadas. No netear.
 6. Programada (PX-72775 / PX-72868) **no** se importó.
@@ -79,7 +80,7 @@ Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquid
 8. `wipeLiveTests` (Ajustes → Pruebas, escribir `BORRAR`) borra actividad live y **protege** opening + `CORTE-CHASE` + todo el catálogo (productos, clientes, proveedores, ubicaciones) — el catálogo no se limpia con este botón porque no es "actividad de prueba", es dato maestro.
 9. Una liquidación emitida (`liquidated_at`) **no se reescribe**. Correcciones van por complementaria (`grower_settlement_supplements`), nunca editando lo ya emitido.
 10. YTD 2026 histórico se queda en V8. Cosecha arranca en el corte.
-11. GL: `16000` JP Morgan Chase, `20250` JEAMS, `30000` equity, `12000` AR, `20100` AP.
+11. GL: `16000` JP Morgan Chase, `20250` JEAMS, `30000` equity, `12000` AR, `20100` AP, `21000` por remitir a productores, `50100` remitido al productor (su contrapartida en resultados).
 
 ## Auth
 
