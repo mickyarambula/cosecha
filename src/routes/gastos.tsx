@@ -13,6 +13,7 @@ import {
   connectExpensePo,
   createExpense,
   disconnectExpensePo,
+  setExpenseSplit,
   listExpenseLinks,
   listExpenses,
   listPayables,
@@ -24,7 +25,7 @@ import {
   type PayableRow,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { aging30, agingBucket, fecha, money, PAY_METHODS, todayISO } from "@/lib/utils";
+import { aging30, agingBucket, errorMessage, fecha, money, PAY_METHODS, qty, todayISO } from "@/lib/utils";
 
 type Search = { tab?: string; expense?: number };
 export const Route = createFileRoute("/gastos")({
@@ -50,6 +51,9 @@ function Page() {
   const [payOpen, setPayOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [connectFor, setConnectFor] = useState<number | null>(null);
+  // Sube cuando se liga una carga nueva: obliga al detalle a releer sus ligas
+  // antes de que "Guardar reparto" mande el conjunto completo.
+  const [linksVersion, setLinksVersion] = useState(0);
   // Los cancelados salen de la CxP pero siguen consultables como rastro.
   const allExpenses = useAsync(() => listExpenses(), []);
   const [showCancelled, setShowCancelled] = useState(false);
@@ -466,6 +470,7 @@ function Page() {
       {detailId ? (
         <ExpenseDetail
           id={detailId}
+          linksVersion={linksVersion}
           pos={pos.data ?? []}
           suppliers={suppliers.data ?? []}
           onClose={() => setDetailId(null)}
@@ -485,6 +490,9 @@ function Page() {
           onDone={() => {
             setConnectFor(null);
             void payables.reload();
+            // El detalle tiene que releer sus ligas: "Guardar reparto" manda el
+            // conjunto COMPLETO y borraría la carga recién conectada.
+            setLinksVersion((v) => v + 1);
           }}
         />
       ) : null}
@@ -636,6 +644,7 @@ function CreateExpenseDrawer({
 
 function ExpenseDetail({
   id,
+  linksVersion,
   pos,
   suppliers,
   onClose,
@@ -643,6 +652,7 @@ function ExpenseDetail({
   onChanged,
 }: {
   id: number;
+  linksVersion: number;
   pos: { id: number; po_number: string }[];
   suppliers: { id: number; name: string }[];
   onClose: () => void;
@@ -650,7 +660,7 @@ function ExpenseDetail({
   onChanged: () => void;
 }) {
   const t = useT();
-  const detail = useAsync(() => listExpenseLinks({ data: { expense_id: id } }), [id]);
+  const detail = useAsync(() => listExpenseLinks({ data: { expense_id: id } }), [id, linksVersion]);
   const d = detail.data;
   const [editing, setEditing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -683,9 +693,82 @@ function ExpenseDetail({
   }
 
   async function disconnect(poId: number) {
-    await disconnectExpensePo({ data: { expense_id: id, purchase_order_id: poId } });
-    await detail.reload();
-    onChanged();
+    setErr(null);
+    try {
+      await disconnectExpensePo({ data: { expense_id: id, purchase_order_id: poId } });
+      setSplit(null);
+      await detail.reload();
+      onChanged();
+    } catch (e) {
+      setErr(errorMessage(e, "No se pudo desconectar la carga."));
+    }
+  }
+
+  // Hallazgo 14: el reparto del gasto entre las cargas que lo generaron.
+  // Se propone por cajas recibidas y se puede ajustar; lo que no se reparta
+  // lo absorbe Plein y se dice en pantalla. Lo ya rendido no se toca.
+  const [split, setSplit] = useState<Record<number, string> | null>(null);
+  const [savingSplit, setSavingSplit] = useState(false);
+  const links = d?.links ?? [];
+  const splitFor = (poId: number) => {
+    const link = links.find((l) => l.purchase_order_id === poId);
+    // Congelado: ni la propuesta ni un tecleo lo mueven.
+    if (link?.rendered_in) return String(link.amount_applied);
+    return split?.[poId] ?? String(link?.amount_applied ?? 0);
+  };
+  const splitTotal = links.reduce((s, l) => s + (Number(splitFor(l.purchase_order_id)) || 0), 0);
+  const splitOver = d ? splitTotal > d.amount + 0.009 : false;
+  const splitDirty = split != null;
+
+  // Lo ya rendido a un productor no entra en la propuesta: ese monto está
+  // congelado en su documento. Se reparte solo lo que queda entre las cargas
+  // que todavía se pueden tocar.
+  function proposeSplit() {
+    if (!d) return;
+    const libres = links.filter((l) => !l.rendered_in);
+    if (!libres.length) return;
+    const congelado = links
+      .filter((l) => l.rendered_in)
+      .reduce((s, l) => s + l.amount_applied, 0);
+    const porRepartir = Math.max(Math.round((d.amount - congelado) * 100), 0);
+    const base = libres.reduce((s, l) => s + (l.received_qty || 0), 0);
+    const next: Record<number, string> = {};
+    let leftCents = porRepartir;
+    libres.forEach((l, i) => {
+      const cents =
+        i === libres.length - 1
+          ? leftCents
+          : base > 0
+            ? Math.round(porRepartir * ((l.received_qty || 0) / base))
+            : Math.round(porRepartir / libres.length);
+      next[l.purchase_order_id] = String(Math.max(0, cents) / 100);
+      leftCents -= cents;
+    });
+    setSplit(next);
+  }
+
+  async function saveSplit() {
+    if (!d) return;
+    setSavingSplit(true);
+    setErr(null);
+    try {
+      await setExpenseSplit({
+        data: {
+          expense_id: id,
+          rows: links.map((l) => ({
+            purchase_order_id: l.purchase_order_id,
+            amount: Number(splitFor(l.purchase_order_id)) || 0,
+          })),
+        },
+      });
+      setSplit(null);
+      await detail.reload();
+      onChanged();
+    } catch (e) {
+      setErr(errorMessage(e, "No se pudo guardar el reparto."));
+    } finally {
+      setSavingSplit(false);
+    }
   }
 
   async function saveEdit() {
@@ -767,9 +850,20 @@ function ExpenseDetail({
               <p>{t("Auto distributed by pallet")}</p>
             </div>
           </div>
-          <p className="mt-6 text-sm font-medium">{t("Expense connected to:")}</p>
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium">Reparto entre cargas</p>
+            {links.length > 1 ? (
+              <button type="button" className="cursor-pointer text-xs text-link" onClick={proposeSplit}>
+                Proponer por cajas recibidas
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-1 text-xs text-muted">
+            Lo que se le descuenta al productor de cada carga es lo que pongas aquí. Lo que no
+            repartas lo absorbe Plein.
+          </p>
           <div className="mt-2 grid gap-2">
-            {d.links.map((l) => (
+            {links.map((l) => (
               <div key={l.purchase_order_id} className="flex items-stretch overflow-hidden rounded-md border border-border">
                 <div className="w-1.5 bg-primary" />
                 <div className="flex flex-1 flex-wrap items-center justify-between gap-3 p-3 text-sm">
@@ -779,20 +873,66 @@ function ExpenseDetail({
                     </p>
                     <p className="text-xs text-muted">
                       {fecha(l.order_date)} · {l.supplier_name}
+                      {l.received_qty
+                        ? ` · ${qty(l.received_qty, l.received_qty === 1 ? "caja" : "cajas")} recibidas`
+                        : ""}
                     </p>
                     {l.product_name ? <p className="text-xs">{l.product_name}</p> : null}
+                    {l.rendered_in ? (
+                      <p className="text-xs text-warn">
+                        Ya rendido al productor en {l.rendered_in} — esta parte no se cambia
+                      </p>
+                    ) : null}
                   </div>
-                  <div className="text-right">
-                    <p className="tabular-nums">{money(l.amount_applied)}</p>
-                    <Button size="sm" variant="outline" onClick={() => void disconnect(l.purchase_order_id)}>
-                      {t("Disconnect")}
-                    </Button>
+                  <div className="flex items-center gap-2">
+                    {l.rendered_in ? (
+                      <p className="tabular-nums">{money(l.amount_applied)}</p>
+                    ) : (
+                      <Input
+                        className="w-28 text-right"
+                        value={splitFor(l.purchase_order_id)}
+                        onChange={(e) =>
+                          setSplit({ ...(split ?? {}), [l.purchase_order_id]: e.target.value })
+                        }
+                      />
+                    )}
+                    {l.rendered_in ? null : (
+                      <Button size="sm" variant="outline" onClick={() => void disconnect(l.purchase_order_id)}>
+                        {t("Disconnect")}
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
             ))}
-            {d.links.length === 0 ? <p className="text-sm text-muted">{t("Not connected to a PO.")}</p> : null}
+            {links.length === 0 ? (
+              <p className="text-sm text-muted">
+                Este gasto no está ligado a ninguna carga: lo absorbe Plein completo.
+              </p>
+            ) : null}
           </div>
+          {links.length ? (
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+              <p className={splitOver ? "text-danger" : "text-muted"}>
+                Repartido {money(splitTotal)} de {money(d.amount)}
+                {splitOver
+                  ? " — no se les puede cobrar a las cargas más de lo que costó el gasto"
+                  : splitTotal < d.amount - 0.009
+                    ? ` · los ${money(d.amount - splitTotal)} restantes los absorbe Plein`
+                    : ""}
+              </p>
+              {splitDirty ? (
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setSplit(null)}>
+                    {t("Cancel")}
+                  </Button>
+                  <Button size="sm" disabled={savingSplit || splitOver} onClick={() => void saveSplit()}>
+                    {savingSplit ? "Guardando…" : "Guardar reparto"}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
 
           {editing && form ? (

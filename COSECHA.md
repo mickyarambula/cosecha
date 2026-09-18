@@ -16,7 +16,7 @@ Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CL
 
 - TanStack Start + Router + React 19 + Tailwind v4 + Radix/shadcn
 - Server functions: `createServerFn` + zod + `authMiddleware`/`moduleMiddleware(módulo)` en [`src/lib/produce-server.ts`](src/lib/produce-server.ts)
-- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0043` (crece con cada bloque; revisa `ls migrations/` para el número real)
+- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0044` (crece con cada bloque; revisa `ls migrations/` para el número real)
 - Auth: Better Auth, Google + correo. Staff por módulos
 - i18n: [`src/lib/i18n.ts`](src/lib/i18n.ts)
 - PDF: [`src/lib/doc-pdf.ts`](src/lib/doc-pdf.ts) — descarga archivo, no `window.print`
@@ -57,7 +57,7 @@ Chrome: rail de módulos + tabs de sección. Tablas con números tabular. Factur
 5. Liquidación al productor (consignación y comisión pura). Las **notas de crédito al cliente** se atribuyen a la carga con causa (`grower_credit_attributions`): la del productor le baja el neto y la base de su comisión, y si la carga ya está liquidada entra por complementaria. `getSettlement` calcula en vivo; `issueGrowerSettlement` **congela** el documento y marca `purchase_orders.liquidated_at` (desde ahí la carga solo cambia por complementaria). `issueSettlementSupplement` emite una **complementaria** (`LIQ-004-C1`, `-C2`…) con lo ocurrido después: ventas de cajas pendientes, gastos nuevos, reversas de ventas canceladas (con la comisión devuelta), ajustes a favor del productor. Si la cuenta sale negativa, nace un adelanto (`grower_advances`) **sin salida de caja**.
 6. Disposición del remanente al liquidar (PACA 7 CFR 46, `lot_dispositions`): cada caja sin vender va a pendiente de venta, destruida (certificado obligatorio al 5% del embarque) o comprada por Plein.
 7. Cobro: `registerCustomerPayment` — monto = suma aplicada, topado al saldo de cada factura, factura del cliente y viva, con fecha/método/referencia. Pago de fruta: `registerPago` contra la FAC- en CxP. Pago de gastos: `registerVendorPayment` (solo gastos, mismas reglas). La OC no es cuenta por pagar.
-8. Gastos + `expense_po_links`. Tesorería: `cash_movements` + `bank_lines`.
+8. Gastos + `expense_po_links`: un gasto de varias cargas se **reparte** (`setExpenseSplit`), y a cada productor se le descuenta el `amount_applied` de SU carga — nunca el monto completo. Lo no repartido lo absorbe Plein. Tesorería: `cash_movements` + `bank_lines`.
 9. SKU = producto × empaque × calibre (`PAPA-MARA-CAJA-10CT`), no "solo papaya".
 
 Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquidación y sus complementarias, mismo enlace). El resto con login.

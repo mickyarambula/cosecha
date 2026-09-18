@@ -3051,10 +3051,16 @@ async function loadSettlement(
     [purchase_order_id],
   );
   if (!po) throw new Error("Purchase order not found");
+  // Hallazgo 14: lo que se le descuenta al productor de ESTA carga es el monto
+  // APLICADO a ella (expense_po_links.amount_applied), no el gasto completo.
+  // Un flete de dos cargas se repartía entero a la primera y nada a la segunda.
   const expenses = await sql.query(
-    `select id, category, notes, amount::text, coalesce(alloc_by,'pallet') as alloc_by,
-              coalesce(charged_to,'plein') as charged_to
-       from expenses where purchase_order_id = $1 and cancelled_at is null order by id`,
+    `select e.id, e.category, e.notes, x.amount_applied::text as amount,
+            e.amount::text as expense_amount,
+            coalesce(e.alloc_by,'pallet') as alloc_by, coalesce(e.charged_to,'plein') as charged_to
+       from expenses e
+       join expense_po_links x on x.expense_id = e.id and x.purchase_order_id = $1
+      where e.cancelled_at is null order by e.id`,
     [purchase_order_id],
   );
   const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
@@ -3722,6 +3728,66 @@ async function renderedExpenseDoc(
   );
   return c ? { doc: String(c.doc), amount: n(c.amount), legacy: true } : null;
 }
+/**
+ * Hallazgo 14: ¿este gasto ya se le rindió al productor de ESTA carga?
+ * Un gasto repartido entre dos cargas puede estar congelado en el documento de
+ * una y seguir editable en la otra — que es justo lo que pide la operación real
+ * cuando el flete trae fruta de dos productores.
+ */
+async function renderedExpenseLink(
+  sql,
+  expense_id: number,
+  purchase_order_id: number,
+): Promise<{ doc: string; amount: number } | null> {
+  const [a] = await sql.query(
+    `select gs.settlement_number as doc, gse.amount::text
+     from grower_settlement_expenses gse
+     join grower_settlements gs on gs.id = gse.settlement_id
+     where gse.expense_id = $1 and gs.purchase_order_id = $2 limit 1`,
+    [expense_id, purchase_order_id],
+  );
+  if (a) return { doc: String(a.doc), amount: n(a.amount) };
+  const [b] = await sql.query(
+    `select sup.supplement_number as doc, e.amount::text
+     from grower_settlement_supplement_expenses e
+     join grower_settlement_supplements sup on sup.id = e.supplement_id
+     where e.expense_id = $1 and sup.purchase_order_id = $2 limit 1`,
+    [expense_id, purchase_order_id],
+  );
+  if (b) return { doc: String(b.doc), amount: n(b.amount) };
+  // Documentos anteriores a este bloque no guardaron el id del gasto.
+  const [c] = await sql.query(
+    `select gs.settlement_number as doc, x.amount_applied::text as amount
+     from expense_po_links x
+     join expenses e on e.id = x.expense_id
+     join grower_settlements gs on gs.purchase_order_id = x.purchase_order_id
+     where x.expense_id = $1 and x.purchase_order_id = $2
+       and coalesce(e.charged_to,'plein') = 'grower' and e.cancelled_at is null
+       and e.created_at <= gs.created_at
+       and not exists (select 1 from grower_settlement_expenses y where y.settlement_id = gs.id and y.expense_id is not null)
+     limit 1`,
+    [expense_id, purchase_order_id],
+  );
+  return c ? { doc: String(c.doc), amount: n(c.amount) } : null;
+}
+/**
+ * `expenses.purchase_order_id` deja de ser la fuente del dinero (eso son las
+ * ligas) y pasa a ser "la carga principal": la de mayor monto aplicado, o null
+ * si no queda ninguna. Así "Desconectar" deja de mentir — antes borraba la liga
+ * y dejaba la columna, y la pantalla decía "sin conectar" mientras la
+ * liquidación seguía descontándolo.
+ */
+async function resyncExpensePrimaryPo(sql, expense_id: number) {
+  const [top] = await sql.query(
+    `select purchase_order_id from expense_po_links where expense_id = $1
+     order by amount_applied desc, purchase_order_id limit 1`,
+    [expense_id],
+  );
+  await sql.query(`update expenses set purchase_order_id = $1 where id = $2`, [
+    top?.purchase_order_id ?? null,
+    expense_id,
+  ]);
+}
 function renderedExpenseMessage(label: string, doc: string, amount: number, kind: "more" | "adjust" | "to_grower") {
   if (kind === "more")
     return `El gasto ${label} ya se le rindió al productor en ${doc} por ${money2(amount)}: no se edita. Si faltó cobrar, captura un gasto nuevo por la diferencia; entra a la siguiente cuenta complementaria.`;
@@ -3893,7 +3959,15 @@ export const addGrowerAdjustment = createServerFn({ method: "POST" })
         [data.expense_id],
       );
       if (!e) throw new Error("Gasto no encontrado");
-      if (e.purchase_order_id !== po.id && e.purchase_order_id != null)
+      // Hallazgo 14: la pertenencia se pregunta a las LIGAS. expenses.purchase_order_id
+      // ya solo es "la carga principal": un gasto repartido entre dos cargas es
+      // legítimamente de las dos, y el ajuste a favor del productor es justo la
+      // salida que los candados le nombran a la carga secundaria.
+      const [liga] = await sql.query(
+        `select 1 as x from expense_po_links where expense_id = $1 and purchase_order_id = $2`,
+        [data.expense_id, po.id],
+      );
+      if (!liga && e.purchase_order_id !== po.id && e.purchase_order_id != null)
         throw new Error(`${e.expense_number} no es un gasto de ${po.po_number}.`);
       expenseNumber = String(e.expense_number);
     }
@@ -4162,11 +4236,12 @@ async function computeSupplement(
   // ── Gastos del productor creados en la ventana ──────────────────────────
   const expenseRows = (
     await sql.query(
-      `select id, expense_number, category, notes, amount::text, issue_date::text
-       from expenses
-       where purchase_order_id = $1 and cancelled_at is null and coalesce(charged_to,'plein') = 'grower'
-         and created_at > $2::timestamptz
-       order by id`,
+      `select e.id, e.expense_number, e.category, e.notes, x.amount_applied::text as amount, e.issue_date::text
+       from expenses e
+       join expense_po_links x on x.expense_id = e.id and x.purchase_order_id = $1
+       where e.cancelled_at is null and coalesce(e.charged_to,'plein') = 'grower'
+         and e.created_at > $2::timestamptz
+       order by e.id`,
       [purchase_order_id, period_start],
     )
   ).map((e) => ({
@@ -4427,11 +4502,13 @@ async function computeSupplement(
     );
   const liveBeforeExpenses = (
     await sql.query(
-      `select id, expense_number, category, notes, amount::text, coalesce(charged_to,'plein') as charged_to, created_at::text
-       from expenses
-       where purchase_order_id = $1 and cancelled_at is null and coalesce(charged_to,'plein') = 'grower'
-         and created_at <= $2::timestamptz
-       order by id`,
+      `select e.id, e.expense_number, e.category, e.notes, x.amount_applied::text as amount,
+              coalesce(e.charged_to,'plein') as charged_to, e.created_at::text
+       from expenses e
+       join expense_po_links x on x.expense_id = e.id and x.purchase_order_id = $1
+       where e.cancelled_at is null and coalesce(e.charged_to,'plein') = 'grower'
+         and e.created_at <= $2::timestamptz
+       order by e.id`,
       [purchase_order_id, period_start],
     )
   ).map((e) => ({
@@ -4445,10 +4522,17 @@ async function computeSupplement(
   const matchedLive = new Set<number>();
   for (const f of frozenExpenses) {
     if (f.expense_id != null) {
+      // Hallazgo 14: el cruce compara contra lo APLICADO a esta carga. Si
+      // comparara el gasto completo, toda carga con un gasto compartido se
+      // quedaría sin poder emitir complementarias.
       const [live] = await sql.query(
-        `select id, expense_number, amount::text, coalesce(charged_to,'plein') as charged_to, cancelled_at::text, purchase_order_id
-         from expenses where id = $1`,
-        [f.expense_id],
+        `select e.id, e.expense_number, x.amount_applied::text as amount,
+                coalesce(e.charged_to,'plein') as charged_to, e.cancelled_at::text,
+                x.purchase_order_id
+         from expenses e
+         left join expense_po_links x on x.expense_id = e.id and x.purchase_order_id = $2
+         where e.id = $1`,
+        [f.expense_id, purchase_order_id],
       );
       const label = `${live?.expense_number ?? f.category} (${f.category}${f.notes ? `, ${f.notes}` : ""})`;
       // C-2a: si el gasto rendido ya tiene su ajuste a favor del productor
@@ -4463,7 +4547,7 @@ async function computeSupplement(
         blocks.push(
           `El gasto ${label} se canceló después de rendirlo en ${f.doc} por ${money2(f.amount)}. Si de verdad no se debía cobrar, ese ajuste necesita quedar documentado: vuelve a capturarlo por ${money2(f.amount)} al productor para poder emitir, y el crédito se rinde por separado.`,
         );
-      else if (live.purchase_order_id !== purchase_order_id)
+      else if (live.purchase_order_id == null)
         blocks.push(
           `El gasto ${label} se desligó de ${po_number} después de rendirlo en ${f.doc} por ${money2(f.amount)}. Vuelve a ligarlo a ${po_number} para poder emitir.`,
         );
@@ -5436,10 +5520,14 @@ export const applySettlement = createServerFn({ method: "POST" })
         data.target_profit_pct,
         data.purchase_order_id,
       ]);
+    // Hallazgo 14: el costo del lote se reparte con el monto aplicado a esta
+    // carga, igual que la liquidación — si no, documento e inventario difieren.
     const expenses = await sql.query(
-      `select id, category, notes, amount::text, coalesce(alloc_by,'pallet') as alloc_by,
-              coalesce(charged_to,'plein') as charged_to
-       from expenses where purchase_order_id = $1 and cancelled_at is null`,
+      `select e.id, e.category, e.notes, x.amount_applied::text as amount,
+              coalesce(e.alloc_by,'pallet') as alloc_by, coalesce(e.charged_to,'plein') as charged_to
+       from expenses e
+       join expense_po_links x on x.expense_id = e.id and x.purchase_order_id = $1
+      where e.cancelled_at is null order by e.id`,
       [data.purchase_order_id],
     );
     const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
@@ -6191,12 +6279,17 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
     const bills = await sql.query(
       `select purchase_order_id, bill_number, status from supplier_bills where purchase_order_id is not null`,
     );
+    // Hallazgo 14: en la carga se ve lo que se le aplicó a ELLA, no el gasto
+    // completo — un flete de dos cargas mostraba el total en las dos.
     const expenses = await sql.query(`
-    select id, purchase_order_id, expense_number, category, quantity::text, unit_cost::text,
-           amount::text, invoice_number, status, notes, payable,
-           coalesce(alloc_by,'pallet') as alloc_by, coalesce(charged_to,'plein') as charged_to,
-           supplier_id
-    from expenses where cancelled_at is null
+    select e.id, x.purchase_order_id, e.expense_number, e.category, e.quantity::text, e.unit_cost::text,
+           x.amount_applied::text as amount, e.amount::text as expense_amount,
+           e.invoice_number, e.status, e.notes, e.payable,
+           coalesce(e.alloc_by,'pallet') as alloc_by, coalesce(e.charged_to,'plein') as charged_to,
+           e.supplier_id
+    from expenses e
+    join expense_po_links x on x.expense_id = e.id
+    where e.cancelled_at is null
   `);
     return orders.map((o) => {
       const poLines = lines
@@ -6652,6 +6745,21 @@ export const updateExpense = createServerFn({ method: "POST" })
     );
     if (!exp) throw new Error("Gasto no encontrado");
     if (exp.cancelled_at) throw new Error("Este gasto está cancelado — no se puede editar.");
+    // Hallazgo 14: este camino escribe el reparto como "todo a una carga". Si
+    // el gasto ya está repartido entre varias, mover monto u orden desde aquí
+    // lo borraría en silencio; la salida es la pantalla del reparto.
+    const [linkCount] = await sql.query(
+      `select count(*)::int as c from expense_po_links where expense_id = $1`,
+      [data.expense_id],
+    );
+    if (
+      Number(linkCount?.c ?? 0) > 1 &&
+      (Math.abs(n(exp.amount) - data.amount) > 0.009 ||
+        (data.purchase_order_id !== undefined && data.purchase_order_id !== (exp.purchase_order_id ?? null)))
+    )
+      throw new Error(
+        `${exp.expense_number} está repartido entre ${linkCount.c} cargas. Cambia el monto o las cargas desde el reparto del gasto (Finanzas → Gastos → el gasto → Reparto entre cargas), para que ninguna carga se quede con un monto viejo.`,
+      );
     const paid = n(exp.paid);
     const oldPo = exp.purchase_order_id ?? null;
     // Sin el campo, la orden se queda como está: solo se mueve cuando quien
@@ -6729,7 +6837,12 @@ export const updateExpense = createServerFn({ method: "POST" })
         [data.expense_id, oldPo],
       );
     }
-    if (nextPo != null) {
+    // Hallazgo 14: este upsert escribe "todo el gasto a esta carga". Con el
+    // gasto repartido entre varias, cualquier edición que no mueva dinero
+    // (corregir la factura, la nota, quién lo absorbe) le devolvía el monto
+    // COMPLETO a la carga principal y recreaba el doble cobro. Con reparto, las
+    // ligas solo se tocan desde setExpenseSplit.
+    if (nextPo != null && Number(linkCount?.c ?? 0) <= 1) {
       await sql.query(
         `insert into expense_po_links (expense_id, purchase_order_id, amount_applied) values ($1,$2,$3)
          on conflict (expense_id, purchase_order_id) do update set amount_applied = excluded.amount_applied`,
@@ -9456,15 +9569,27 @@ export const listExpenseLinks = createServerFn({ method: "GET" })
       [data.expense_id],
     );
     if (!exp) throw new Error("Expense not found");
+    // Hallazgo 14: cada liga trae lo aplicado a esa carga, las cajas que
+    // recibió (para proponer el reparto) y si ya quedó congelada en su
+    // documento — lo que decide si ese renglón se puede editar.
     const links = await sql.query(
       `select x.purchase_order_id, po.po_number, s.name as supplier_name, po.order_date::text,
-              po.vendor_invoice, x.amount_applied::text
+              po.vendor_invoice, x.amount_applied::text, po.liquidated_at::text,
+              coalesce(po.deal_type,'firme') as deal_type,
+              coalesce((select sum(l.original_qty) from lots l
+                        where l.purchase_order_id = po.id and l.pack_out_id is null),0)::text as received_qty
        from expense_po_links x
        join purchase_orders po on po.id = x.purchase_order_id
        join suppliers s on s.id = po.supplier_id
-       where x.expense_id = $1`,
+       where x.expense_id = $1
+       order by x.purchase_order_id`,
       [data.expense_id],
     );
+    const renderedByPo = new Map<number, { doc: string; amount: number }>();
+    for (const l of links) {
+      const r = await renderedExpenseLink(sql, data.expense_id, l.purchase_order_id as number);
+      if (r) renderedByPo.set(l.purchase_order_id as number, r);
+    }
     const firstItems = await sql.query(`
       select distinct on (l.purchase_order_id) l.purchase_order_id, p.name as product_name
       from purchase_order_lines l join products p on p.id = l.product_id
@@ -9478,9 +9603,97 @@ export const listExpenseLinks = createServerFn({ method: "GET" })
       links: links.map((l) => ({
         ...l,
         amount_applied: n(l.amount_applied),
+        received_qty: n(l.received_qty),
+        rendered_in: renderedByPo.get(l.purchase_order_id as number)?.doc ?? null,
         product_name: itemMap.get(l.purchase_order_id) ?? null,
       })),
+      /** Lo que no se le cargó a ninguna carga: lo absorbe Plein. */
+      unapplied: round2(
+        n(exp.amount) - links.reduce((s, l) => s + n(l.amount_applied), 0),
+      ),
     };
+  });
+/**
+ * Hallazgo 14: el reparto de un gasto entre las cargas que lo generaron. Es el
+ * único camino que escribe montos por carga. Se puede repartir de MENOS (lo que
+ * sobra lo absorbe Plein, y la pantalla lo dice), nunca de más. Un renglón ya
+ * rendido al productor de esa carga queda congelado; los demás siguen vivos.
+ */
+export const setExpenseSplit = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      expense_id: z.number(),
+      rows: z.array(
+        z.object({
+          purchase_order_id: z.number(),
+          amount: z.number().min(0),
+        }),
+      ),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [exp] = await sql.query(
+      `select id, expense_number, category, amount::text, cancelled_at, created_at::text
+       from expenses where id = $1`,
+      [data.expense_id],
+    );
+    if (!exp) throw new Error("Gasto no encontrado");
+    if (exp.cancelled_at) throw new Error("Este gasto está cancelado — no se puede repartir.");
+    const label = `${exp.expense_number} (${exp.category})`;
+    const total = n(exp.amount);
+    const rows = data.rows.filter((r) => r.amount > 0.009);
+    const seen = new Set<number>();
+    for (const r of rows) {
+      if (seen.has(r.purchase_order_id)) throw new Error("La misma carga aparece dos veces en el reparto.");
+      seen.add(r.purchase_order_id);
+    }
+    const sum = round2(rows.reduce((s, r) => s + r.amount, 0));
+    if (sum > total + 0.009)
+      throw new Error(
+        `${label} cuesta ${money2(total)} y estás repartiendo ${money2(sum)}. No se les puede cobrar a las cargas más de lo que costó el gasto.`,
+      );
+    const current = await sql.query(
+      `select purchase_order_id, amount_applied::text from expense_po_links where expense_id = $1`,
+      [data.expense_id],
+    );
+    const nextByPo = new Map(rows.map((r) => [r.purchase_order_id, round2(r.amount)]));
+    // Lo ya rendido no se mueve: ni se le baja el monto ni se le quita la liga.
+    for (const c of current) {
+      const poId = c.purchase_order_id as number;
+      const antes = n(c.amount_applied);
+      const ahora = nextByPo.get(poId);
+      if (ahora != null && Math.abs(ahora - antes) <= 0.009) continue;
+      const rendered = await renderedExpenseLink(sql, data.expense_id, poId);
+      if (rendered)
+        throw new Error(renderedExpenseMessage(label, rendered.doc, rendered.amount, "adjust"));
+    }
+    // Una carga nueva: mismas reglas que ligar a mano.
+    for (const r of rows) {
+      if (current.some((c) => Number(c.purchase_order_id) === r.purchase_order_id)) continue;
+      const [po] = await sql.query(`select id, po_number from purchase_orders where id = $1`, [
+        r.purchase_order_id,
+      ]);
+      if (!po) throw new Error("Orden de compra no encontrada");
+      const liq = await liquidatedInfo(sql, r.purchase_order_id);
+      if (liq && String(exp.created_at) <= liq.liquidated_at)
+        throw new Error(oldExpenseLinkMessage(liq));
+    }
+    for (const c of current)
+      if (!nextByPo.has(c.purchase_order_id as number))
+        await sql.query(
+          `delete from expense_po_links where expense_id = $1 and purchase_order_id = $2`,
+          [data.expense_id, c.purchase_order_id],
+        );
+    for (const [poId, amount] of nextByPo)
+      await sql.query(
+        `insert into expense_po_links (expense_id, purchase_order_id, amount_applied) values ($1,$2,$3)
+         on conflict (expense_id, purchase_order_id) do update set amount_applied = excluded.amount_applied`,
+        [data.expense_id, poId, amount],
+      );
+    await resyncExpensePrimaryPo(sql, data.expense_id);
+    return { ok: true, applied: sum, unapplied: round2(total - sum) };
   });
 export const connectExpensePo = createServerFn({ method: "POST" })
   .validator(
@@ -9500,16 +9713,47 @@ export const connectExpensePo = createServerFn({ method: "POST" })
     // C-2a: un gasto anterior a la liquidación no se liga a una carga ya rendida.
     const liq = await liquidatedInfo(sql, data.purchase_order_id);
     if (liq && String(exp.created_at) <= liq.liquidated_at) throw new Error(oldExpenseLinkMessage(liq));
+    // Hallazgo 14: conectar es UPSERT — si la carga ya estaba ligada, "conectar"
+    // otra vez le subía el monto en silencio, incluso sobre una parte ya
+    // rendida. Lo ya rendido no se toca, y lo ya ligado se queda como está.
+    const rendered = await renderedExpenseLink(sql, data.expense_id, data.purchase_order_id);
+    if (rendered) {
+      const [e] = await sql.query(`select expense_number, category from expenses where id = $1`, [data.expense_id]);
+      throw new Error(
+        renderedExpenseMessage(`${e?.expense_number ?? ""} (${e?.category ?? ""})`, rendered.doc, rendered.amount, "adjust"),
+      );
+    }
+    const [ya] = await sql.query(
+      `select amount_applied::text from expense_po_links where expense_id = $1 and purchase_order_id = $2`,
+      [data.expense_id, data.purchase_order_id],
+    );
+    if (ya && data.amount == null) {
+      const [po] = await sql.query(`select po_number from purchase_orders where id = $1`, [
+        data.purchase_order_id,
+      ]);
+      throw new Error(
+        `Este gasto ya está ligado a ${po?.po_number ?? "esa carga"} por ${money2(n(ya.amount_applied))}. Cambia el monto en el reparto del gasto, no volviendo a conectarla.`,
+      );
+    }
+    // Sin monto capturado se propone lo que falta por repartir.
+    const [applied] = await sql.query(
+      `select coalesce(sum(amount_applied),0)::text as v from expense_po_links
+       where expense_id = $1 and purchase_order_id <> $2`,
+      [data.expense_id, data.purchase_order_id],
+    );
+    const libre = round2(Math.max(n(exp.amount) - n(applied?.v), 0));
+    const amount = round2(Math.min(data.amount ?? libre, libre));
+    if (data.amount != null && data.amount > libre + 0.009)
+      throw new Error(
+        `De este gasto quedan ${money2(libre)} por repartir: no se le pueden aplicar ${money2(data.amount)} a esta carga.`,
+      );
     await sql.query(
       `insert into expense_po_links (expense_id, purchase_order_id, amount_applied) values ($1,$2,$3)
        on conflict (expense_id, purchase_order_id) do update set amount_applied = excluded.amount_applied`,
-      [data.expense_id, data.purchase_order_id, data.amount ?? n(exp.amount)],
+      [data.expense_id, data.purchase_order_id, amount],
     );
-    await sql.query(
-      `update expenses set purchase_order_id = coalesce(purchase_order_id, $1) where id = $2`,
-      [data.purchase_order_id, data.expense_id],
-    );
-    return { ok: true };
+    await resyncExpensePrimaryPo(sql, data.expense_id);
+    return { ok: true, amount_applied: amount };
   });
 export const disconnectExpensePo = createServerFn({ method: "POST" })
   .validator(
@@ -9521,8 +9765,10 @@ export const disconnectExpensePo = createServerFn({ method: "POST" })
   .middleware([moduleMiddleware("finance")])
   .handler(async ({ data }) => {
     const sql = await getSql();
-    // C-2a: un gasto ya rendido no se desliga; se corrige con un ajuste.
-    const rendered = await renderedExpenseDoc(sql, data.expense_id);
+    // C-2a + hallazgo 14: el candado es por PAREJA gasto×carga. Si ya se le
+    // rindió a ESTA carga, no se desliga; la otra carga del mismo gasto sigue
+    // siendo editable — el flete de dos productores lo necesita.
+    const rendered = await renderedExpenseLink(sql, data.expense_id, data.purchase_order_id);
     if (rendered) {
       const [e] = await sql.query(`select expense_number, category from expenses where id = $1`, [data.expense_id]);
       throw new Error(
@@ -9533,6 +9779,7 @@ export const disconnectExpensePo = createServerFn({ method: "POST" })
       data.expense_id,
       data.purchase_order_id,
     ]);
+    await resyncExpensePrimaryPo(sql, data.expense_id);
     return { ok: true };
   });
 export const registerVendorPayment = createServerFn({ method: "POST" })
