@@ -11,13 +11,19 @@ import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
+import { useAccess } from "@/components/access-gate";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
   cancelSalesOrder,
   getSalesOrderCancelImpact,
+  cancelCustomerReturn,
   createCreditInvoice,
+  createCustomerReturn,
   getCreditTargets,
+  listCustomerReturns,
+  listLocations,
+  listReturnable,
   createInvoiceFromSO,
   createPurchaseFromSO,
   createSalesOrder,
@@ -82,6 +88,15 @@ function Page() {
     null,
   );
   const [credit, setCredit] = useState<number | null>(null);
+  // Área #3: la devolución necesita la bodega real (a dónde entra la fruta que
+  // regresa), no el destino del cliente.
+  const warehouses = useAsync(() => listLocations(), []);
+  const [ret, setRet] = useState<number | null>(null);
+  const [cancelRet, setCancelRet] = useState<{ id: number; return_number: string } | null>(null);
+  // Registrar o cancelar una devolución no cambia la orden de venta, así que
+  // la lista del detalle no se enteraba sola: había que salir y volver a
+  // entrar para verla. Este contador la obliga a releer.
+  const [retNonce, setRetNonce] = useState(0);
   const [cancelSo, setCancelSo] = useState<{ id: number; so_number: string } | null>(null);
   // C-2b: si la venta ya se le rindió al productor (y si ya se le pagó), el
   // diálogo lo avisa antes del clic. Informa, no bloquea.
@@ -757,6 +772,9 @@ function Page() {
                               });
                             }}
                             onCredit={() => setCredit(row.id)}
+                            onReturn={() => setRet(row.id)}
+                            onCancelReturn={(r) => setCancelRet(r)}
+                            returnsNonce={retNonce}
                             onCancel={() => setCancelSo({ id: row.id, so_number: row.so_number })}
                             onDestinationSaved={() => orders.reload()}
                             saving={saving}
@@ -927,6 +945,45 @@ function Page() {
           }}
         />
       ) : null}
+      {ret ? (
+        <ReturnModal
+          soId={ret}
+          locations={warehouses.data ?? []}
+          onClose={() => setRet(null)}
+          onSaved={async (r) => {
+            setRet(null);
+            setMsg(
+              [
+                `Devolución ${r.return_number} registrada`,
+                r.credit ? `nota de crédito ${r.credit.invoice_number} por ${money(Math.abs(r.credit.total))}` : null,
+                r.lots.length ? `lote devuelto ${r.lots.map((l) => l.lot_number).join(", ")} (retenido)` : null,
+                r.attributions.length
+                  ? `se le baja al productor en ${r.attributions.map((a) => a.po_number).join(", ")}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            );
+            setRetNonce((v) => v + 1);
+            await Promise.all([orders.reload(), lots.reload()]);
+          }}
+        />
+      ) : null}
+      {cancelRet ? (
+        <CancelDialog
+          title={`Cancelar devolución ${cancelRet.return_number}`}
+          subtitle="Deshace la fruta y el crédito juntos. Se niega si el lote devuelto ya se movió o si el crédito ya se le rindió al productor."
+          onClose={() => setCancelRet(null)}
+          onConfirm={async (reason) => {
+            await cancelCustomerReturn({
+              data: { return_id: cancelRet.id, reason: reason || "Sin motivo capturado" },
+            });
+            setCancelRet(null);
+            setRetNonce((v) => v + 1);
+            await Promise.all([orders.reload(), lots.reload()]);
+          }}
+        />
+      ) : null}
       {cancelSo ? (
         <CancelDialog
           title={`${t("Cancel order")} ${poShort(cancelSo.so_number)}`}
@@ -955,6 +1012,9 @@ function SoDetail({
   onInvoice,
   onBuy,
   onCredit,
+  onReturn,
+  onCancelReturn,
+  returnsNonce,
   onCancel,
   onDestinationSaved,
   saving,
@@ -965,6 +1025,9 @@ function SoDetail({
   onInvoice: () => void;
   onBuy: () => void;
   onCredit: () => void;
+  onReturn: () => void;
+  onCancelReturn: (r: { id: number; return_number: string }) => void;
+  returnsNonce: number;
   onCancel: () => void;
   onDestinationSaved: () => Promise<void>;
   saving: boolean;
@@ -981,6 +1044,16 @@ function SoDetail({
   );
   const [destSaving, setDestSaving] = useState(false);
   const customerLocations = locations.filter((l) => l.customer_id === row.customer_id);
+  // Área #3: registrar o cancelar una devolución escribe en Finanzas (nota de
+  // crédito y atribución al productor). Sin ese módulo el botón no se ofrece,
+  // para no llevar a un vendedor a llenar el modal y tronar al guardar.
+  const access = useAccess();
+  const puedeDevolver = Boolean(access?.modules?.includes("finance"));
+  // Lo que el cliente ya devolvió de esta venta.
+  const returns = useAsync(
+    () => listCustomerReturns({ data: { sales_order_id: row.id } }),
+    [row.id, row.status, returnsNonce],
+  );
   async function saveDestination() {
     setDestSaving(true);
     try {
@@ -1217,6 +1290,11 @@ function SoDetail({
           <button type="button" className="mt-2 block text-link" onClick={onCredit}>
             {t("Create credit invoice")}
           </button>
+          {puedeDevolver ? (
+            <button type="button" className="mt-2 block text-link" onClick={onReturn}>
+              Registrar devolución
+            </button>
+          ) : null}
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between text-muted">
@@ -1245,6 +1323,73 @@ function SoDetail({
           </div>
         </div>
       </div>
+      {returns.data?.length ? (
+        <div className="mt-5">
+          <p className="mb-2 text-sm font-semibold">Devoluciones del cliente</p>
+          <div className="space-y-2">
+            {returns.data.map((r) => (
+              <div
+                key={r.id}
+                className={`rounded-md border p-3 text-sm ${r.cancelled_at ? "border-border bg-surface-2 opacity-70" : "border-border"}`}
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div>
+                    <span className="font-medium">{r.return_number}</span>
+                    <span className="ml-2 text-xs text-muted">
+                      {fecha(r.return_date)}
+                      {r.claim_reference ? ` · reclamo ${r.claim_reference}` : ""}
+                      {r.inspection_type && r.inspection_type !== "Ninguna"
+                        ? ` · inspección ${r.inspection_type}${r.inspection_folio ? ` ${r.inspection_folio}` : ""}`
+                        : ""}
+                    </span>
+                    {r.cancelled_at ? (
+                      <span className="ml-2"><Badge tone="mute">Cancelada</Badge></span>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-3 text-xs">
+                    {r.credit_number ? (
+                      <span className="text-muted">
+                        Nota {r.credit_number} · {money(r.credit_total)}
+                      </span>
+                    ) : (
+                      <span className="text-muted">Sin nota de crédito</span>
+                    )}
+                    {!r.cancelled_at && puedeDevolver ? (
+                      <button
+                        type="button"
+                        className="cursor-pointer text-danger"
+                        onClick={() =>
+                          onCancelReturn({ id: r.id, return_number: r.return_number })
+                        }
+                      >
+                        Cancelar
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <ul className="mt-2 space-y-1 text-xs text-muted">
+                  {r.lines.map((l) => (
+                    <li key={l.id}>
+                      {qty(l.quantity, l.unit)} de {l.product_name}
+                      {l.calibre ? ` ${l.calibre}` : ""} · lote {l.lot_number} ·{" "}
+                      <b className="text-fg">{l.destination_label}</b>
+                      {l.new_lot_number ? ` (lote ${l.new_lot_number})` : ""} ·{" "}
+                      {l.cause === "grower" ? "del productor" : "de Plein"}
+                      {l.po_number ? ` (${l.po_number})` : ""} · {l.reason}
+                      {l.destroy_reason ? ` · destruida por ${l.destroy_reason}` : ""}
+                      {l.destroy_certificate ? ` · certificado ${l.destroy_certificate}` : ""}
+                      {l.not_returned_detail ? ` · ${l.not_returned_detail}` : ""}
+                      {l.salvage_amount > 0 ? ` · se recuperó ${money(l.salvage_amount)}` : ""}
+                      {l.credit_amount > 0 ? ` · ${money(l.credit_amount)}` : " · sin crédito"}
+                    </li>
+                  ))}
+                </ul>
+                <CancelledNote by={r.cancelled_by} at={r.cancelled_at} reason={r.cancel_reason} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div className="mt-4 flex flex-wrap gap-2">
         {!row.invoice && row.status !== "cancelled" ? (
           <Button size="sm" disabled={saving} onClick={onInvoice}>
@@ -1263,6 +1408,394 @@ function SoDetail({
         ) : null}
       </div>
     </div>
+  );
+}
+
+// ---- Devolución del cliente (Área de mejora #3) -----------------------------
+// La fruta y el dinero salen de la MISMA captura: a dónde va cada caja que
+// regresó, de quién fue la culpa y cuánto se le acredita al cliente. Antes un
+// reclamo solo podía terminar en nota de crédito y la fruta no existía en
+// ningún lado.
+const RETURN_DEST_LABEL: Record<string, string> = {
+  restock: "Regresó al inventario",
+  destroyed: "Se destruyó",
+  not_returned: "No regresó a Nogales",
+};
+type ReturnDest = "restock" | "destroyed" | "not_returned";
+type ReturnRow = Awaited<ReturnType<typeof listReturnable>>[number];
+type ReturnDraft = {
+  qty: string;
+  destination: ReturnDest;
+  cause: string;
+  reason: string;
+  per_unit: string;
+  destroy_reason: string;
+  destroy_certificate: string;
+  not_returned_detail: string;
+  salvage: string;
+};
+function ReturnModal({
+  soId,
+  locations,
+  onClose,
+  onSaved,
+}: {
+  soId: number;
+  locations: { id: number; name: string }[];
+  onClose: () => void;
+  onSaved: (r: Awaited<ReturnType<typeof createCustomerReturn>>) => Promise<void>;
+}) {
+  const data = useAsync(() => listReturnable({ data: { sales_order_id: soId } }), [soId]);
+  const [drafts, setDrafts] = useState<Record<number, ReturnDraft>>({});
+  const [head, setHead] = useState({
+    return_date: todayISO(),
+    claim_reference: "",
+    inspection_type: "Ninguna",
+    inspection_folio: "",
+    location_id: "",
+    notes: "",
+    customer_note: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const rowsAll: ReturnRow[] = data.data ?? [];
+  const rows = rowsAll.filter((r) => r.returnable > 0.0001);
+
+  const draftFor = (r: ReturnRow): ReturnDraft =>
+    drafts[r.allocation_id] ?? {
+      qty: "",
+      destination: "restock",
+      // La culpa NO viene preseleccionada: es lo que decide si al productor se
+      // le baja el neto. Igual que en la nota de crédito (C-1b).
+      cause: "",
+      reason: "",
+      per_unit: String(r.unit_price),
+      destroy_reason: "",
+      destroy_certificate: "",
+      not_returned_detail: "",
+      salvage: "",
+    };
+  const patch = (r: ReturnRow, p: Partial<ReturnDraft>) =>
+    setDrafts((prev) => ({ ...prev, [r.allocation_id]: { ...draftFor(r), ...p } }));
+
+  const activas = rows
+    .map((r) => {
+      const d = draftFor(r);
+      const qtyN = Number(d.qty) || 0;
+      const cpu = Number(d.per_unit) || 0;
+      const problems: string[] = [];
+      if (qtyN > r.returnable + 1e-9)
+        problems.push(`solo quedan ${qty(r.returnable, r.unit)} por devolver`);
+      if (cpu > r.unit_price + 1e-6)
+        problems.push(`el precio facturado fue ${money(r.unit_price)}`);
+      if (qtyN > 0 && !d.cause) problems.push("falta decir de quién fue");
+      if (qtyN > 0 && !d.reason.trim()) problems.push("falta el motivo");
+      if (qtyN > 0 && d.destination === "destroyed" && !d.destroy_reason.trim())
+        problems.push("destruir exige motivo (PACA)");
+      if (qtyN > 0 && d.destination === "not_returned" && !d.not_returned_detail.trim())
+        problems.push("falta qué pasó con la fruta allá");
+      return { r, d, qtyN, cpu, amount: qtyN * cpu, problems };
+    })
+    .filter((x) => x.qtyN > 0);
+  const total = activas.reduce((s, x) => s + x.amount, 0);
+  const necesitaUbicacion = activas.some((x) => x.d.destination === "restock");
+  const problemas = activas.some((x) => x.problems.length);
+  const faltaUbicacion = necesitaUbicacion && !head.location_id;
+  const puedeGuardar = activas.length > 0 && !problemas && !faltaUbicacion && !saving;
+  // Solo se le baja el neto al productor cuando la carga es suya (no en firme)
+  // y la culpa fue de él.
+  const alProductor = activas
+    .filter((x) => x.d.cause === "grower" && x.r.attributable)
+    .reduce((s, x) => s + x.amount, 0);
+
+  async function submit() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await createCustomerReturn({
+        data: {
+          sales_order_id: soId,
+          return_date: head.return_date || undefined,
+          claim_reference: head.claim_reference.trim() || undefined,
+          inspection_type: head.inspection_type || undefined,
+          inspection_folio: head.inspection_folio.trim() || undefined,
+          notes: head.notes.trim() || undefined,
+          customer_note: head.customer_note.trim() || undefined,
+          location_id: head.location_id ? Number(head.location_id) : undefined,
+          lines: activas.map((x) => ({
+            allocation_id: x.r.allocation_id,
+            quantity: x.qtyN,
+            destination: x.d.destination,
+            cause: x.d.cause as "grower" | "plein",
+            reason: x.d.reason.trim(),
+            credit_per_unit: x.cpu,
+            destroy_reason: x.d.destroy_reason.trim() || undefined,
+            destroy_certificate: x.d.destroy_certificate.trim() || undefined,
+            not_returned_detail: x.d.not_returned_detail.trim() || undefined,
+            salvage_amount: Number(x.d.salvage) || undefined,
+          })),
+        },
+      });
+      await onSaved(r);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal wide title="Registrar devolución" subtitle="La fruta y el crédito, en una sola captura" onClose={onClose}>
+      {data.loading ? <p className="text-sm text-muted">Cargando…</p> : null}
+      {data.error ? <p className="text-sm text-danger">{data.error}</p> : null}
+      {!data.loading && !data.error && !rows.length ? (
+        <div>
+          <p className="text-sm text-muted">
+            {rowsAll.length
+              ? "Todo lo que se despachó de esta venta ya se devolvió."
+              : "Esta venta no tiene nada despachado: no hay fruta que devolver."}
+          </p>
+          <div className="mt-4 flex justify-end">
+            <Button variant="outline" onClick={onClose}>
+              Cerrar
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {rows.length ? (
+        <>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <Field label="Fecha de la devolución">
+              <Input
+                type="date"
+                value={head.return_date}
+                onChange={(e) => setHead({ ...head, return_date: e.target.value })}
+              />
+            </Field>
+            <Field label="Folio del reclamo del cliente">
+              <Input
+                placeholder="Opcional"
+                value={head.claim_reference}
+                onChange={(e) => setHead({ ...head, claim_reference: e.target.value })}
+              />
+            </Field>
+            <Field label="Tipo de inspección">
+              <Select
+                value={head.inspection_type}
+                onChange={(e) => setHead({ ...head, inspection_type: e.target.value })}
+              >
+                <option value="Ninguna">Ninguna</option>
+                <option value="Propia">Propia</option>
+                <option value="USDA">USDA</option>
+                <option value="Federal-Estatal">Federal-Estatal</option>
+                <option value="Privada">Privada</option>
+              </Select>
+            </Field>
+            <Field label="Folio de inspección">
+              <Input
+                placeholder="Opcional"
+                value={head.inspection_folio}
+                onChange={(e) => setHead({ ...head, inspection_folio: e.target.value })}
+              />
+            </Field>
+          </div>
+          <p className="mt-4 text-sm text-muted">
+            Captura solo lo que regresó. Los renglones en cero no entran. La fruta que vuelve nace
+            como <b>lote nuevo marcado devuelto</b> y queda <b>retenida</b> hasta que la revises —
+            esa fruta ya viajó.
+          </p>
+          <div className="mt-3 space-y-3">
+            {rows.map((r) => {
+              const d = draftFor(r);
+              const qtyN = Number(d.qty) || 0;
+              const cpu = Number(d.per_unit) || 0;
+              const activa = qtyN > 0;
+              return (
+                <div key={r.allocation_id} className="rounded-md border border-border p-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <div>
+                      <span className="font-medium">{r.description}</span>
+                      <span className="ml-2 text-xs text-muted">
+                        lote {r.lot_number}
+                        {r.bol_number ? ` · BOL ${r.bol_number}` : ""}
+                        {r.po_number ? ` · ${r.po_number} (${TRATO_LABEL[r.deal_type] ?? r.deal_type})` : ""}
+                      </span>
+                    </div>
+                    <span className="text-xs text-muted">
+                      despachadas {qty(r.quantity, r.unit)} · por devolver{" "}
+                      <b className="text-fg">{qty(r.returnable, r.unit)}</b> · {money(r.unit_price)} /{" "}
+                      {r.unit}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    <Field label="Cajas devueltas">
+                      <Input
+                        placeholder="0"
+                        value={d.qty}
+                        onChange={(e) => patch(r, { qty: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="¿A dónde va la fruta?">
+                      <Select
+                        value={d.destination}
+                        onChange={(e) => patch(r, { destination: e.target.value as ReturnDest })}
+                      >
+                        {(Object.keys(RETURN_DEST_LABEL) as ReturnDest[]).map((k) => (
+                          <option key={k} value={k}>
+                            {RETURN_DEST_LABEL[k]}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                    <Field label="¿De quién fue?">
+                      <Select value={d.cause} onChange={(e) => patch(r, { cause: e.target.value })}>
+                        <option value="">Seleccionar</option>
+                        <option value="grower" disabled={!r.attributable}>
+                          Del productor {r.attributable ? "" : "(no aplica en firme)"}
+                        </option>
+                        <option value="plein">De Plein</option>
+                      </Select>
+                    </Field>
+                    <Field label={`Crédito por ${r.unit}`}>
+                      <Input
+                        placeholder="$"
+                        value={d.per_unit}
+                        onChange={(e) => patch(r, { per_unit: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <Field label="Motivo">
+                      <Input
+                        placeholder="Qué pasó — sale en el documento"
+                        value={d.reason}
+                        onChange={(e) => patch(r, { reason: e.target.value })}
+                      />
+                    </Field>
+                    {d.destination === "destroyed" ? (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Field label="Motivo de la destrucción">
+                          <Input
+                            placeholder="PACA lo exige"
+                            value={d.destroy_reason}
+                            onChange={(e) => patch(r, { destroy_reason: e.target.value })}
+                          />
+                        </Field>
+                        <Field label="Certificado">
+                          <Input
+                            placeholder="Folio del certificado"
+                            value={d.destroy_certificate}
+                            onChange={(e) => patch(r, { destroy_certificate: e.target.value })}
+                          />
+                        </Field>
+                      </div>
+                    ) : null}
+                    {d.destination === "not_returned" ? (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Field label="¿Qué pasó con ella?">
+                          <Input
+                            placeholder="Se vendió en destino, se donó, se tiró…"
+                            value={d.not_returned_detail}
+                            onChange={(e) => patch(r, { not_returned_detail: e.target.value })}
+                          />
+                        </Field>
+                        <Field label="Lo que se recuperó allá">
+                          <Input
+                            placeholder="$ — para el expediente"
+                            value={d.salvage}
+                            onChange={(e) => patch(r, { salvage: e.target.value })}
+                          />
+                          <p className="mt-1 text-xs text-muted">
+                            Queda en el documento de la devolución para el reclamo. No entra a
+                            caja ni a la liquidación — si ese dinero lo cobró Plein, captúralo
+                            aparte.
+                          </p>
+                        </Field>
+                      </div>
+                    ) : null}
+                  </div>
+                  {activa ? (
+                    <p className="mt-2 text-xs text-muted">
+                      Crédito de este renglón: <b className="text-fg">{money(qtyN * cpu)}</b>
+                      {d.destination === "restock"
+                        ? " · esas cajas salen del costo de venta y vuelven al inventario"
+                        : " · esas cajas se quedan costeadas como vendidas: se fueron y no volvieron"}
+                    </p>
+                  ) : null}
+                  {activa
+                    ? (() => {
+                        const x = activas.find((a) => a.r.allocation_id === r.allocation_id);
+                        return x && x.problems.length ? (
+                          <p className="mt-1 text-xs text-danger">{x.problems.join(" · ")}</p>
+                        ) : null;
+                      })()
+                    : null}
+                </div>
+              );
+            })}
+          </div>
+          {necesitaUbicacion ? (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Field label="¿A qué ubicación entra la fruta que regresa?">
+                <Select
+                  value={head.location_id}
+                  onChange={(e) => setHead({ ...head, location_id: e.target.value })}
+                >
+                  <option value="">Seleccionar</option>
+                  {locations.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          ) : null}
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Field label="Nota interna">
+              <Input value={head.notes} onChange={(e) => setHead({ ...head, notes: e.target.value })} />
+            </Field>
+            <Field label="Nota para el cliente">
+              <Input
+                value={head.customer_note}
+                onChange={(e) => setHead({ ...head, customer_note: e.target.value })}
+              />
+            </Field>
+          </div>
+          <div className="mt-4 rounded-md border border-border bg-surface-2 p-3 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted">Crédito al cliente</span>
+              <span className="font-semibold">{money(total)}</span>
+            </div>
+            <div className="mt-1 flex justify-between">
+              <span className="text-muted">De eso, se le baja al productor</span>
+              <span>{money(alProductor)}</span>
+            </div>
+            <p className="mt-2 text-xs text-muted">
+              Lo que fue de Plein no le cuesta nada al productor: se le paga completo y el golpe lo
+              absorbe Plein. En trato firme la fruta ya es de Plein, así que nunca se le atribuye.
+              {total <= 0.009
+                ? " Si dejas el crédito en cero, se registra el movimiento de fruta sin nota de crédito."
+                : ""}
+            </p>
+          </div>
+          {faltaUbicacion ? (
+            <p className="mt-2 text-sm text-danger">
+              Elige a qué ubicación entra la fruta que regresa.
+            </p>
+          ) : null}
+          {err ? <p className="mt-3 text-sm text-danger">{err}</p> : null}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose}>
+              Cancelar
+            </Button>
+            <Button disabled={!puedeGuardar} onClick={submit}>
+              {saving ? "Guardando…" : "Registrar devolución"}
+            </Button>
+          </div>
+        </>
+      ) : null}
+    </Modal>
   );
 }
 
