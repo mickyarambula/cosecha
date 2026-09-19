@@ -115,6 +115,8 @@ function Page() {
     notes: "",
     requested: todayISO(),
     type: "Delivery to customer",
+    pickup: "",
+    route: "",
   });
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [shipForm, setShipForm] = useState({ quantity: "", lot_id: "", location_id: "" });
@@ -158,15 +160,26 @@ function Page() {
         unit: sku.empaque || sku.unit,
         calibre: sku.calibre || null,
         skuCode: sku.sku_code || null,
-        qty: lot ? String(lot.current_qty) : "1",
-        price: "35",
+        // Hallazgo 17: antes esto traía la cantidad del lote COMPLETO y el
+        // precio "35" inventado. Un dedazo colocaba una venta de todas las
+        // cajas a un precio que nadie pactó. Ahora se capturan los dos.
+        qty: "",
+        price: "",
       },
     ]);
     setPicker(false);
   }
 
+  // Hallazgo 17: la cantidad y el precio ya no vienen con un valor inventado,
+  // así que hay que impedir que una venta salga en cero o sin precio — antes
+  // el vacío llegaba al servidor y reventaba con el error crudo del validador.
+  const lineasIncompletas = lines.filter(
+    (l) => !(Number(l.qty) > 0) || !(Number(l.price) > 0),
+  );
+  const lineasListas = lines.length > 0 && lineasIncompletas.length === 0;
+
   async function place() {
-    if (!draft.customer_id || !lines.length) return;
+    if (!draft.customer_id || !lines.length || !lineasListas) return;
     setSaving(true);
     try {
       const r = await createSalesOrder({
@@ -176,6 +189,11 @@ function Page() {
           ship_to_location_id: draft.ship_to_location_id
             ? Number(draft.ship_to_location_id)
             : undefined,
+          // Hallazgo 18: estos cuatro se capturaban y se perdían al guardar.
+          requested_date: draft.requested || undefined,
+          order_type: draft.type || undefined,
+          pickup_date: draft.pickup || undefined,
+          delivery_route: draft.route?.trim() || undefined,
           lines: lines.map((l) => ({
             product_id: l.product_id,
             pack_style_id: l.pack_style_id,
@@ -311,7 +329,11 @@ function Page() {
             />
           </MetaCard>
           <MetaCard label="Pickup date">
-            <Input type="date" />
+            <Input
+              type="date"
+              value={draft.pickup}
+              onChange={(e) => setDraft({ ...draft, pickup: e.target.value })}
+            />
           </MetaCard>
           <MetaCard label="Order type">
             <Select
@@ -324,9 +346,11 @@ function Page() {
             </Select>
           </MetaCard>
           <MetaCard label="Delivery route">
-            <Select defaultValue="">
-              <option value="">{t("Type to search")}</option>
-            </Select>
+            <Input
+              value={draft.route}
+              onChange={(e) => setDraft({ ...draft, route: e.target.value })}
+              placeholder={t("Optional")}
+            />
           </MetaCard>
           <MetaCard label="Destination">
             {!draft.customer_id ? (
@@ -433,9 +457,15 @@ function Page() {
         ) : (
           <div className="flex-1" />
         )}
-        <div className="mt-auto flex justify-end gap-3 border-t border-border bg-surface p-4">
+        <div className="mt-auto flex flex-wrap items-center justify-end gap-3 border-t border-border bg-surface p-4">
+          {lines.length && !lineasListas ? (
+            <p className="mr-auto text-sm text-danger">
+              Captura cantidad y precio en {lineasIncompletas.length}{" "}
+              {lineasIncompletas.length === 1 ? "renglón" : "renglones"} para poder colocar la orden.
+            </p>
+          ) : null}
           <Button
-            disabled={saving || !draft.customer_id || !lines.length}
+            disabled={saving || !draft.customer_id || !lines.length || !lineasListas}
             onClick={() => void place()}
           >
             {t("Place order")}
@@ -462,7 +492,10 @@ function Page() {
                   {
                     ats: mine.reduce((n, l) => n + (l.asignable ? l.current_qty : 0), 0),
                     oh: mine.reduce((n, l) => n + l.current_qty, 0),
-                    price: 35,
+                    // Hallazgo 17: aquí vivía `price: 35`, que pintaba
+                    // "Precio base $35.00" en TODOS los SKUs. No hay lista de
+                    // precios todavía; mejor una raya que un número inventado.
+                    price: undefined,
                   },
                 ];
               }),
@@ -684,7 +717,7 @@ function Page() {
                       </td>
                       <td className="px-3 py-2">{row.customer_name}</td>
                       <td className="px-3 py-2">{fecha(row.requested_date || row.order_date)}</td>
-                      <td className="px-3 py-2">{t("Delivery to customer")}</td>
+                      <td className="px-3 py-2">{t(row.order_type || "Delivery to customer")}</td>
                       <td className="px-3 py-2 text-right">{money(total)}</td>
                     </tr>
                     {open ? (
@@ -1008,8 +1041,13 @@ function SoDetail({
           </div>
         </MetaCard>
         <MetaCard label="Requested date">{fecha(row.requested_date || row.order_date)}</MetaCard>
-        <MetaCard label="Pickup date">{row.ship_date ? fecha(row.ship_date) : "—"}</MetaCard>
-        <MetaCard label="Order type">{t("Delivery to customer")}</MetaCard>
+        <MetaCard label="Pickup date">{row.pickup_date ? fecha(row.pickup_date) : "—"}</MetaCard>
+        <MetaCard label="Order type">
+          {t(row.order_type || "Delivery to customer")}
+          {row.delivery_route ? (
+            <div className="text-[11px] font-normal text-subtle">{row.delivery_route}</div>
+          ) : null}
+        </MetaCard>
         <MetaCard label="Destination">
           {editingDestination ? (
             <div className="flex items-center gap-1">

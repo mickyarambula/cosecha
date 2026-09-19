@@ -182,13 +182,18 @@ async function nextLotNumber(sql, poId, productId) {
 }
 async function insertLot(sql, args) {
   const lot_number = await nextLotNumber(sql, args.poId, args.product_id);
-  const today = todayISO();
+  // Hallazgo 15: lo que se captura al recibir es lo que se guarda. Antes esto
+  // fijaba las dos fechas en "hoy" e imprimía 'México' como origen en TODO
+  // lote — incluida la fruta de proveedores de Estados Unidos — y las
+  // etiquetas de lote imprimían esa mentira. Sin dato capturado va null: en
+  // blanco es honesto, inventado no.
+  const received = args.received_date || todayISO();
   const lotId = (
     await sql.query(
       `insert into lots (lot_number, product_id, supplier_id, pack_style_id, purchase_order_id, purchase_order_line_id,
                        original_qty, current_qty, unit, unit_cost, received_date, pack_date, quality_state, quality_note,
                        grade, origin_country, status, pallets)
-     values ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$10,$11,$12,$13,'México','active',$14) returning id`,
+     values ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,$14,$15,'active',$16) returning id`,
       [
         lot_number,
         args.product_id,
@@ -199,10 +204,12 @@ async function insertLot(sql, args) {
         args.qty,
         args.unit,
         args.unit_cost,
-        today,
+        received,
+        args.pack_date || null,
         args.quality_state,
         args.quality_note,
-        args.grade ?? null,
+        args.grade?.trim() || null,
+        args.origin_country?.trim() || null,
         args.pallets ?? null,
       ],
     )
@@ -2441,20 +2448,39 @@ export const setLotQuality = createServerFn({ method: "POST" })
       quality_state: data.quality_state,
     };
   });
+/**
+ * Reparte los gastos de la carga entre sus lotes. Cada gasto usa SU propio
+ * criterio (pallet o unidad) — antes el del primer gasto decidía por todos, y
+ * mientras `lots.pallets` nunca se escribía las dos ramas daban lo mismo, así
+ * que no se notaba. Los pallets solo mandan si TODOS los lotes los tienen: con
+ * uno solo en blanco (una línea sin pallets capturados, o el lote hijo de un
+ * reempaque) ese lote pesaría cero y otro se llevaría el gasto entero.
+ */
+function expensesByLot(lots, expenseRows): Map<number, number> {
+  const qtyTotal = lots.reduce((s, l) => s + l.original_qty, 0) || 1;
+  const palletTotal = lots.reduce((s, l) => s + (l.pallets || 0), 0);
+  const everyHasPallets = lots.length > 0 && lots.every((l) => (l.pallets || 0) > 0);
+  const out = new Map<number, number>(lots.map((l) => [l.id, 0]));
+  for (const e of expenseRows) {
+    const amount = n(e.amount);
+    if (!amount) continue;
+    const byPallet = e.alloc_by === "pallet" && everyHasPallets && palletTotal > 0;
+    for (const l of lots) {
+      const share = byPallet ? (l.pallets || 0) / palletTotal : l.original_qty / qtyTotal;
+      out.set(l.id, (out.get(l.id) ?? 0) + amount * share);
+    }
+  }
+  return out;
+}
 function computeSettlementLots(
   lots,
-  expenseTotal,
-  allocBy,
+  expenseByLot: Map<number, number>,
   targetPct,
   netToGrower: number | null = null,
 ) {
-  const palletTotal = lots.reduce((s, l) => s + (l.pallets || 0), 0);
-  const qtyTotal = lots.reduce((s, l) => s + l.original_qty, 0) || 1;
   const revenueTotal = lots.reduce((s, l) => s + l.revenue, 0);
-  const usePallets = allocBy === "pallet" && palletTotal > 0;
   return lots.map((l) => {
-    const expenses =
-      expenseTotal * (usePallets ? (l.pallets || 0) / palletTotal : l.original_qty / qtyTotal);
+    const expenses = expenseByLot.get(l.id) ?? 0;
     const pas = !(l.unit_cost > 0);
     let t_cost = pas ? 0 : l.unit_cost * l.original_qty;
     if (netToGrower != null) {
@@ -3064,7 +3090,6 @@ async function loadSettlement(
     [purchase_order_id],
   );
   const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
-  const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
   const lotsRaw = await loadPoLots(sql, purchase_order_id);
   const shrink = await loadShrinkRows(sql, purchase_order_id, shrinkPrices);
   const equivalence = await computeOriginEquivalence(sql, purchase_order_id, lotsRaw);
@@ -3102,8 +3127,7 @@ async function loadSettlement(
   // carga. La factura de proveedor sí lo incluye (inventory_total).
   const lots = computeSettlementLots(
     lotsRaw,
-    expense_total,
-    allocBy,
+    expensesByLot(lotsRaw, expenses),
     target,
     breakdown ? breakdown.net_to_grower - breakdown.plein_purchase_total : null,
   );
@@ -4108,6 +4132,8 @@ async function loadSupplementRows(sql, purchase_order_id: number): Promise<Suppl
       : null,
   }));
 }
+/** Fecha del negocio: AAAA-MM-DD. Un texto libre llegaba crudo a Postgres. */
+const ISO_DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha debe ser AAAA-MM-DD");
 function round2(v: number) {
   return Math.round(v * 100) / 100;
 }
@@ -5531,7 +5557,6 @@ export const applySettlement = createServerFn({ method: "POST" })
       [data.purchase_order_id],
     );
     const expense_total = expenses.reduce((s, e) => s + n(e.amount), 0);
-    const allocBy = expenses[0]?.alloc_by === "unit" ? "unit" : "pallet";
     const lotsRaw = await loadPoLots(sql, data.purchase_order_id);
     // La merma que absorbe Plein entra al neto (y por tanto al costo de los
     // lotes / bill de consignación). Si ya hay liquidación emitida se usan
@@ -5568,8 +5593,7 @@ export const applySettlement = createServerFn({ method: "POST" })
     );
     const computed = computeSettlementLots(
       lotsRaw,
-      expense_total,
-      allocBy,
+      expensesByLot(lotsRaw, expenses),
       breakdown ? null : (data.target_profit_pct ?? null),
       breakdown ? breakdown.net_to_grower - breakdown.plein_purchase_total : null,
     );
@@ -6597,6 +6621,23 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
           ],
         );
     } else if (!bill) {
+      // Hallazgo 15/13: corregir el origen o los pallets de una carga YA
+      // recibida tiene que llegar a sus lotes — el origen es lo que imprime la
+      // etiqueta y los pallets deciden el reparto del gasto. El costo NO se
+      // toca aquí (eso es el hallazgo 12, con consecuencias de dinero). Con
+      // liquidación emitida no se mueve nada: el documento está congelado.
+      const liqLots = await liquidatedInfo(sql, po.id);
+      if (!liqLots)
+        for (const line of data.lines)
+          await sql.query(
+            `update lots set origin_country = $1, pallets = case
+               when $2::numeric is null then pallets
+               when coalesce((select sum(l2.original_qty) from lots l2 where l2.purchase_order_line_id = lots.purchase_order_line_id), 0) > 0
+                 then round($2::numeric * (lots.original_qty / (select sum(l2.original_qty) from lots l2 where l2.purchase_order_line_id = lots.purchase_order_line_id)), 2)
+               else pallets end
+             where purchase_order_line_id = $3 and purchase_order_id = $4`,
+            [line.origin_country || null, line.pallets ?? null, line.id, po.id],
+          );
       for (const line of data.lines)
         await sql.query(
           `update purchase_order_lines set quantity_ordered=$1, unit_cost=$2, pallets=$3, units_per_pallet=$4, origin_country=$5
@@ -6659,6 +6700,9 @@ export const createExpense = createServerFn({ method: "POST" })
       invoice_number: z.string().optional(),
       notes: z.string().optional(),
       payable: z.boolean().optional(),
+      /** Hallazgo 19: la fecha se capturaba y se tiraba; un flete de la semana
+       *  pasada se fechaba hoy y nunca aparecía vencido. */
+      issue_date: ISO_DATE.optional(),
       alloc_by: z.enum(["pallet", "unit"]).optional(),
       charged_to: z.enum(["grower", "plein"]).optional(),
     }),
@@ -6686,7 +6730,7 @@ export const createExpense = createServerFn({ method: "POST" })
           data.invoice_number || null,
           payable,
           status,
-          todayISO(),
+          data.issue_date || todayISO(),
           paid,
           data.notes || null,
           data.alloc_by || "pallet",
@@ -6730,6 +6774,7 @@ export const updateExpense = createServerFn({ method: "POST" })
       invoice_number: z.string().optional(),
       notes: z.string().optional(),
       payable: z.boolean().optional(),
+      issue_date: ISO_DATE.optional(),
       alloc_by: z.enum(["pallet", "unit"]).optional(),
       charged_to: z.enum(["grower", "plein"]).optional(),
     }),
@@ -6813,9 +6858,15 @@ export const updateExpense = createServerFn({ method: "POST" })
     const payable = data.payable !== false;
     const status = payable ? moneyStatus(data.amount, paid) : "paid";
     await sql.query(
+      // Hallazgo 20: `data.alloc_by || "pallet"` reseteaba el prorrateo en
+      // CADA edición porque la pantalla no lo mandaba — un gasto repartido por
+      // unidad volvía a pallet sin que nadie lo pidiera. Sin el campo, se
+      // queda como está. Hallazgo 19: la fecha capturada manda.
       `update expenses set category = $1, supplier_id = $2, purchase_order_id = $3, amount = $4,
-       unit_cost = $4, invoice_number = $5, notes = $6, payable = $7, alloc_by = $8, charged_to = $9,
-       paid = $10, status = $11 where id = $12`,
+       unit_cost = $4, invoice_number = $5, notes = $6, payable = $7,
+       alloc_by = coalesce($8, alloc_by), charged_to = $9,
+       issue_date = coalesce($10::date, issue_date),
+       paid = $11, status = $12 where id = $13`,
       [
         data.category,
         data.supplier_id,
@@ -6824,8 +6875,9 @@ export const updateExpense = createServerFn({ method: "POST" })
         data.invoice_number || null,
         data.notes || null,
         payable,
-        data.alloc_by || "pallet",
+        data.alloc_by ?? null,
         data.charged_to || "plein",
+        data.issue_date || null,
         payable ? paid : data.amount,
         status,
         data.expense_id,
@@ -6966,7 +7018,10 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
     z.object({
       purchase_order_id: z.number(),
       location_id: z.number(),
-      received_date: z.string().optional(),
+      received_date: ISO_DATE.optional(),
+      // Hallazgo 15: la fecha de empaque la imprime la etiqueta de lote como
+      // "Empacado"; antes copiaba la de recepción, que es otra cosa.
+      pack_date: ISO_DATE.optional(),
       inspection_type: z.string().default("Ninguna"),
       inspection_folio: z.string().optional(),
       unloaded: z.boolean().default(true),
@@ -6978,6 +7033,8 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
             result: z.enum(["Aceptada", "Aceptada con incidencia", "Rechazada"]),
             quantity: z.number().positive(),
             affected_qty: z.number().optional(),
+            /** Hallazgo 15: el grado sale impreso en la etiqueta del lote. */
+            grade: z.string().optional(),
             defect_type: z.string().optional(),
             defect_reason: z.string().optional(),
             notes: z.string().optional(),
@@ -7039,11 +7096,29 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
     }[] = [];
     for (const recLine of data.lines) {
       const [line] = await sql.query(
-        `select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text, unit, unit_cost::text
+        `select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text, unit, unit_cost::text,
+                origin_country, pallets::text
          from purchase_order_lines where id = $1 and purchase_order_id = $2`,
         [recLine.line_id, data.purchase_order_id],
       );
       if (!line) throw new Error("Línea de compra no encontrada");
+      // Hallazgos 15 y 13: el origen y los pallets los capturó la orden de
+      // compra y se tiraban. Sin pallets escritos, "distribuir el gasto por
+      // pallet" caía siempre a unidades sin avisar. Los pallets se reparten
+      // a prorrata de lo que se recibe de esa línea.
+      const lineOrigin = line.origin_country ?? null;
+      const linePallets = n(line.pallets);
+      const lineOrdered = n(line.quantity_ordered);
+      const palletsFor = (qtyRec: number) =>
+        linePallets > 0 && lineOrdered > 0
+          ? Math.round((linePallets * (qtyRec / lineOrdered)) * 1000) / 1000
+          : null;
+      const lotExtras = {
+        received_date: data.received_date,
+        pack_date: data.pack_date,
+        grade: recLine.grade,
+        origin_country: lineOrigin,
+      };
       const pending = n(line.quantity_ordered) - n(line.quantity_received);
       let lotSanoId = null;
       let lotRetId = null;
@@ -7069,6 +7144,8 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
           quality_note: null,
           poId: po.id,
           poLineId: line.id,
+          pallets: palletsFor(recLine.quantity),
+          ...lotExtras,
           notes: "Recepción aceptada",
         });
         lotSanoId = lot.lotId;
@@ -7095,6 +7172,8 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
             quality_note: null,
             poId: po.id,
             poLineId: line.id,
+            pallets: palletsFor(sanoQty),
+            ...lotExtras,
             notes: "Parte sana de recepción con incidencia",
           });
           lotSanoId = lot.lotId;
@@ -7116,6 +7195,8 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
           quality_note: note,
           poId: po.id,
           poLineId: line.id,
+          pallets: palletsFor(affected),
+          ...lotExtras,
           notes: note,
         });
         lotRetId = ret.lotId;
@@ -7179,6 +7260,7 @@ export const listSalesOrders = createServerFn({ method: "GET" })
     select so.id, so.so_number, so.share_token, so.customer_id, c.name as customer_name, c.phone as customer_phone, c.email as customer_email,
            c.payment_terms as customer_payment_terms, so.payment_terms, so.status,
            so.order_date::text, so.ship_date::text, so.requested_date::text, so.notes, so.customer_po_id,
+           so.order_type, so.pickup_date::text, so.delivery_route,
            cpo.cpo_number, cpo.customer_po_number,
            so.ship_to_location_id, loc.label as ship_to_label, loc.address_line as ship_to_address_line,
            loc.city as ship_to_city, loc.state as ship_to_state, loc.zip as ship_to_zip, loc.receiving_instructions as ship_to_instructions,
@@ -7260,6 +7342,12 @@ export const createSalesOrder = createServerFn({ method: "POST" })
       notes: z.string().optional(),
       customer_po_id: z.number().optional(),
       ship_to_location_id: z.number().optional(),
+      // Hallazgo 18: la pantalla capturaba estos cuatro y se perdían al
+      // guardar; la lista y el detalle imprimían "Entrega a cliente" fijo.
+      requested_date: ISO_DATE.optional(),
+      order_type: z.string().optional(),
+      pickup_date: ISO_DATE.optional(),
+      delivery_route: z.string().optional(),
       lines: z
         .array(
           z.object({
@@ -7280,14 +7368,19 @@ export const createSalesOrder = createServerFn({ method: "POST" })
     const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
     const created = (
       await sql.query(
-        `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id, ship_to_location_id)
-       values ($1,$2,'confirmed',$3,$4,$5) returning id, share_token`,
+        `insert into sales_orders (so_number, customer_id, status, notes, customer_po_id, ship_to_location_id,
+                                   requested_date, order_type, pickup_date, delivery_route)
+       values ($1,$2,'confirmed',$3,$4,$5,$6,$7,$8,$9) returning id, share_token`,
         [
           so_number,
           data.customer_id,
           data.notes || null,
           data.customer_po_id ?? null,
           data.ship_to_location_id ?? null,
+          data.requested_date || null,
+          data.order_type?.trim() || null,
+          data.pickup_date || null,
+          data.delivery_route?.trim() || null,
         ],
       )
     )[0];

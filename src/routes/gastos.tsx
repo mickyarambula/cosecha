@@ -549,6 +549,8 @@ function CreateExpenseDrawer({
           amount: Number(form.amount),
           invoice_number: form.invoice || undefined,
           payable: form.payable,
+          // Hallazgo 19: antes este campo se capturaba y se tiraba.
+          issue_date: form.date || undefined,
         },
       });
       onSaved();
@@ -578,7 +580,7 @@ function CreateExpenseDrawer({
         <Field label="Type *">
           <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} />
         </Field>
-        <Field label="Requested date">
+        <Field label="Fecha del gasto">
           <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
         </Field>
         <Field label="Amount">
@@ -675,6 +677,7 @@ function ExpenseDetail({
     notes: string;
     payable: boolean;
     charged_to: string;
+    date: string;
   } | null>(null);
 
   function startEdit() {
@@ -688,6 +691,7 @@ function ExpenseDetail({
       notes: d.notes || "",
       payable: !!d.payable,
       charged_to: d.charged_to || "plein",
+      date: d.issue_date ? String(d.issue_date).slice(0, 10) : "",
     });
     setEditing(true);
   }
@@ -786,6 +790,7 @@ function ExpenseDetail({
           notes: form.notes || undefined,
           payable: form.payable,
           charged_to: form.charged_to as "grower" | "plein",
+          issue_date: form.date || undefined,
         },
       });
       setEditing(false);
@@ -953,6 +958,9 @@ function ExpenseDetail({
                 </Field>
                 <Field label="Monto">
                   <Input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+                </Field>
+                <Field label="Fecha del gasto">
+                  <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
                 </Field>
                 <Field label="Invoice #">
                   <Input value={form.invoice} onChange={(e) => setForm({ ...form, invoice: e.target.value })} />

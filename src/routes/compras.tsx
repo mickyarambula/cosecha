@@ -74,6 +74,8 @@ type RecLine = {
   cantidad: string;
   afectada: string;
   defecto: string;
+  /** Hallazgo 15: el grado sale impreso en la etiqueta del lote. */
+  grado: string;
   nota: string;
 };
 
@@ -152,6 +154,22 @@ function Page() {
   const [recvPo, setRecvPo] = useState<number | null>(null);
   const [picker, setPicker] = useState(false);
   const [expenseFor, setExpenseFor] = useState<"draft" | number | null>(null);
+  // Hallazgo 11: un gasto capturado junto con la compra se creaba SIN carga y
+  // quedaba huérfano — no se prorrateaba ni se le descontaba al productor.
+  // Ahora espera aquí y nace ligado a la OC en cuanto se coloca.
+  const [draftExpenses, setDraftExpenses] = useState<
+    {
+      category: string;
+      supplier_id: number;
+      amount: number;
+      invoice_number?: string;
+      notes?: string;
+      payable: boolean;
+      alloc_by: "pallet" | "unit";
+      charged_to: "grower" | "plein";
+      issue_date?: string;
+    }[]
+  >([]);
   const [expMsg, setExpMsg] = useState<string | null>(null);
   const [shareId, setShareId] = useState<number | null>(null);
   const [shareLevel, setShareLevel] = useState<"po" | "basic" | "detailed">("po");
@@ -174,9 +192,13 @@ function Page() {
   });
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [expDraft, setExpDraft] = useState({
-    category: "Servicios de inspección",
+    // Sin categoría ni monto de relleno: con el gasto ya ligado a la carga,
+    // un default inventado le llega al productor en su liquidación.
+    category: "",
     supplier_id: "",
-    amount: "100",
+    amount: "",
+    // Hallazgo 19: este campo existía en la pantalla y no se guardaba.
+    date: todayISO(),
     invoice: "",
     notes: "",
     payable: true,
@@ -185,6 +207,7 @@ function Page() {
   });
   const [rec, setRec] = useState({
     received_date: todayISO(),
+    pack_date: "",
     location_id: "",
     inspection_type: "Ninguna",
     inspection_folio: "",
@@ -228,7 +251,9 @@ function Page() {
         pack_style_id: sku.id || undefined,
         name: sku.product_name,
         unit: sku.empaque || sku.unit || sku.name,
-        origin: "MX",
+        // Hallazgo 15: precargar "MX" hacía que toda la fruta naciera mexicana
+        // sin que nadie lo capturara — incluida la de proveedores de EE. UU.
+        origin: "",
         qty,
         pallets: ceilPallets(qty, unitsPerPallet) || "1",
         unitsPerPallet,
@@ -280,8 +305,27 @@ function Page() {
           })),
         },
       });
+      // La OC ya existe: pase lo que pase con los gastos, el borrador se
+      // limpia. Si esto quedara dentro del mismo catch, un gasto que falla
+      // dejaría la pantalla diciendo "no se pudo colocar" con la orden ya
+      // creada, y el segundo clic colocaría la misma compra dos veces.
       setLines([]);
-      setMsg(t("PO {n} placed", { n: r.po_number }));
+      const pendientes = draftExpenses;
+      setDraftExpenses([]);
+      // Hallazgo 11: los gastos capturados con la compra nacen ligados a ella.
+      const fallidos: string[] = [];
+      for (const g of pendientes) {
+        try {
+          await createExpense({ data: { ...g, purchase_order_id: r.id } });
+        } catch {
+          fallidos.push(g.category);
+        }
+      }
+      setMsg(
+        fallidos.length
+          ? `Se colocó ${r.po_number}, pero no se pudieron crear estos gastos: ${fallidos.join(", ")}. Captúralos desde la carga.`
+          : t("PO {n} placed", { n: r.po_number }),
+      );
       await orders.reload();
       navigate({ to: "/compras", search: { tab: "all" } });
     } catch (err) {
@@ -297,11 +341,34 @@ function Page() {
       setExpMsg("Escoge a quién se le paga este gasto.");
       return;
     }
+    if (!expDraft.category.trim()) {
+      setExpMsg("Escoge el concepto del gasto.");
+      return;
+    }
     if (!(Number(expDraft.amount) > 0)) {
       setExpMsg("Captura el monto del gasto.");
       return;
     }
     setExpMsg(null);
+    if (expenseFor === "draft") {
+      // Todavía no existe la OC: se queda esperando y nace con ella.
+      setDraftExpenses((p) => [
+        ...p,
+        {
+          category: expDraft.category,
+          supplier_id: Number(expDraft.supplier_id || draft.supplier_id),
+          amount: Number(expDraft.amount),
+          invoice_number: expDraft.invoice || undefined,
+          notes: expDraft.notes || undefined,
+          payable: expDraft.payable,
+          alloc_by: expDraft.by as "pallet" | "unit",
+          charged_to: expDraft.charged_to as "grower" | "plein",
+          issue_date: expDraft.date || undefined,
+        },
+      ]);
+      setExpenseFor(null);
+      return;
+    }
     setSaving(true);
     try {
       await createExpense({
@@ -315,6 +382,7 @@ function Page() {
           payable: expDraft.payable,
           alloc_by: expDraft.by as "pallet" | "unit",
           charged_to: expDraft.charged_to as "grower" | "plein",
+          issue_date: expDraft.date || undefined,
         },
       });
       setExpenseFor(null);
@@ -346,6 +414,7 @@ function Page() {
           cantidad: String(pendiente),
           afectada: "",
           defecto: "",
+          grado: "",
           nota: "",
         };
       })
@@ -357,6 +426,10 @@ function Page() {
     setWarn(null);
     setRec({
       received_date: todayISO(),
+      // Hallazgo 15: la etiqueta de lote imprime "Empacado" con esto. Antes
+      // copiaba la fecha de recepción, que es otra cosa. En blanco no se
+      // imprime — mejor vacío que una fecha inventada.
+      pack_date: "",
       location_id: String(locations.data?.[0]?.id ?? ""),
       inspection_type: "Ninguna",
       inspection_folio: "",
@@ -399,6 +472,7 @@ function Page() {
           purchase_order_id: po.id,
           location_id: Number(rec.location_id),
           received_date: rec.received_date || undefined,
+          pack_date: rec.pack_date || undefined,
           inspection_type: rec.inspection_type,
           inspection_folio: rec.inspection_folio || undefined,
           unloaded: rec.unloaded,
@@ -412,6 +486,7 @@ function Page() {
               quantity: l.resultado === "Rechazada" ? l.pendiente : Number(l.cantidad),
               affected_qty:
                 l.resultado === "Aceptada con incidencia" ? Number(l.afectada) : undefined,
+              grade: l.grado?.trim() || undefined,
               defect_type: tieneDefecto ? tipo || undefined : undefined,
               defect_reason: tieneDefecto ? resto.join("::") || undefined : undefined,
               notes: l.nota || undefined,
@@ -543,7 +618,24 @@ function Page() {
               </button>
             }
           >
-            {money(0)}
+            {money(draftExpenses.reduce((s, g) => s + g.amount, 0))}
+            {draftExpenses.length ? (
+              <div className="mt-1 flex flex-col gap-0.5 text-[11px] font-normal text-subtle">
+                {draftExpenses.map((g, i) => (
+                  <span key={`${g.category}-${i}`} className="flex items-center gap-2">
+                    {g.category} {money(g.amount)}
+                    <button
+                      type="button"
+                      className="cursor-pointer text-danger"
+                      onClick={() => setDraftExpenses((p) => p.filter((_, idx) => idx !== i))}
+                    >
+                      quitar
+                    </button>
+                  </span>
+                ))}
+                <span>Se ligan a la carga al colocarla.</span>
+              </div>
+            ) : null}
           </MetaCard>
           <MetaCard label="Order total">
             <div className="flex items-end justify-between">
@@ -1016,6 +1108,34 @@ function Page() {
                   onChange={(e) => setRec({ ...rec, received_date: e.target.value })}
                 />
               </Field>
+              <Field label="Fecha de empaque">
+                <Input
+                  type="date"
+                  value={rec.pack_date}
+                  onChange={(e) => setRec({ ...rec, pack_date: e.target.value })}
+                />
+              </Field>
+              <Field label="Folio de inspección">
+                <Input
+                  value={rec.inspection_folio}
+                  placeholder="Opcional"
+                  onChange={(e) => setRec({ ...rec, inspection_folio: e.target.value })}
+                />
+              </Field>
+              <div className="flex flex-col gap-1">
+                <span className="label-caps">¿Se descargó la carga?</span>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={rec.unloaded}
+                    onChange={(e) => setRec({ ...rec, unloaded: e.target.checked })}
+                  />
+                  Sí, la fruta ya bajó del camión
+                </label>
+                <span className="text-[11px] text-subtle">
+                  PACA: un rechazo con la carga sin descargar se documenta distinto.
+                </span>
+              </div>
               <Field label="Destination">
                 <Select
                   required
@@ -1105,6 +1225,17 @@ function Page() {
                         onChange={(e) =>
                           setRecLines((p) =>
                             p.map((x, idx) => (idx === i ? { ...x, cantidad: e.target.value } : x)),
+                          )
+                        }
+                      />
+                    </Field>
+                    <Field label="Grado">
+                      <Input
+                        value={l.grado}
+                        placeholder="Opcional — sale en la etiqueta"
+                        onChange={(e) =>
+                          setRecLines((p) =>
+                            p.map((x, idx) => (idx === i ? { ...x, grado: e.target.value } : x)),
                           )
                         }
                       />
@@ -1428,7 +1559,7 @@ function PoDetail({
                     </div>
                     {l.sku_code ? <div className="text-xs text-subtle">{l.sku_code}</div> : null}
                     <div className="text-xs text-muted">
-                      {l.unit} · {l.origin_country || "MX"}
+                      {l.unit}{l.origin_country ? ` · ${l.origin_country}` : ""}
                     </div>
                   </td>
                   <td className="px-3 py-3 text-xs text-link">
@@ -1436,7 +1567,7 @@ function PoDetail({
                       ?.lot_sano || "—"}
                   </td>
                   <td className="px-3 py-3 text-xs text-muted">
-                    {t("Pallets")} {l.pallets || 1}
+                    {t("Pallets")} {l.pallets || "—"}
                     <br />
                     {t("Weight")} {lineWeight != null ? qty(lineWeight, l.weight_unit) : "—"}
                   </td>
@@ -1641,7 +1772,7 @@ function EditOrderModal({
       calibre: l.calibre || null,
       skuCode: l.sku_code || null,
       unit: l.unit,
-      origin: l.origin_country || "MX",
+      origin: l.origin_country || "",
       qty: String(l.quantity_ordered),
       pallets: l.pallets ? String(l.pallets) : "",
       unitsPerPallet: l.units_per_pallet ? String(l.units_per_pallet) : "",
@@ -1666,7 +1797,7 @@ function EditOrderModal({
         calibre: sku.calibre || null,
         skuCode: sku.sku_code || null,
         unit: sku.empaque || sku.unit || sku.name,
-        origin: "MX",
+        origin: "",
         qty: "48",
         pallets: sku.units_per_pallet ? String(Math.ceil(48 / sku.units_per_pallet)) : "1",
         unitsPerPallet: sku.units_per_pallet ? String(sku.units_per_pallet) : "48",
@@ -2024,6 +2155,7 @@ function ExpenseModal({
     payable: boolean;
     by: string;
     charged_to: string;
+    date: string;
   };
   setForm: (v: typeof form) => void;
   onClose: () => void;
@@ -2044,7 +2176,11 @@ function ExpenseModal({
           />
         </Field>
         <Field label="Requested date">
-          <Input type="date" defaultValue={todayISO()} />
+          <Input
+            type="date"
+            value={form.date}
+            onChange={(e) => setForm({ ...form, date: e.target.value })}
+          />
         </Field>
         <Field label="Amount">
           <Input
