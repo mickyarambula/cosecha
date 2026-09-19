@@ -399,7 +399,13 @@ function Page() {
     if (!order) return;
     const pending = order.lines
       .map((l) => {
-        const pendiente = Math.max(l.quantity_ordered - l.quantity_received, 0);
+        // Hallazgo 23: lo rechazado ya no se espera. La línea cierra con menos
+        // cajas y deja de aparecer como "por llegar"; si el productor vuelve a
+        // mandarla, es una carga nueva.
+        const pendiente = Math.max(
+          l.quantity_ordered - l.quantity_received - (l.quantity_rejected || 0),
+          0,
+        );
         return {
           line_id: l.id,
           // Con varias líneas del mismo producto en distinto calibre, el nombre
@@ -449,6 +455,20 @@ function Page() {
       return;
     }
     for (const l of activas) {
+      // Hallazgo 23: con el rechazo parcial la cantidad del renglón "Rechazada"
+      // ya la captura Miguel. Vacía llegaba al validador del servidor y salía
+      // su mensaje crudo en inglés.
+      const cantidad = Number(l.cantidad);
+      if (!l.cantidad.trim() || !(cantidad > 0)) {
+        setWarn(`${l.product_name}: captura cuántas cajas.`);
+        return;
+      }
+      if (cantidad > l.pendiente + 1e-9) {
+        setWarn(
+          `${l.product_name}: solo faltan ${l.pendiente} ${l.unit} por llegar.`,
+        );
+        return;
+      }
       if (l.resultado !== "Aceptada con incidencia") continue;
       const afectada = Number(l.afectada);
       if (!l.afectada.trim() || !(afectada > 0)) {
@@ -483,7 +503,12 @@ function Page() {
             return {
               line_id: l.line_id,
               result: l.resultado as (typeof RESULTADOS_REC)[number],
-              quantity: l.resultado === "Rechazada" ? l.pendiente : Number(l.cantidad),
+              // Hallazgo 23: antes un rechazo se mandaba SIEMPRE por la línea
+              // completa, tirando lo que Miguel capturó. Hoy el rechazo puede
+              // ser parcial (40 podridas de 100, 60 en el siguiente camión), y
+              // rellenar el número le cerraría la carga y le quitaría al
+              // productor 60 cajas que sí va a mandar.
+              quantity: Number(l.cantidad),
               affected_qty:
                 l.resultado === "Aceptada con incidencia" ? Number(l.afectada) : undefined,
               grade: l.grado?.trim() || undefined,
@@ -1441,8 +1466,12 @@ function PoDetail({
   onCancel: () => void;
   saving: boolean;
 }) {
-  const pending = row.lines.some((l) => l.quantity_ordered - l.quantity_received > 0.0001);
-  const received = row.lines.some((l) => l.quantity_received > 0);
+  const pending = row.lines.some(
+    (l) => l.quantity_ordered - l.quantity_received - (l.quantity_rejected || 0) > 0.0001,
+  );
+  const received = row.lines.some(
+    (l) => l.quantity_received > 0 || (l.quantity_rejected || 0) > 0,
+  );
   const units = row.lines.reduce((s, l) => s + l.quantity_ordered, 0);
   const pallets = row.lines.reduce((s, l) => s + (l.pallets || 0), 0);
   const weightUnit = row.lines.find((l) => l.net_weight != null)?.weight_unit || "kg";
@@ -1472,9 +1501,11 @@ function PoDetail({
           <p className="text-xs text-muted">{t("Placed on")} {fecha(row.order_date)}</p>
           <CancelledNote by={row.cancelled_by} at={row.cancelled_at} reason={row.cancel_reason} />
         </div>
-        <Button size="sm" onClick={onEdit}>
-          {t("Edit order")}
-        </Button>
+        {row.status !== "cancelled" ? (
+          <Button size="sm" onClick={onEdit}>
+            {t("Edit order")}
+          </Button>
+        ) : null}
       </div>
 
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
@@ -1571,14 +1602,43 @@ function PoDetail({
                     <br />
                     {t("Weight")} {lineWeight != null ? qty(lineWeight, l.weight_unit) : "—"}
                   </td>
-                  <td className="px-3 py-3 tabular-nums">{l.quantity_ordered}</td>
+                  <td className="px-3 py-3 tabular-nums">
+                    {l.quantity_ordered}
+                    {(l.quantity_rejected || 0) > 0 ? (
+                      <div className="text-xs font-medium text-danger">
+                        {l.quantity_rejected} rechazadas
+                      </div>
+                    ) : null}
+                  </td>
                   <td className="px-3 py-3">
                     {l.unit_cost > 0 ? (
                       <div>
                         {money(l.unit_cost)}
                         <div className="text-xs text-muted">
-                          {t("Total")} {money(l.quantity_ordered * l.unit_cost)}
+                          {t("Total")}{" "}
+                          {money(
+                            Math.max(l.quantity_ordered - (l.quantity_rejected || 0), 0) *
+                              l.unit_cost,
+                          )}
                         </div>
+                        {/* Hallazgo 23: lo rechazado no se le paga al productor.
+                            La factura sale de lo recibido × costo. Solo se dice
+                            "se paga" cuando la línea ya cerró — con cajas
+                            todavía por llegar ese número no es el final. */}
+                        {(l.quantity_rejected || 0) > 0 ? (
+                          l.quantity_ordered - l.quantity_received - l.quantity_rejected >
+                          0.0001 ? (
+                            <div className="text-xs text-warn">
+                              {l.quantity_rejected} rechazadas, {l.quantity_received} recibidas y{" "}
+                              {l.quantity_ordered - l.quantity_received - l.quantity_rejected} por
+                              llegar
+                            </div>
+                          ) : (
+                            <div className="text-xs font-medium text-warn">
+                              Se paga {money(l.quantity_received * l.unit_cost)}
+                            </div>
+                          )
+                        ) : null}
                       </div>
                     ) : (
                       <div>
@@ -1749,7 +1809,11 @@ function EditOrderModal({
 }) {
   const t = useT();
   const billed = !!row.bill;
-  const received = row.lines.some((l) => l.quantity_received > 0);
+  // Hallazgo 23: una carga donde solo hubo rechazo también quedó "tocada" —
+  // sus líneas ya no se pueden agregar ni quitar.
+  const received = row.lines.some(
+    (l) => l.quantity_received > 0 || (l.quantity_rejected || 0) > 0,
+  );
   const locked = billed;
   const [form, setForm] = useState({
     supplier_id: String(row.supplier_id),
@@ -1859,13 +1923,16 @@ function EditOrderModal({
     >
       {locked ? (
         <p className="mb-3 rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
-          Esta orden ya tiene factura de proveedor — solo puedes corregir referencia y notas.
+          Esta orden ya tiene la factura de proveedor {row.bill?.bill_number} — aquí solo puedes
+          corregir referencia y notas. Para cambiar el costo: cancela esa factura en Finanzas → CxP
+          (si ya tiene pago, cancela primero el pago), corrige el costo aquí y vuelve a generarla.
         </p>
       ) : received ? (
         <p className="mb-3 rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
           Esta orden ya tiene mercancía recibida — proveedor, modalidad y líneas quedan fijos.
           Puedes corregir costo, pallets, cajas/pallet, origen y subir cantidades (nunca bajarlas de
-          lo ya recibido).
+          lo ya recibido). El costo corregido baja a los lotes de esa línea —{" "}
+          <strong>también a las cajas que ya vendiste</strong>, así que su margen se recalcula.
         </p>
       ) : null}
       {msg ? <p className="mb-3 text-sm text-danger">{msg}</p> : null}

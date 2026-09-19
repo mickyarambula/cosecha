@@ -2623,6 +2623,47 @@ function computeCommissionBreakdown(
   };
 }
 /**
+ * Hallazgo 12: un reempaque CONGELA el costo de los lotes de origen en el lote
+ * hijo. Si después se corrige el costo de la carga, el hijo se queda con el
+ * viejo y su margen, su COGS y su valor de inventario mienten. Esto lo
+ * recalcula en cascada, en orden de creación, para que un reempaque de un
+ * reempaque tome el costo ya corregido del anterior.
+ */
+async function recomputeRepackCosts(sql, purchase_order_id: number) {
+  const packs = await sql.query(
+    `select distinct p.id
+     from pack_outs p
+     join pack_out_lines pl on pl.pack_out_id = p.id and pl.direction = 'in'
+     join lots l on l.id = pl.lot_id
+     where l.purchase_order_id = $1
+     order by p.id`,
+    [purchase_order_id],
+  );
+  for (const p of packs) {
+    const ins = await sql.query(
+      `select pl.id, pl.qty::text, coalesce(l.unit_cost,0)::text as unit_cost
+       from pack_out_lines pl join lots l on l.id = pl.lot_id
+       where pl.pack_out_id = $1 and pl.direction = 'in'`,
+      [p.id],
+    );
+    const [out] = await sql.query(
+      `select id, lot_id, qty::text from pack_out_lines
+       where pack_out_id = $1 and direction = 'out' order by id limit 1`,
+      [p.id],
+    );
+    if (!out || !(n(out.qty) > 0)) continue;
+    for (const row of ins)
+      await sql.query(`update pack_out_lines set unit_cost = $1 where id = $2`, [
+        n(row.unit_cost),
+        row.id,
+      ]);
+    const value = ins.reduce((s, r) => s + n(r.qty) * n(r.unit_cost), 0);
+    const unit = Math.round((value / n(out.qty)) * 10000) / 10000;
+    await sql.query(`update lots set unit_cost = $1 where id = $2`, [unit, out.lot_id]);
+    await sql.query(`update pack_out_lines set unit_cost = $1 where id = $2`, [unit, out.id]);
+  }
+}
+/**
  * Escribe el costo de las líneas de la OC a partir del costo de SUS lotes
  * (promedio ponderado por cajas recibidas, vía lots.purchase_order_line_id).
  * Por línea, nunca por producto: dos calibres del mismo producto no comparten
@@ -6210,10 +6251,11 @@ export const getWarehouse = createServerFn({ method: "GET" })
   .handler(async () => {
     const sql = await getSql();
     const incoming = await sql.query(`
-    select l.product_id, l.pack_style_id, coalesce(sum(l.quantity_ordered - l.quantity_received),0)::text as qty
+    select l.product_id, l.pack_style_id,
+           coalesce(sum(greatest(l.quantity_ordered - l.quantity_received - l.quantity_rejected, 0)),0)::text as qty
     from purchase_order_lines l
     join purchase_orders po on po.id = l.purchase_order_id
-    where l.quantity_ordered > l.quantity_received and po.status <> 'cancelled'
+    where l.quantity_ordered - l.quantity_received - l.quantity_rejected > 0 and po.status <> 'cancelled'
     group by l.product_id, l.pack_style_id
   `);
     const openSales = await sql.query(`
@@ -6281,7 +6323,8 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
   `);
     const lines = await sql.query(`
     select l.id, l.purchase_order_id, l.product_id, p.name as product_name, l.pack_style_id,
-           l.quantity_ordered::text, l.quantity_received::text, l.unit, l.unit_cost::text,
+           l.quantity_ordered::text, l.quantity_received::text, l.quantity_rejected::text,
+           l.unit, l.unit_cost::text,
            ps.sku_code, ps.empaque, ps.calibre, ps.net_weight::text, coalesce(ps.weight_unit,'lb') as weight_unit,
            l.pallets::text, l.units_per_pallet::text, l.origin_country,
            p.storage_temp_min::text, p.storage_temp_max::text, p.storage_temp_unit
@@ -6322,6 +6365,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
           ...l,
           quantity_ordered: n(l.quantity_ordered),
           quantity_received: n(l.quantity_received),
+          quantity_rejected: n(l.quantity_rejected),
           unit_cost: n(l.unit_cost),
           pallets: n(l.pallets),
           units_per_pallet: n(l.units_per_pallet),
@@ -6338,7 +6382,14 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
           unit_cost: n(e.unit_cost),
           amount: n(e.amount),
         }));
-      const merch_total = poLines.reduce((s, l) => s + l.quantity_ordered * l.unit_cost, 0);
+      // Hallazgo 23: lo rechazado ya no se espera ni se paga, así que no puede
+      // seguir sumando al total de la orden — la pantalla decía "$1,000" con
+      // una factura al proveedor que nace en $600. Mientras no hay rechazo
+      // (`quantity_rejected` = 0) el total es el de siempre.
+      const merch_total = poLines.reduce(
+        (s, l) => s + Math.max(l.quantity_ordered - l.quantity_rejected, 0) * l.unit_cost,
+        0,
+      );
       const expense_total = poExpenses.reduce((s, e) => s + e.amount, 0);
       return {
         ...o,
@@ -6494,11 +6545,21 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(
-      `select id, po_number, supplier_id, coalesce(deal_type,'firme') as deal_type, commission_type, commission_rate::text
+      `select id, po_number, supplier_id, status, coalesce(deal_type,'firme') as deal_type, commission_type, commission_rate::text
        from purchase_orders where id = $1`,
       [data.purchase_order_id],
     );
     if (!po) throw new Error("Orden de compra no encontrada");
+    // Era el único mutador de OC sin esta guarda (`receiveMerchandise`,
+    // `createBillFromPO` y `cancelPurchaseOrder` sí la tienen). Cancelar pone
+    // los contadores en cero, así que una orden cancelada que SÍ tuvo recepción
+    // volvía a verse como borrador y la edición entraba al
+    // `delete from purchase_order_lines` — error crudo de Postgres, con el
+    // encabezado ya escrito porque no hay transacción.
+    if (po.status === "cancelled")
+      throw new Error(
+        `${po.po_number} está cancelada — no se edita. Si la carga va a llegar, captura una orden de compra nueva.`,
+      );
     // C-2a: con liquidación emitida se pueden corregir notas, BOL, factura del
     // proveedor y fechas; la comisión no (es la del documento rendido).
     const liq = await liquidatedInfo(sql, po.id);
@@ -6513,14 +6574,22 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
         );
     }
     const [bill] = await sql.query(
-      `select id from supplier_bills where purchase_order_id = $1 and status <> 'cancelled'`,
+      `select id, bill_number, total::text from supplier_bills
+       where purchase_order_id = $1 and status <> 'cancelled'`,
       [data.purchase_order_id],
     );
     const existingLines = await sql.query(
-      `select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text from purchase_order_lines where purchase_order_id = $1`,
+      `select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text,
+              quantity_rejected::text, unit_cost::text
+       from purchase_order_lines where purchase_order_id = $1`,
       [data.purchase_order_id],
     );
-    const received = existingLines.some((l) => n(l.quantity_received) > 1e-4);
+    // "Tocada" incluye lo rechazado: una carga donde SOLO hubo rechazo tiene
+    // quantity_received en cero, y sin esto la edición entraba al
+    // `delete from purchase_order_lines` y tronaba contra reception_lines.
+    const received = existingLines.some(
+      (l) => n(l.quantity_received) > 1e-4 || n(l.quantity_rejected) > 1e-4,
+    );
     if (bill) {
       if (data.supplier_id !== po.supplier_id)
         throw new Error(
@@ -6543,6 +6612,14 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
         if (Math.abs(n(cur.quantity_ordered) - line.quantity_ordered) > 1e-4)
           throw new Error(
             "Esta orden ya tiene factura de proveedor — no se puede cambiar la cantidad.",
+          );
+        // Hallazgo 12: antes, con factura viva el costo se guardaba "bien" en la
+        // pantalla y no cambiaba nada abajo — un no-op silencioso. Ahora se
+        // bloquea nombrando la salida, para que la factura al proveedor y el
+        // costo del lote nunca digan cosas distintas.
+        if (line.unit_cost != null && Math.abs(n(cur.unit_cost) - line.unit_cost) > 0.0001)
+          throw new Error(
+            `${po.po_number} ya tiene la factura de proveedor ${bill.bill_number} por ${money2(n(bill.total))}, que nació de ese costo. Para corregirlo: cancela la factura en Finanzas → CxP (si ya tiene pago, cancela primero el pago), corrige el costo aquí y vuelve a generar la factura.`,
           );
       }
     } else if (received) {
@@ -6569,9 +6646,14 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
           (cur.pack_style_id ?? null) !== (line.pack_style_id ?? null)
         )
           throw new Error("No se puede cambiar el producto de una línea ya recibida.");
-        if (line.quantity_ordered < n(cur.quantity_received) - 1e-4)
+        // Hallazgo 23: el piso es recibido + rechazado. Bajar por debajo dejaría
+        // una línea que dice "pedí 150" con 300 cajas rechazadas encima.
+        const yaResuelto = n(cur.quantity_received) + n(cur.quantity_rejected);
+        if (line.quantity_ordered < yaResuelto - 1e-4)
           throw new Error(
-            `No se puede bajar la cantidad por debajo de lo ya recibido (${n(cur.quantity_received)}).`,
+            n(cur.quantity_rejected) > 1e-4
+              ? `No se puede bajar la cantidad por debajo de lo ya resuelto (${n(cur.quantity_received)} recibidas + ${n(cur.quantity_rejected)} rechazadas).`
+              : `No se puede bajar la cantidad por debajo de lo ya recibido (${n(cur.quantity_received)}).`,
           );
       }
     }
@@ -6627,6 +6709,24 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
       // toca aquí (eso es el hallazgo 12, con consecuencias de dinero). Con
       // liquidación emitida no se mueve nada: el documento está congelado.
       const liqLots = await liquidatedInfo(sql, po.id);
+      // Hallazgo 12: en FIRME el costo del lote es el que capturaste en la OC.
+      // Corregirlo tiene que llegar al lote, o el margen, el COGS y el valor de
+      // inventario se quedan con el viejo mientras la factura al proveedor ya
+      // usa el nuevo. Decisión de Miguel (19 Sep 2026): el costo corregido
+      // aplica también a las cajas YA VENDIDAS — si fue un dedazo, esa fruta
+      // costó lo que costó, y el COGS se recalcula solo porque se lee vivo.
+      // Los lotes hijos de un reempaque se excluyen (su costo es la mezcla de
+      // sus orígenes) y se recalculan aparte, en cascada.
+      if (!liqLots && po.deal_type === "firme") {
+        for (const line of data.lines)
+          if (line.unit_cost != null)
+            await sql.query(
+              `update lots set unit_cost = $1
+               where purchase_order_line_id = $2 and purchase_order_id = $3 and pack_out_id is null`,
+              [line.unit_cost, line.id, po.id],
+            );
+        await recomputeRepackCosts(sql, po.id);
+      }
       if (!liqLots)
         for (const line of data.lines)
           await sql.query(
@@ -7094,10 +7194,34 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
       lot_retenido_folio?: string;
       cantidad_retenida?: number;
     }[] = [];
+    // La recepción escribe línea por línea y no hay transacción: si la línea B
+    // truena, el rechazo de A ya quedó grabado y la pantalla dice que no pasó
+    // nada. Se valida TODO antes de escribir la primera.
+    {
+      const restante = new Map<number, number>();
+      for (const recLine of data.lines) {
+        const [chk] = await sql.query(
+          `select quantity_ordered::text, quantity_received::text, quantity_rejected::text
+           from purchase_order_lines where id = $1 and purchase_order_id = $2`,
+          [recLine.line_id, data.purchase_order_id],
+        );
+        if (!chk) throw new Error("Línea de compra no encontrada");
+        const queda =
+          restante.get(recLine.line_id) ??
+          n(chk.quantity_ordered) - n(chk.quantity_received) - n(chk.quantity_rejected);
+        if (recLine.quantity > queda + 1e-4)
+          throw new Error(
+            recLine.result === "Rechazada"
+              ? "No se pueden rechazar más cajas de las que faltan por llegar"
+              : "Cantidad mayor a lo pendiente",
+          );
+        restante.set(recLine.line_id, queda - recLine.quantity);
+      }
+    }
     for (const recLine of data.lines) {
       const [line] = await sql.query(
-        `select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text, unit, unit_cost::text,
-                origin_country, pallets::text
+        `select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text,
+                quantity_rejected::text, unit, unit_cost::text, origin_country, pallets::text
          from purchase_order_lines where id = $1 and purchase_order_id = $2`,
         [recLine.line_id, data.purchase_order_id],
       );
@@ -7119,16 +7243,30 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
         grade: recLine.grade,
         origin_country: lineOrigin,
       };
-      const pending = n(line.quantity_ordered) - n(line.quantity_received);
+      // Hallazgo 23: lo rechazado ya no se espera — si no se resta aquí, una
+      // segunda recepción podría meter al inventario cajas que la línea ya dio
+      // por cerradas.
+      const pending =
+        n(line.quantity_ordered) - n(line.quantity_received) - n(line.quantity_rejected);
       let lotSanoId = null;
       let lotRetId = null;
       let qtyIntoStock = 0;
+      let rejectedQty = 0;
       const note = recLine.defect_reason
         ? `${recLine.result} — ${recLine.defect_reason}`
         : recLine.result;
       if (recLine.result === "Rechazada") {
-        if (Math.abs(recLine.quantity - pending) > 0.01 && recLine.quantity > pending + 1e-4)
-          throw new Error("El rechazo es por la línea completa pendiente");
+        if (recLine.quantity > pending + 1e-4)
+          throw new Error("No se pueden rechazar más cajas de las que faltan por llegar");
+        // Hallazgo 23: la cantidad rechazada se guarda en su propia columna.
+        // No puede sumarse a `quantity_received` porque en firme la factura al
+        // proveedor es recibido × costo: eso le pagaría al productor la fruta
+        // que Plein rechazó. Con esta columna la línea cierra sin pagarla.
+        rejectedQty = recLine.quantity;
+        await sql.query(
+          `update purchase_order_lines set quantity_rejected = quantity_rejected + $1 where id = $2`,
+          [recLine.quantity, recLine.line_id],
+        );
         created.push({ result: recLine.result });
       } else if (recLine.result === "Aceptada") {
         if (recLine.quantity > pending + 1e-4) throw new Error("Cantidad mayor a lo pendiente");
@@ -7219,7 +7357,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
           receptionId,
           recLine.line_id,
           recLine.result,
-          recLine.result === "Rechazada" ? pending : recLine.quantity,
+          recLine.result === "Rechazada" ? rejectedQty : recLine.quantity,
           recLine.result === "Aceptada con incidencia" ? n(recLine.affected_qty) : null,
           recLine.defect_type || null,
           recLine.defect_reason || null,
@@ -7234,8 +7372,9 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
           [qtyIntoStock, recLine.line_id],
         );
     }
+    // Hallazgo 23: lo rechazado ya no se espera, así que la carga cierra.
     const [pend] = await sql.query(
-      `select coalesce(sum(quantity_ordered - quantity_received),0)::text as pending
+      `select coalesce(sum(greatest(quantity_ordered - quantity_received - quantity_rejected, 0)),0)::text as pending
        from purchase_order_lines where purchase_order_id = $1`,
       [data.purchase_order_id],
     );
@@ -8002,11 +8141,18 @@ export const createBillFromPO = createServerFn({ method: "POST" })
         "Este trato es a comisión pura: Plein no compra la fruta — no se genera factura de proveedor por su valor.",
       );
     const lines = await sql.query(
-      `select quantity_ordered::text, quantity_received::text, unit_cost::text
+      `select quantity_ordered::text, quantity_received::text, quantity_rejected::text, unit_cost::text
        from purchase_order_lines where purchase_order_id = $1`,
       [data.purchase_order_id],
     );
-    const ordered = lines.reduce((s, l) => s + n(l.quantity_ordered), 0);
+    // Hallazgo 23: `ordered_qty` alimenta el badge de cuadre de CxP
+    // ("Short vs ordered"). Lo rechazado no es fruta por facturar — sin
+    // restarlo, la única factura de la carga queda marcada como faltante
+    // para siempre.
+    const ordered = lines.reduce(
+      (s, l) => s + Math.max(n(l.quantity_ordered) - n(l.quantity_rejected), 0),
+      0,
+    );
     const received = lines.reduce((s, l) => s + n(l.quantity_received), 0);
     if (received <= 0)
       throw new Error("Todavía no hay mercancía recibida para facturar al proveedor");
@@ -8378,7 +8524,7 @@ export const cancelPurchaseOrder = createServerFn({ method: "POST" })
       ]);
     }
     await sql.query(
-      `update purchase_order_lines set quantity_received = 0 where purchase_order_id = $1`,
+      `update purchase_order_lines set quantity_received = 0, quantity_rejected = 0 where purchase_order_id = $1`,
       [po.id],
     );
     const staffName = await staffNameFor(sql, context.userId);
