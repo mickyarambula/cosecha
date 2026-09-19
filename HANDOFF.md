@@ -1,11 +1,11 @@
 # Handoff — Cosecha → Claude
 
-**Fecha:** 18 Sep 2026 (actualizado con la sesión 3; la versión del 27 Ago tenía números de corte viejos — ver nota abajo).
+**Fecha:** 19 Sep 2026 (actualizado con la sesión 4 y la demo con socios; la versión del 27 Ago tenía números de corte viejos — ver nota abajo).
 **Dueño:** Miguel Arambula · Plein Produce LLC · Nogales, AZ
 **Producto:** Cosecha (ERP). Membrete de documentos: Plein Produce LLC.
 
 Este archivo es el estado de la conversación. El código está en GitHub. Juntos son la base.
-Antes de tocar código, lee también **`AUDITORIA-2026-09-03.md`** (lista vigente de hallazgos y qué sigue abierto) y, si existe, **`PLAN-PASO-2.md`** (histórico de un plan que ya no se sigue tal cual — lee su nota al principio antes de creer que es el plan vigente).
+Antes de tocar código, lee también **`AUDITORIA-2026-09-03.md`** (lista vigente de hallazgos y qué sigue abierto), **`MODELO-NEGOCIO.md`** (lo que la operación real de Plein hace y Cosecha todavía no cubre, sacado de los libros V8 — con preguntas abiertas que solo Miguel contesta) y, si existe, **`PLAN-PASO-2.md`** (histórico de un plan que ya no se sigue tal cual — lee su nota al principio antes de creer que es el plan vigente).
 
 ## GitHub (el desarrollo entero)
 
@@ -14,7 +14,9 @@ Antes de tocar código, lee también **`AUDITORIA-2026-09-03.md`** (lista vigent
 | https://github.com/mickyarambula/cosecha | **Privado** | **Sí — este** |
 | https://github.com/mickyarambula/erppleinproduce | Privado (mismo código, nombre viejo) | No hace falta |
 
-Rama `main`. Cada bloque va en rama nueva desde `origin/main` y se mezcla a `main` con `--no-ff`. **Desde el 18 Sep 2026 el agente mezcla y publica él mismo al cerrar cada bloque probado** (Miguel lo pidió "para que no se me pase", sabiendo que cada push a `main` despliega a producción en Vercel en automático). La parada antes de cualquier migración sigue igual: SQL + diagnóstico y esperar el OK de Miguel.
+Rama `main`. Cada bloque va en rama nueva desde `origin/main` y se mezcla a `main` con `--no-ff`. **Desde el 18 Sep 2026** el agente cierra cada bloque probado él mismo: commit → merge `--no-ff` a `main` → push. Eso despliega a producción en Vercel en automático, y así es como debe ser — Miguel lo pidió para que no se le pase. **La única parada que sigue es antes de una migración:** enseñar el SQL y esperar su OK.
+
+**Hasta el 18 Sep 2026 la regla era la contraria** (el merge lo hacía Miguel desde GitHub y el agente se detenía en la rama subida). Si encuentras ese texto en algún documento, es viejo: corrígelo.
 
 Clone:
 
@@ -54,6 +56,16 @@ Repo privado: Claude Code necesita GitHub login de `mickyarambula`.
 
 - AR opening `$673,014.43` — 50 facturas `invoice_type=opening` (fuera del P&L). **No cambió entre v1 y v2.**
 - AP opening `$570,097.56` — 62 bills **sin PO**. (v1 decía $564,670.16 con 52 bills — viejo, no usar.)
+
+**Las anclas son SALDO, no facturado.** Esto no estaba escrito en ningún lado y ya confundió a Miguel: el corte no dice "vendimos 673 mil", dice "nos deben 673 mil". El desglose, verificado sumando `migrations/0016_opening_ingresos.sql` renglón por renglón:
+
+| | Facturado | Ya cobrado/pagado dentro del corte | **Saldo = el ancla** |
+|---|---:|---:|---:|
+| **CxC** (50 facturas de apertura) | $797,038.13 | $124,023.70 | **$673,014.43** |
+| **CxP** (62 bills sin OC) | $635,041.48 | $64,943.92 | **$570,097.56** |
+| **Chase** | — | — | **$9,361.05** |
+
+El cobro y el pago que ya venían hechos viven dentro de la misma factura o bill (columna `paid`), no como movimientos de caja: por eso Chase arranca en 9,361.05 y no en una cifra inflada. Si alguna pantalla enseña $797,038.13 como "ventas", está sumando el bruto del corte — y el corte **no entra al P&L**.
 - Chase `$9,361.05` folio `CORTE-CHASE`, fecha 2026-08-19. (v1 decía $19,066.20 al 2026-06-30 — viejo, no usar.)
 - JEAMS `$52,447.33` GL `20250`. (v1 decía $23,030.33 — viejo.)
 - Equity plug `$59,830.59` GL `30000`. (v1 decía $104,380.14 — viejo.)
@@ -64,6 +76,29 @@ Repo privado: Claude Code necesita GitHub login de `mickyarambula`.
 Estas son las anclas que se verifican al final de cada bloque de trabajo (antes/después, y otra vez tras correr `BORRAR`). A la fecha de este documento, producción tiene 0 órdenes de compra, 0 de venta, 0 lotes, 0 liquidaciones — las anclas son el 100% del dinero en el sistema.
 
 GL: `16000` JP Morgan Chase, `12000` AR, `20100` AP, `20250` JEAMS, `30000` equity.
+
+## Demo con socios (19 Sep 2026) — y qué saber al capturar en equipo
+
+Se corrió el manual de diez escenarios con **tres o cuatro personas capturando al mismo tiempo**, y al final alguien corrió `BORRAR` desde Ajustes → Pruebas. Resultado: la base quedó limpia y **las tres anclas intactas**. El ERP aguanta la operación en equipo.
+
+Tres cosas que no son bugs pero que muerden en cuanto empiecen a capturar en serio. Conviene decirlas antes, no después:
+
+1. **Los folios son un solo contador compartido.** Dos personas capturando al mismo tiempo se llevan números salteados — una se queda con la OC-014 y la otra con la OC-016. No se pierde nada ni se duplica; simplemente los folios no salen corridos. (La raíz está en `AUDITORIA-2026-09-03.md`, Área de mejora #10: el folio se calcula leyendo "el último por id". Secuencias de Postgres lo cierran.)
+2. **La pantalla no se refresca sola.** Lo que crea otra persona no aparece hasta recargar. Si alguien dice "ya la capturé" y no se ve, es esto: recarga antes de volver a capturarla.
+3. **El `BORRAR` es global.** Uno lo corre y se lleva la actividad de todos — incluido lo que alguien tenga a medias en ese momento. Protege el corte y el catálogo, pero no protege el trabajo en curso de los demás. Acordar quién lo corre y avisar antes.
+
+### Aviso para cuando Miguel pruebe: los cuatro números de "cuánto debo"
+
+El tablero, el Balance, CxC/CxP y Gastos **dan cuatro cifras distintas de lo mismo**, y las cuatro están "bien" cada una por su lado: el tablero netea las notas de crédito, el Balance las excluye, la lista de CxC las deja en cero, y Gastos suma lo suyo aparte. Es el **Área de mejora #2**, no un error de captura. Si al probar ves cuatro números que no cuadran entre sí, es esto — no lo reportes como bug de tu prueba.
+
+## Estado de producción (verificado contra Neon el 19 Sep 2026)
+
+- **0** órdenes de compra · **0** recepciones · **0** ventas · **0** facturas vivas · **0** movimientos de caja después del corte.
+- **4 ubicaciones activas** más `PREUBA-001` "PRUEBA BODEGA X", **desactivada** (quedó de la prueba de `ubicaciones-admin`).
+- Última migración aplicada: **`0047_devolucion_del_cliente.sql`**, con `customer_returns` y `customer_return_lines` ya creadas.
+- **Anclas intactas.**
+
+Es decir: las tres anclas siguen siendo el 100 % del dinero del sistema. Todo lo construido en las sesiones 3 y 4 está publicado y **sin estrenar con datos reales**.
 
 ## Decisiones de producto (no “mejorarlas”)
 
@@ -143,9 +178,9 @@ Migración de la parte de pagos: `0040_pagos_metodo_referencia` — dos columnas
 captura honesta y la carga que cierra bien). Con eso **no queda ningún hallazgo CRÍTICO abierto** en
 `AUDITORIA-2026-09-03.md`. Lo que sigue, por valor:
 
-- **Área de mejora #1 — última puerta**: devoluciones al productor. `lots.rts_qty` existe desde
-  `migrations/0008` y **nada la escribe**: una devolución de cliente que regresa fruta al productor no
-  tiene camino en el ERP.
+- **Área de mejora #1 — CERRADA COMPLETA** (19 Sep 2026). Su última puerta eran las devoluciones:
+  `lots.rts_qty` existía desde `migrations/0008` y nada la escribía. El bloque `devolucion-del-cliente`
+  la cerró — hoy toda caja devuelta queda documentada y la liquidación se la enseña al productor.
 - **Área de mejora #3 — devoluciones y rechazos del cliente**: **construida** en la rama
   `devolucion-del-cliente`. Queda fuera el ajuste de precio por condición, que sigue por el camino de
   nota de crédito normal (`credit_type: 'precio'`), ya existente y ya atribuible.
@@ -182,6 +217,15 @@ Detalles chicos, anotados y sin resolver (no bloquean nada, no se construyeron):
 - El aviso de temperatura ubicación-vs-producto solo existe al recibir mercancía; no en reempaque ni al surtir.
 - No existe "trasladar un lote de una ubicación a otra" como operación.
 
+### Prueba de Ubicaciones (PR #21) — corrida parcial en producción
+
+**Probado y correcto:** la ruta Almacén → Ubicaciones (la URL sigue siendo `/destinos`, por compatibilidad); alta con temperatura (38 °F llegaron a la base); edición del nombre; rechazo de código duplicado con mensaje claro en español; y desactivar — la fila queda tachada, con etiqueta "Desactivada", el KPI baja y el botón cambia a "Activar".
+
+**Falta por probar** (tres cosas, y la primera es justo la salida del candado):
+- **Reactivar** una ubicación desactivada.
+- **Editar la temperatura** (el alta sí se probó; la edición no).
+- Si una ubicación desactivada **sigue apareciendo en el selector de Recibir** — que es donde de verdad estorbaría.
+
 ### Pendientes de captura, de Miguel (no son bugs)
 
 - Dirección real de la empresa (hoy imprime "1234 N Grand Ave", inventada).
@@ -189,7 +233,7 @@ Detalles chicos, anotados y sin resolver (no bloquean nada, no se construyeron):
 - Destino real de envío de Alpine Fresh (hoy "Doral, FL", inventado).
 - Temperatura de 29 de 39 productos del catálogo.
 - Peso neto del SKU Brussels Sprouts Organic Caja Mesh.
-- Miguel todavía no corre la prueba de `ubicaciones-admin` (PR #21) en producción.
+- Ubicación de prueba `PREUBA-001` "PRUEBA BODEGA X" quedó **en producción**, desactivada. Borrarla o dejarla, decisión de Miguel — `BORRAR` no se la lleva (protege el catálogo).
 
 ## Huecos conocidos (no son bugs de "arranque")
 
@@ -203,8 +247,10 @@ Pega esto en Claude Code / Claude.ai (con el repo abierto):
 
 ```
 Clona o abre github.com/mickyarambula/cosecha (privado).
-Lee HANDOFF.md, COSECHA.md, CLAUDE.md y AUDITORIA-2026-09-03.md.
-Eres el ingeniero de Cosecha (Plein Produce, Miguel). No reconstruyas. No publiques. No toques corte ni CORTE-CHASE ni una liquidación ya emitida (liquidated_at).
+Lee HANDOFF.md, COSECHA.md, CLAUDE.md, AUDITORIA-2026-09-03.md y MODELO-NEGOCIO.md.
+Eres el ingeniero de Cosecha (Plein Produce, Miguel). No reconstruyas. No toques corte ni CORTE-CHASE ni una liquidación ya emitida (liquidated_at).
+Al cerrar un bloque probado: commit, merge --no-ff a main y push — eso publica a producción.
+Antes de cualquier migración párate: enséñame el SQL y espera mi OK.
 Habla español de producto.
 Lo que quiero ahora: [Miguel escribe la tarea]
 ```
@@ -212,7 +258,7 @@ Lo que quiero ahora: [Miguel escribe la tarea]
 ## Si Miguel usa Claude.ai (chat, no Code)
 
 1. Conectar GitHub a Claude y agregar el repo **privado** `mickyarambula/cosecha`.
-2. O Project → pegar `HANDOFF.md` + `COSECHA.md` + `CLAUDE.md` + `AUDITORIA-2026-09-03.md` y decirle que el código está en ese repo.
+2. O Project → pegar `HANDOFF.md` + `COSECHA.md` + `CLAUDE.md` + `AUDITORIA-2026-09-03.md` + `MODELO-NEGOCIO.md` y decirle que el código está en ese repo.
 3. No subas un zip a un Project público. Hay CxC/CxP reales.
 
 Claude Code es el camino correcto: clona, edita, corre, commit.
