@@ -18,7 +18,7 @@ Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CL
 
 - TanStack Start + Router + React 19 + Tailwind v4 + Radix/shadcn
 - Server functions: `createServerFn` + zod + `authMiddleware`/`moduleMiddleware(módulo)` en [`src/lib/produce-server.ts`](src/lib/produce-server.ts)
-- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0047` (crece con cada bloque; revisa `ls migrations/` para el número real)
+- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0048` (crece con cada bloque; revisa `ls migrations/` para el número real)
 - Auth: Better Auth, Google + correo. Staff por módulos
 - i18n: [`src/lib/i18n.ts`](src/lib/i18n.ts)
 - PDF: [`src/lib/doc-pdf.ts`](src/lib/doc-pdf.ts) — descarga archivo, no `window.print`
@@ -84,7 +84,8 @@ Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquid
 8b. **Corregir el costo en firme** (`updatePurchaseOrder`) baja a los lotes de **su** línea (`purchase_order_line_id`, nunca por producto) y recalcula en cascada los lotes hijos de reempaque (`recomputeRepackCosts`). Aplica hacia atrás, también a cajas ya vendidas — el COGS se lee vivo. Con factura de proveedor viva **bloquea** (cancela la FAC-, corrige, regenera); con liquidación emitida no aplica; en consignación/comisión el costo se define al liquidar.
 9. Una liquidación emitida (`liquidated_at`) **no se reescribe**. Correcciones van por complementaria (`grower_settlement_supplements`), nunca editando lo ya emitido.
 10. YTD 2026 histórico se queda en V8. Cosecha arranca en el corte. **Miguel puso esta regla en revisión** (19 Sep 2026): quiere registrar las 92 cargas de dic 2025 – jun 2026. Las anclas YA contienen su resultado resumido, así que registrarlas como actividad normal las contaría dos veces. Tres caminos en `MODELO-NEGOCIO.md`; se inclina por el (a), registro histórico consultable fuera de contabilidad. **Sin confirmar — no construir nada que dependa de esto.**
-11. GL: `16000` JP Morgan Chase, `20250` JEAMS, `30000` equity, `12000` AR, `20100` AP, `21000` por remitir a productores, `50100` remitido al productor (su contrapartida en resultados).
+11. GL: `16000` JP Morgan Chase, `20250` JEAMS, `30000` equity, `12000` AR, `20100` AP, `21000` por remitir a productores, `50100` remitido al productor (su contrapartida en resultados), `52500` nómina, `56000` gastos de venta, `57000` gastos administrativos, `58000` gastos financieros.
+12. **A qué cuenta va un gasto** (bloque 0): se resuelve con cuatro escapes, de lo más específico a lo más general — `expenses.account_number` → `gl_mappings[categoría]` → `gl_mappings['partida:' + partida del concepto]` → cajón `59999`. Las cinco partidas (`money_concepts.partida`: Costo, Gasto de Venta, Gasto Nómina, Gasto Administrativo, Gasto Financiero) son las del V8 y cubren el catálogo entero, así que un concepto nuevo nace clasificado. Una cuenta mapeada que no existe o que no es de gasto/costo **se ignora** y el gasto sigue al escape siguiente: el dinero nunca se evapora. `getFinancials({from, to})` recorta **solo el P&L**; el Balance es siempre la foto de hoy, a propósito.
 
 ## Auth
 

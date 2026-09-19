@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
 import { useT } from "@/lib/i18n";
-import { createGlAccount, getFinancials, listGlAccounts, listGlMappings, saveGlMappings } from "@/lib/produce-server";
+import { createGlAccount, getFinancials, listConcepts, listGlAccounts, listGlMappings, saveGlMappings } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { errorMessage, fechaLong, money } from "@/lib/utils";
 
@@ -17,29 +17,18 @@ export const Route = createFileRoute("/cuentas")({
   component: Page,
 });
 
-// "Boxes" y "Supplies" se retiraron (redundantes con "Cartón" de Costo, y
-// entre sí) sin reemplazo en español. Los demás quedan como su concepto en
-// español: mismo patrón que WASTE_REASONS, sin reescribir gastos ya
-// guardados con el nombre en inglés — esos se quedan como están.
-// "Fletes" y "Seguros" ya estaban sembrados en español desde el inicio
-// (money_concepts) pero nunca aparecían aquí para mapearse a su cuenta —
-// currentOf() solo buscaba "Freight"/"Insurance". Se agregan los dos.
-const EXPENSE_KEYS = [
-  "Freight",
-  "Fletes",
-  "Servicios de inspección",
-  "Control de calidad",
-  "Advertising",
-  "Commissions and fees",
-  "Cost of Labor",
-  "Disposal fees",
-  "Cuotas y suscripciones",
-  "Equipo",
-  "Insurance",
-  "Seguros",
-  "Honorarios legales y profesionales",
-  "Mantenimiento y reparaciones",
-  "Materials",
+// Bloque 0: aquí vivía una lista de categorías escrita a mano, la TERCERA de
+// cuatro que no coincidían entre sí (las otras: el catálogo real de
+// `money_concepts`, el mapeo sembrado en inglés en `gl_mappings`, y el switch
+// del P&L). La pantalla solo dejaba mapear lo que estaba en esa lista, así que
+// la mayoría del catálogo real de Miguel no se podía mapear y caía al cajón.
+// Ahora se lee el catálogo de verdad, y lo que manda es la PARTIDA.
+const PARTIDAS_GASTO = [
+  "Costo",
+  "Gasto de Venta",
+  "Gasto Nómina",
+  "Gasto Administrativo",
+  "Gasto Financiero",
 ] as const;
 
 const NEW_ACCOUNT_TITLE: Record<string, string> = {
@@ -55,6 +44,7 @@ function Page() {
   const { tab } = Route.useSearch();
   const accounts = useAsync(() => listGlAccounts(), []);
   const maps = useAsync(() => listGlMappings(), []);
+  const concepts = useAsync(() => listConcepts({ data: { kind: "gasto" } }), []);
   const financials = useAsync(() => getFinancials(), []);
   const rows = financials.data?.accounts ?? accounts.data?.map((a) => ({ ...a, current_balance: a.starting_balance })) ?? [];
   const [addKind, setAddKind] = useState<string | null>(null);
@@ -121,6 +111,20 @@ function Page() {
 
   if (tab === "automations") {
     const opts = rows.filter((a) => a.kind === "expense" || a.kind === "cogs" || a.kind === "revenue" || a.kind === "liability" || a.kind === "asset");
+    // Un gasto solo puede ir a una cuenta de resultados de gasto o costo: la
+    // resolución del P&L descarta cualquier otra. Ofrecerlas dejaba guardar un
+    // mapeo que decía "Guardado" y no hacía nada.
+    const optsGasto = rows.filter(
+      (a) => a.statement === "income" && (a.kind === "expense" || a.kind === "cogs"),
+    );
+    // Claves que viven en `gl_mappings` pero NO son conceptos del catálogo:
+    // nombres heredados en inglés de gastos ya capturados. Sin esto no había
+    // pantalla donde moverlos.
+    const sistema = new Set(["ap", "ar", "revenue", "cogs", "bank_collections", "bank_billpay"]);
+    const nombresConcepto = new Set((concepts.data ?? []).map((c) => c.name));
+    const heredados = Object.keys(mapObj)
+      .filter((k) => !k.startsWith("partida:") && !sistema.has(k) && !nombresConcepto.has(k))
+      .sort();
     return (
       <div className="grid gap-4 p-5 lg:grid-cols-2">
         <section className="rounded-lg border border-border bg-surface p-5">
@@ -212,21 +216,116 @@ function Page() {
             </span>
           </div>
           <p className="mb-5 text-sm text-muted">
-            {t("Select the account used for each expense category. Freight must map to Freight Expenses or COGS.")}
+            Estas cinco partidas son las de tu libro V8 y cubren{" "}
+            <b>todo el catálogo</b>: cada concepto hereda la cuenta de su partida.
+            Un concepto nuevo que agregues nace ya clasificado, en vez de caer en
+            “General”.
           </p>
           <div className="grid gap-3">
-            {EXPENSE_KEYS.map((k) => (
-              <div key={k} className="grid grid-cols-2 items-center gap-3">
-                <p className="text-sm">{t(k)}</p>
-                <Select value={mapObj[k] || "59999"} onChange={(e) => setLocalMaps({ ...mapObj, [k]: e.target.value })}>
-                  {opts.map((a) => (
-                    <option key={a.number} value={a.number}>
-                      {a.number} {a.name}
-                    </option>
-                  ))}
-                </Select>
+            {PARTIDAS_GASTO.map((k) => {
+              const key = `partida:${k}`;
+              const cuantos = (concepts.data ?? []).filter((c) => c.partida === k).length;
+              return (
+                <div key={k} className="grid grid-cols-2 items-center gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{k}</p>
+                    <p className="text-xs text-muted">
+                      {cuantos} {cuantos === 1 ? "concepto" : "conceptos"}
+                    </p>
+                  </div>
+                  <Select
+                    value={mapObj[key] || ""}
+                    onChange={(e) => setLocalMaps({ ...mapObj, [key]: e.target.value })}
+                  >
+                    <option value="">Sin asignar — cae en General</option>
+                    {optsGasto.map((a) => (
+                      <option key={a.number} value={a.number}>
+                        {a.number} {a.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              );
+            })}
+          </div>
+
+          <h3 className="mt-7 text-sm font-semibold">Excepciones por concepto</h3>
+          <p className="mb-4 mt-1 text-sm text-muted">
+            Opcional. Solo si un concepto tiene que ir a una cuenta distinta de la
+            de su partida. Lo que dejes en “Sigue a su partida” no es un hueco: es
+            lo normal.
+          </p>
+          <div className="grid gap-2">
+            {(concepts.data ?? []).map((c) => (
+              <div key={`${c.partida}-${c.name}`} className="grid grid-cols-2 items-center gap-3">
+                <div>
+                  <p className="text-sm">{t(c.name)}</p>
+                  <p className="text-xs text-subtle">{c.partida}</p>
+                </div>
+                {c.name === "Materia prima" ? (
+                  // No es un mapeo que se elija: el costo de la fruta ya viene
+                  // de la orden de compra. Mandarlo a una cuenta de costo la
+                  // contaría dos veces, así que aquí no hay opción que dar.
+                  <p className="rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
+                    No se asigna. El costo de la fruta viene de la orden de compra;
+                    capturarlo además como gasto la contaría dos veces. Va a
+                    “General” a propósito, para que se note.
+                  </p>
+                ) : (
+                  <Select
+                    value={mapObj[c.name] || ""}
+                    onChange={(e) => setLocalMaps({ ...mapObj, [c.name]: e.target.value })}
+                  >
+                    <option value="">Sigue a su partida</option>
+                    {optsGasto.map((a) => (
+                      <option key={a.number} value={a.number}>
+                        {a.number} {a.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
               </div>
             ))}
+          </div>
+
+          {heredados.length ? (
+            <>
+              <h3 className="mt-7 text-sm font-semibold">Nombres heredados</h3>
+              <p className="mb-4 mt-1 text-sm text-muted">
+                Categorías en inglés de gastos capturados antes de que existiera el
+                catálogo en español. No aparecen al capturar un gasto nuevo, pero
+                los gastos viejos siguen usándolas.
+              </p>
+              <div className="grid gap-2">
+                {heredados.map((k) => (
+                  <div key={k} className="grid grid-cols-2 items-center gap-3">
+                    <p className="text-sm">{t(k)}</p>
+                    <Select
+                      value={mapObj[k] || ""}
+                      onChange={(e) => setLocalMaps({ ...mapObj, [k]: e.target.value })}
+                    >
+                      <option value="">Sin asignar — cae en General</option>
+                      {optsGasto.map((a) => (
+                        <option key={a.number} value={a.number}>
+                          {a.number} {a.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
+
+          {/* 8. El botón de guardar vivía en la OTRA tarjeta. Esta sección
+              creció seis veces con este bloque: editar aquí y no volver allá
+              perdía el cambio sin avisar. */}
+          <div className="mt-6 flex items-center gap-3">
+            <Button disabled={saving} onClick={persistMaps}>
+              {saving ? "Guardando…" : "Guardar mapeos"}
+            </Button>
+            {mapSaved ? <span className="text-sm text-ok">Guardado.</span> : null}
+            {mapErr ? <span className="text-sm text-danger">{mapErr}</span> : null}
           </div>
         </section>
       </div>

@@ -225,6 +225,8 @@ Cerrar las 12 funciones con solo `authMiddleware` (hallazgo 16), guardar quién 
 
 **9. Reportes con periodo y filtros reales — mediano.** *(ya en AUDITORIA.md)*. P&L por periodo, filtros de fecha/vendedor que filtren, ventas por lo facturado, antigüedad por vencimiento en ambos lados.
 
+**Avance (19 Sep 2026, rama `bloque-0-cuentas-y-periodo`):** **el P&L ya tiene periodo.** `getFinancials` acepta `{from, to}` y recorta ventas, créditos, gastos, COGS y remitido; el campo "Period" de Reportes —que era un `<input type="date">` sin estado, conectado a nada— ahora filtra de verdad, con "Desde", "Hasta" y un botón para volver a todo. Dentro de un periodo la utilidad bruta se calcula sobre lo **facturado**, así que ahí también desaparece la doble base de venta del hallazgo 24. **Límite a propósito:** el Balance NO se recorta — el saldo por cobrar, el por pagar, el inventario y la caja salen de columnas que son el presente (`total − paid`, `current_qty`), y reconstruir un balance a una fecha pasada desde ahí daría un número equivocado en silencio. La respuesta lo declara (`balance_as_of: "hoy"`). Siguen pendientes: filtros de vendedor, ventas por lo facturado fuera del periodo, y antigüedad por vencimiento en ambos lados (ver hallazgo **51**).
+
 **10. Operaciones todo-o-nada y folios con secuencia de base — mediano.**
 Ninguna función usa transacción: recibir, despachar, emitir liquidación, cobrar con aplicaciones y borrar pruebas hacen 5-20 escrituras y si una falla quedan a medias. `nextCode` lee "el último por id" y calcula el siguiente: se rompe con concurrencia (dos capturas al mismo tiempo) y ya se rompe solo con créditos (hallazgo 2) y BOLs (22). Secuencias de Postgres por tipo de documento resuelven ambas cosas.
 

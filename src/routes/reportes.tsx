@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Kpi, Panel } from "@/components/app-shell";
 import { orderLabel } from "@/components/ui/badge";
 import { FilterField, FilterRow } from "@/components/product-picker";
@@ -30,7 +30,17 @@ function Page() {
   const dash = useAsync(() => getDashboard(), []);
   const sales = useAsync(() => listSalesOrders(), []);
   const purchased = useAsync(() => listPurchasedLots(), []);
-  const fin = useAsync(() => getFinancials(), []);
+  // Bloque 0: el campo "Period" era un <input type="date"> sin estado,
+  // conectado a nada. Ahora recorta el P&L de verdad.
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const fin = useAsync(
+    () =>
+      getFinancials({
+        data: { from: desde || undefined, to: hasta || undefined },
+      }),
+    [desde, hasta],
+  );
   const settlements = useAsync(() => listSettlements(), []);
   const rows = sales.data ?? [];
 
@@ -124,8 +134,49 @@ function Page() {
     if (tab === "trial") {
       return (
         <div className="p-5">
+          {/* La balanza mezcla renglones de resultados (que el periodo SÍ
+              recorta) con los de balance (que no). Sin estos controles aquí,
+              un periodo puesto en el P&L seguía aplicando sin verse ni poder
+              quitarse. */}
+          <FilterRow>
+            <FilterField label="Desde">
+              <input
+                type="date"
+                value={desde}
+                onChange={(e) => setDesde(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-border bg-surface px-3 text-sm"
+              />
+            </FilterField>
+            <FilterField label="Hasta">
+              <input
+                type="date"
+                value={hasta}
+                onChange={(e) => setHasta(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-border bg-surface px-3 text-sm"
+              />
+            </FilterField>
+            {desde || hasta ? (
+              <button
+                type="button"
+                className="cursor-pointer self-end pb-2 text-sm text-link"
+                onClick={() => {
+                  setDesde("");
+                  setHasta("");
+                }}
+              >
+                Todo el periodo
+              </button>
+            ) : null}
+          </FilterRow>
           <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
           <p className="text-sm text-muted">{t("Trial Balance")}</p>
+          {desde || hasta ? (
+            <p className="mt-1 text-xs text-warn">
+              El periodo recorta los renglones de ingreso, costo y gasto. Los de
+              activo, pasivo y capital son siempre al día de hoy, así que con un
+              periodo activo la balanza no cuadra — es lo esperado.
+            </p>
+          ) : null}
           <table className="mt-4 w-full text-left text-sm">
             <thead className="border-y border-border text-[11px] uppercase text-muted">
               <tr>
@@ -160,6 +211,11 @@ function Page() {
       return (
         <div className="mx-auto max-w-3xl p-8">
           <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
+          <p className="text-xs text-muted">
+            Al día de hoy. Un saldo —lo que te deben, lo que debes, el
+            inventario, la caja— es una foto del presente: no se recorta a un
+            periodo ni se reconstruye a una fecha pasada.
+          </p>
           <p className="text-sm text-muted">{t("Balance Sheet")}</p>
           <SheetBlock title="Assets" rows={assets} />
           <SheetBlock title="Liabilities" rows={liab} />
@@ -173,10 +229,50 @@ function Page() {
     return (
       <div className="p-5">
         <FilterRow>
-          <FilterField label="Period">
-            <InputDate />
+          <FilterField label="Desde">
+            <input
+              type="date"
+              value={desde}
+              onChange={(e) => setDesde(e.target.value)}
+              className="flex h-9 w-full rounded-md border border-border bg-surface px-3 text-sm"
+            />
           </FilterField>
+          <FilterField label="Hasta">
+            <input
+              type="date"
+              value={hasta}
+              onChange={(e) => setHasta(e.target.value)}
+              className="flex h-9 w-full rounded-md border border-border bg-surface px-3 text-sm"
+            />
+          </FilterField>
+          {desde || hasta ? (
+            <button
+              type="button"
+              className="cursor-pointer self-end pb-2 text-sm text-link"
+              onClick={() => {
+                setDesde("");
+                setHasta("");
+              }}
+            >
+              Todo el periodo
+            </button>
+          ) : null}
         </FilterRow>
+        {desde || hasta ? (
+          <p className="mx-auto max-w-3xl px-6 pt-2 text-xs text-muted">
+            Con un periodo activo, la utilidad bruta se calcula sobre lo{" "}
+            <b>facturado</b> en ese periodo. El <b>Balance es siempre al día de
+            hoy</b> — un saldo no se reconstruye a una fecha pasada.
+          </p>
+        ) : null}
+        {f?.unmapped_expense ? (
+          <p className="mx-auto max-w-3xl px-6 pt-2 text-xs text-warn">
+            {money(f.unmapped_expense)} de gastos cayeron en “General”. Si es
+            “Materia prima”, está bien: ese concepto no se usa como gasto porque
+            el costo de la fruta ya viene de la orden de compra. Cualquier otro
+            concepto necesita cuenta — asígnala en Finanzas → Cuentas.
+          </p>
+        ) : null}
         <div className="mx-auto max-w-3xl p-6">
           <h1 className="text-xl font-semibold">{COMPANY.legalName}</h1>
           <p className="text-sm text-muted">{t("Profit & Loss")}</p>
