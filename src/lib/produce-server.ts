@@ -11521,29 +11521,69 @@ export const saveGlMappings = createServerFn({ method: "POST" })
     const sql = await getSql();
     for (const m of data.mappings)
       await sql.query(
-        `insert into gl_mappings (map_key, account_number) values ($1,$2)
-         on conflict (map_key) do update set account_number = excluded.account_number`,
-        [m.map_key, m.account_number],
+        // Sin cuenta = borrar el mapeo. Guardar una fila vacía dejaría un
+        // "mapeo" que no mapea a nada y que la resolución tendría que estar
+        // descartando siempre.
+        m.account_number.trim()
+          ? `insert into gl_mappings (map_key, account_number) values ($1,$2)
+             on conflict (map_key) do update set account_number = excluded.account_number`
+          : `delete from gl_mappings where map_key = $1`,
+        m.account_number.trim() ? [m.map_key, m.account_number.trim()] : [m.map_key],
       );
     return { ok: true };
   });
 export const getFinancials = createServerFn({ method: "GET" })
+  // Bloque 0: el P&L nunca tuvo periodo — esta función no recibía un solo
+  // argumento y el campo "Period" de Reportes era un <input type="date"> sin
+  // estado, conectado a nada. Sin `from`/`to` el resultado es idéntico al de
+  // siempre (todo desde el inicio), así que nada de lo ya probado se mueve.
+  .validator(z.object({ from: ISO_DATE.optional(), to: ISO_DATE.optional() }).optional())
   .middleware([moduleMiddleware("finance")])
-  .handler(async () => {
+  .handler(async ({ data }) => {
     const sql = await getSql();
+    const from = data?.from ?? null;
+    const to = data?.to ?? null;
+    const hayPeriodo = Boolean(from || to);
+    /** Recorta por fecha una consulta del P&L. Sin periodo no agrega nada. */
+    const rango = (col: string) =>
+      [from ? `and ${col} >= '${from}'` : "", to ? `and ${col} <= '${to}'` : ""].join(" ");
+    // El Balance necesita TODAS las facturas (el saldo es una foto de hoy);
+    // el P&L solo las del periodo. Por eso son dos lecturas, no una.
     const invoices = await sql.query(
       `select coalesce(invoice_type,'sale') as invoice_type, total::text, paid::text, issue_date::text, status from invoices`,
     );
+    const invoicesPl = hayPeriodo
+      ? await sql.query(
+          `select coalesce(invoice_type,'sale') as invoice_type, total::text, paid::text, issue_date::text, status
+           from invoices where true ${rango("issue_date")}`,
+        )
+      : invoices;
     const cogsRows = await sql.query(`
     select coalesce(sum((a.quantity - coalesce(a.returned_qty,0)) * coalesce(lots.unit_cost,0)),0)::text as cogs,
            coalesce((select sum(sol.quantity_shipped * coalesce(sol.unit_price,0)) from sales_order_lines sol),0)::text as sales
     from sale_line_allocations a
     left join lots on lots.id = a.lot_id
-    where a.cancelled_at is null
+    where a.cancelled_at is null ${rango("a.created_at::date")}
   `);
     const expenses = await sql.query(
-      `select category, amount::text from expenses where cancelled_at is null`,
+      `select category, account_number, amount::text from expenses
+       where cancelled_at is null ${rango("issue_date")}`,
     );
+    // Bloque 0: hasta hoy el P&L repartía los gastos con una lista de
+    // categorías escrita a fuego aquí abajo. Había CUATRO listas que no
+    // coincidían: el catálogo real (`money_concepts`), el mapeo editable
+    // (`gl_mappings`, sembrado en inglés), la lista de la pantalla de Cuentas,
+    // y esta. Toda categoría fuera de esta última —que es casi todo el
+    // catálogo real— caía en el cajón 59999. Ahora la cuenta se resuelve
+    // contra el catálogo, con tres escapes de lo más específico a lo más
+    // general; y la PARTIDA del concepto (Costo, Gasto de Venta, Gasto
+    // Nómina, Gasto Administrativo, Gasto Financiero — las mismas del V8 de
+    // Miguel) es la que manda, para que un concepto nuevo herede su cuenta en
+    // vez de nacer roto.
+    const conceptRows = await sql.query(
+      `select name, partida from money_concepts where kind = 'gasto'`,
+    );
+    const mapRows = await sql.query(`select map_key, account_number from gl_mappings`);
     const cash = await sql.query(
       `select amount::text from cash_movements where cancelled_at is null`,
     );
@@ -11575,9 +11615,11 @@ export const getFinancials = createServerFn({ method: "GET" })
     select coalesce(sum(net_to_grower),0)::text as remit,
            coalesce(sum(commission),0)::text as commission
     from (
-      select net_to_grower, commission from grower_settlements where deal_type = 'comision'
+      select net_to_grower, commission from grower_settlements
+       where deal_type = 'comision' ${rango("issue_date")}
       union all
-      select net_to_grower, commission from grower_settlement_supplements where deal_type = 'comision'
+      select net_to_grower, commission from grower_settlement_supplements
+       where deal_type = 'comision' ${rango("issue_date")}
     ) t
   `);
     const accounts = await sql.query(`
@@ -11585,18 +11627,61 @@ export const getFinancials = createServerFn({ method: "GET" })
     from gl_accounts where is_active = true order by sort_order
   `);
     const liveInv = invoices.filter((i) => i.status !== "cancelled");
-    const sales = liveInv
+    const liveInvPl = invoicesPl.filter((i) => i.status !== "cancelled");
+    const sales = liveInvPl
       .filter((i) => i.invoice_type === "sale")
       .reduce((s, i) => s + n(i.total), 0);
-    const credits = liveInv
+    const credits = liveInvPl
       .filter((i) => i.invoice_type === "credit")
       .reduce((s, i) => s + n(i.total), 0);
+    // El saldo por cobrar es una foto de HOY, no del periodo: se lee de todas.
     const ar = liveInv.reduce((s, i) => s + Math.max(n(i.total) - n(i.paid), 0), 0);
     const cogs = n(cogsRows[0]?.cogs);
     const salesShipped = n(cogsRows[0]?.sales);
     const expByCat: Record<string, number> = {};
     for (const e of expenses) expByCat[e.category] = (expByCat[e.category] || 0) + n(e.amount);
     const expTotal = expenses.reduce((s, e) => s + n(e.amount), 0);
+    // ── Bloque 0: a qué cuenta va cada gasto ─────────────────────────────
+    const EXPENSE_FALLBACK = "59999";
+    const partidaOf = new Map<string, string>(
+      conceptRows.map((c) => [String(c.name), String(c.partida)]),
+    );
+    const mapOf = new Map<string, string>(
+      mapRows.map((m) => [String(m.map_key), String(m.account_number)]),
+    );
+    // Una cuenta mapeada que no existe (o que no es de gasto/costo) haría
+    // desaparecer ese dinero del P&L mientras el total de gastos lo sigue
+    // contando: el estado dejaría de cuadrar consigo mismo. Se valida contra
+    // el catálogo y, si no sirve, cae al cajón — visible, no perdido.
+    const postable = new Set<string>(
+      accounts
+        .filter((a) => a.statement === "income" && (a.kind === "expense" || a.kind === "cogs"))
+        .map((a) => String(a.number)),
+    );
+    const accountForExpense = (category: string | null, own: string | null) => {
+      const tryUse = (acct: string | null | undefined) =>
+        acct && postable.has(acct) ? acct : null;
+      // 1) La cuenta capturada en ESE gasto manda sobre todo.
+      const propia = tryUse(own);
+      if (propia) return propia;
+      const cat = (category || "").trim();
+      // 2) El mapeo de ESE concepto.
+      const porConcepto = tryUse(mapOf.get(cat));
+      if (porConcepto) return porConcepto;
+      // 3) El mapeo de su PARTIDA — el que cubre el catálogo entero.
+      const partida = partidaOf.get(cat);
+      if (partida) {
+        const porPartida = tryUse(mapOf.get(`partida:${partida}`));
+        if (porPartida) return porPartida;
+      }
+      // 4) El cajón.
+      return EXPENSE_FALLBACK;
+    };
+    const expByAccount: Record<string, number> = {};
+    for (const e of expenses) {
+      const acct = accountForExpense(e.category, e.account_number);
+      expByAccount[acct] = (expByAccount[acct] || 0) + n(e.amount);
+    }
     const cashBal = cash.reduce((s, m) => s + n(m.amount), 0);
     const inventory = n(invVal[0]?.v);
     const ap = n(billPayable[0]?.v) + n(expPayable[0]?.v);
@@ -11605,58 +11690,40 @@ export const getFinancials = createServerFn({ method: "GET" })
     // bruta, igual que el COGS de la fruta propia.
     const remit = n(remitRows[0]?.remit);
     const commissionIncome = n(remitRows[0]?.commission);
-    const cogsTotal = cogs + remit;
+    // Un gasto mapeado a una cuenta de COSTO (la partida "Costo" va a 50000)
+    // se imprime arriba, en el bloque de costo de lo vendido. Si no entra
+    // también al TOTAL de ese bloque, los renglones no suman al subtotal y la
+    // utilidad bruta sale inflada por exactamente ese monto. Y como abajo se
+    // resta `expTotal` completo, ese mismo gasto se restaría dos veces: por eso
+    // se descuenta de lo que se resta abajo, y la utilidad NETA no cambia.
+    const expEnCosto = (expByAccount["50000"] || 0) + (expByAccount["50100"] || 0);
+    const cogsTotal = cogs + remit + expEnCosto;
     // C-1b: la nota de crédito al cliente ya bajaba el ingreso facturado
     // (cuenta 40002) pero NO la utilidad, que se calculaba solo desde lo
     // despachado. Con el remitido al productor bajando por el mismo crédito,
     // Plein se llevaba el beneficio dos veces. `credits` es negativo: aquí
     // resta. (Lo despachado-sin-facturar sigue siendo el hallazgo 24, aparte.)
-    const gp = (salesShipped || sales) + credits - cogsTotal;
-    const net = gp - expTotal;
+    // `salesShipped` sale de `sales_order_lines.quantity_shipped`, que no tiene
+    // fecha: no se puede recortar a un periodo. Así que con periodo la utilidad
+    // bruta se calcula sobre lo FACTURADO en ese periodo, que es además lo que
+    // muestra la cuenta 40000 — de paso, dentro del periodo desaparece la doble
+    // base de venta del hallazgo 24. Sin periodo, la fórmula es la de siempre.
+    const gp = (hayPeriodo ? sales : salesShipped || sales) + credits - cogsTotal;
+    const net = gp - (expTotal - expEnCosto);
     const currentOf = (number, starting) => {
       if (number === "40000") return sales;
       if (number === "40002") return credits;
-      if (number === "50000") return cogs;
-      if (number === "50100") return remit;
-      // "Freight" (inglés) y "Fletes" (español, sembrado desde el inicio en
-      // money_concepts bajo Costo) son el MISMO concepto — el código solo
-      // buscaba el inglés y "Fletes" se iba al cajón 59999 desde siempre.
-      if (number === "51000") return (expByCat.Freight || 0) + (expByCat.Fletes || 0);
-      if (number === "53000")
-        // "Dues & Subscriptions" ya está en gastos guardados antes de esta
-        // sesión; "Cuotas y suscripciones" es el mismo concepto en español,
-        // de aquí en adelante — se suman los dos, nunca se reescribe uno por
-        // el otro.
-        return (
-          (expByCat.Supplies || 0) +
-          (expByCat.Boxes || 0) +
-          (expByCat["Dues & Subscriptions"] || 0) +
-          (expByCat["Cuotas y suscripciones"] || 0)
-        );
-      if (number === "55000")
-        // Mismo caso que Fletes/Freight: "Seguros" es el concepto sembrado en
-        // español para "Insurance" y el código nunca lo reconocía.
-        return (
-          (expByCat.Insurance || 0) +
-          (expByCat.Seguros || 0) +
-          (expByCat["Legal & Professional fees"] || 0) +
-          (expByCat["Honorarios legales y profesionales"] || 0)
-        );
-      if (number === "59999") {
-        const known = /* @__PURE__ */ new Set([
-          "Freight",
-          "Fletes",
-          "Supplies",
-          "Boxes",
-          "Dues & Subscriptions",
-          "Cuotas y suscripciones",
-          "Insurance",
-          "Seguros",
-          "Legal & Professional fees",
-          "Honorarios legales y profesionales",
-        ]);
-        return Object.entries(expByCat).reduce((s, [k, v]) => s + (known.has(k) ? 0 : v), 0);
-      }
+      // Costo de la fruta (lotes) MÁS lo que se le haya mapeado de gastos:
+      // si Miguel manda la partida "Costo" a esta cuenta, sus fletes y
+      // aduanas suman aquí, no la sustituyen.
+      if (number === "50000") return starting + cogs + (expByAccount["50000"] || 0);
+      if (number === "50100") return starting + remit + (expByAccount["50100"] || 0);
+      // Cualquier otra cuenta de gasto sale del reparto de arriba. El cajón
+      // 59999 ya no necesita una lista de "lo conocido": recibe exactamente lo
+      // que no pudo resolverse, ni más ni menos.
+      // `starting` se conserva: una cuenta de gasto creada a mano puede traer
+      // saldo inicial, y antes lo mostraba. Las sembradas están en cero.
+      if (postable.has(number)) return starting + (expByAccount[number] || 0);
       if (number === "12000") return ar;
       if (number === "12500") return n(advRows[0]?.v);
       if (number === "13000") return inventory;
@@ -11683,6 +11750,19 @@ export const getFinancials = createServerFn({ method: "GET" })
       expenses: expTotal,
       expByCat,
       net,
+      /** El periodo que se aplicó al P&L (null = todo, desde el inicio). */
+      period: { from, to },
+      /**
+       * El Balance NO se recorta al periodo: el saldo por cobrar, el por
+       * pagar, el inventario y la caja se leen del estado de HOY, porque las
+       * columnas que los producen (`total − paid`, `current_qty`) son el
+       * presente, no una serie histórica. Reconstruir un balance a una fecha
+       * pasada desde esas columnas daría un número equivocado en silencio.
+       * La pantalla lo dice: el P&L es del periodo, el Balance es de hoy.
+       */
+      balance_as_of: "hoy",
+      /** Cuánto gasto no se pudo mapear y cayó al cajón 59999. */
+      unmapped_expense: expByAccount["59999"] || 0,
       ar,
       ap,
       cash: cashBal,

@@ -521,7 +521,11 @@ function CreateExpenseDrawer({
 }) {
   const t = useT();
   const [form, setForm] = useState({
-    category: "Materia prima",
+    // Antes arrancaba en "Materia prima" — el concepto que JUSTAMENTE no debe
+    // usarse como gasto (el costo de la fruta viene de la orden de compra).
+    // Cada gasto guardado sin cambiarlo lo mandaba al cajón. Misma regla que
+    // el resto de la captura: en blanco es honesto.
+    category: "",
     date: todayISO(),
     amount: "",
     payable: true,
