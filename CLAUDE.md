@@ -20,6 +20,8 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 - Meter opening al P&L. El corte vive en Balance Sheet. P&L en ceros hasta ventas live = correcto.
 - Contar dos veces la fruta del productor: en **comisión pura** el neto al productor sale por la cuenta `50100` al emitir la liquidación; en **consignación** ese costo ya vive en `lots.unit_cost` (50000) — nunca los dos.
 - Cambiar `saldo = total − paid`.
+- Sacar del costo de venta (`sale_line_allocations.returned_qty`) fruta devuelta que **no** volvió al inventario. Solo `restock` lo resta: lo destruido y lo que no regresó se queda costeado como vendido — se fue y no volvió. `lots.rts_qty` en cambio documenta las tres.
+- Bajarle el neto al productor por una devolución que fue **de Plein**, o por una carga en **firme**. La culpa se captura por renglón y viaja por las atribuciones de C-1b; el ingreso del lote no se toca.
 - Sumar lo **rechazado** a `quantity_received`. Va en `purchase_order_lines.quantity_rejected`: cierra la línea (pendiente = `ordered − received − rejected`) sin pagarle al productor la fruta que Plein rechazó — en firme la factura es recibido × costo. Un reenvío es una carga nueva.
 - Corregir el costo de una carga **por producto** en vez de por línea (`purchase_order_line_id`), o dejar los lotes hijos de un reempaque con el costo viejo (`recomputeRepackCosts`). Con factura de proveedor viva el costo **no se guarda en silencio**: se bloquea diciendo cómo corregirlo.
 - Atribuirle a un productor más crédito del que su carga aportó a esa venta: el tope es **acumulado** sobre la venta, entre todas las notas de crédito.
@@ -35,7 +37,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 
 TanStack Start + Router + React 19 + Tailwind v4 + Radix.  
 Server fns: `createServerFn` + zod + `authMiddleware` en `src/lib/produce-server.ts`.  
-DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0046` (crece con cada bloque — `ls migrations/` para el número real).  
+DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0047` (crece con cada bloque — `ls migrations/` para el número real).  
 Auth: Better Auth (Google + correo). Staff por módulos.
 
 ## Dónde está qué

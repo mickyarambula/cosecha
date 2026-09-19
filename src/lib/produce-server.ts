@@ -2623,6 +2623,24 @@ function computeCommissionBreakdown(
   };
 }
 /**
+ * Área #3: el lote devuelto NO vende nada por sí mismo, así que el reparto del
+ * neto por ingreso le deja costo cero — y en consignación eso hace desaparecer
+ * del P&L y del Balance el costo de las cajas que volvieron (el COGS ya se las
+ * restó al lote origen). Hereda el costo por caja de su lote origen, que es lo
+ * que esa fruta costó: así COGS + inventario vuelven a sumar lo que se le debe
+ * al productor.
+ */
+async function inheritReturnedLotCosts(sql, purchase_order_id: number) {
+  await sql.query(
+    `update lots hijo set unit_cost = padre.unit_cost
+     from lots padre
+     where hijo.returned_from_lot_id = padre.id
+       and hijo.purchase_order_id = $1
+       and coalesce(padre.unit_cost,0) <> coalesce(hijo.unit_cost,0)`,
+    [purchase_order_id],
+  );
+}
+/**
  * Hallazgo 12: un reempaque CONGELA el costo de los lotes de origen en el lote
  * hijo. Si después se corrige el costo de la carga, el hijo se queda con el
  * viejo y su margen, su COGS y su valor de inventario mienten. Esto lo
@@ -2677,7 +2695,8 @@ async function writePoLineCostsFromLots(
   if (!lotCosts.length) return;
   const costOf = new Map(lotCosts.map((c) => [c.lot_id, c.unit_cost]));
   const rows = await sql.query(
-    `select id, purchase_order_line_id, original_qty::text from lots where purchase_order_id = $1`,
+    `select id, purchase_order_line_id, original_qty::text from lots
+     where purchase_order_id = $1 and returned_from_lot_id is null`,
     [poId],
   );
   const byLine = new Map<number, { value: number; qty: number }>();
@@ -2703,7 +2722,7 @@ async function loadPoLots(sql, poId) {
             coalesce(l.destroyed_qty,0)::text as destroyed_qty, coalesce(l.plein_bought_qty,0)::text as plein_bought_qty,
             l.origin_country as origin, l.original_qty::text, l.current_qty::text,
             coalesce(l.waste_qty,0)::text as waste_qty, coalesce(l.rts_qty,0)::text as rts_qty, l.pallets::text,
-            l.unit, l.unit_cost::text
+            l.unit, l.unit_cost::text, l.returned_from_lot_id
      from lots l
      join products p on p.id = l.product_id
      left join pack_styles ps on ps.id = l.pack_style_id
@@ -2794,7 +2813,10 @@ async function loadPoLots(sql, poId) {
       destroyed_qty: n(l.destroyed_qty),
       plein_bought_qty: n(l.plein_bought_qty),
       pending_qty: liquidated ? n(l.current_qty) : Math.min(pendingMap.get(l.id) ?? 0, n(l.current_qty)),
-      unclassified_qty: liquidated ? 0 : Math.max(0, n(l.current_qty) - (pendingMap.get(l.id) ?? 0)),
+      unclassified_qty:
+        liquidated || l.returned_from_lot_id != null
+          ? 0
+          : Math.max(0, n(l.current_qty) - (pendingMap.get(l.id) ?? 0)),
       waste_reason: wasteReasonMap.get(l.id) ?? null,
       owner_kind: l.owner_kind ?? null,
       // Cajas equivalentes de origen por caja de este lote (1 en un lote
@@ -2802,6 +2824,13 @@ async function loadPoLots(sql, poId) {
       origin_factor: 1 as number,
       origin_factor_unknown: false,
       is_repack: l.pack_out_id != null,
+      // Área #3: el lote devuelto cuelga de la carga para que, si se revende,
+      // ese ingreso le vuelva a llegar al productor. Pero NO es fruta que él
+      // entregó: contarlo como recibido inflaría el embarque (y con él la base
+      // del 5 % que dispara el certificado de destrucción de PACA) y diluiría
+      // el costo por caja de la línea de OC.
+      is_return: l.returned_from_lot_id != null,
+      returned_from_lot_id: (l.returned_from_lot_id ?? null) as number | null,
       packed_as: null as string | null,
       repacked_from: null as string | null,
       origin_error: null as string | null,
@@ -3177,7 +3206,9 @@ async function loadSettlement(
   const t_cost = lots.reduce((s, l) => s + l.t_cost, 0) + plein_purchase_total;
   // ── Disposición del remanente (PACA 7 CFR 46) ────────────────────────────
   const disposition_applies = DISPOSITION_DEALS.has(po.deal_type);
-  const received_qty = lotsRaw.filter((l) => !l.is_repack).reduce((s, l) => s + l.original_qty, 0);
+  const received_qty = lotsRaw
+    .filter((l) => !l.is_repack && !l.is_return)
+    .reduce((s, l) => s + l.original_qty, 0);
   let destroyed_equiv_qty = 0;
   const equiv_unknown: string[] = [];
   for (const l of lotsRaw) {
@@ -3543,6 +3574,7 @@ export const issueGrowerSettlement = createServerFn({ method: "POST" })
     if (s.deal_type === "consignacion") {
       for (const lot of s.lots)
         await sql.query(`update lots set unit_cost = $1 where id = $2`, [lot.cost_unit, lot.id]);
+      await inheritReturnedLotCosts(sql, data.purchase_order_id);
       await writePoLineCostsFromLots(
         sql,
         data.purchase_order_id,
@@ -5645,6 +5677,7 @@ export const applySettlement = createServerFn({ method: "POST" })
     }));
     for (const lc of lotCosts)
       await sql.query(`update lots set unit_cost = $1 where id = $2`, [lc.unit_cost, lc.lot_id]);
+    await inheritReturnedLotCosts(sql, data.purchase_order_id);
     await writePoLineCostsFromLots(sql, data.purchase_order_id, lotCosts);
     await sql.query(`update purchase_orders set costing_mode = 'pas' where id = $1`, [
       data.purchase_order_id,
@@ -8249,6 +8282,17 @@ export const cancelInvoice = createServerFn({ method: "POST" })
         throw new Error(
           `${inv.invoice_number} ya se le rindió al productor en ${rendida.doc} de ${rendida.po_number}: ese documento ya bajó el monto de su neto y no se reescribe. Si hay que devolvérselo, captura un ajuste a favor del productor en esa carga.`,
         );
+      // Área #3: si la nota nació de una devolución, cancelarla sola dejaría la
+      // fruta devuelta sin su crédito. Se cancela desde la devolución, que
+      // deshace las dos cosas juntas.
+      const [dev] = await sql.query(
+        `select return_number from customer_returns where credit_invoice_id = $1 and cancelled_at is null`,
+        [inv.id],
+      );
+      if (dev)
+        throw new Error(
+          `${inv.invoice_number} nació de la devolución ${dev.return_number}: cancélala desde ahí (Ventas → la orden → Devoluciones) para que la fruta y el crédito se deshagan juntos.`,
+        );
     }
     // Una factura cancelada con notas de crédito colgando deja el saldo del
     // cliente mal: las notas restan contra algo que ya no existe.
@@ -8421,6 +8465,17 @@ export const cancelSalesOrder = createServerFn({ method: "POST" })
       throw new Error(
         `Esta orden ya tiene la factura ${inv.invoice_number}. Cancela esa factura primero (Finanzas → Cuentas por cobrar); si el cliente devolvió solo una parte, lo correcto es nota de crédito, no cancelar la venta.`,
       );
+    // Área #3: una devolución ya movió fruta (lotes devueltos, destrucciones) y
+    // dinero. Cancelar la venta por debajo dejaría esos lotes colgando de una
+    // venta que ya no existe.
+    const [dev] = await sql.query(
+      `select return_number from customer_returns where sales_order_id = $1 and cancelled_at is null order by id limit 1`,
+      [so.id],
+    );
+    if (dev)
+      throw new Error(
+        `Esta orden tiene la devolución ${dev.return_number}: esa captura ya movió fruta y dinero. Cancélala primero (Ventas → la orden → Devoluciones) y después cancela la venta.`,
+      );
     const shipMovs = await sql.query(
       `select lot_id, location_id, quantity::text, unit from inventory_movements
        where reference_type='sales_order' and reference_id=$1 and movement_type='ship'`,
@@ -8495,6 +8550,22 @@ export const cancelPurchaseOrder = createServerFn({ method: "POST" })
     if (bill)
       throw new Error(
         `Esta orden ya tiene la factura de proveedor ${bill.bill_number}. Cancela esa factura primero.`,
+      );
+    // Área #3: cancelar la carga vacía sus lotes — incluido el lote devuelto,
+    // que no se ve "tocado" porque conserva sus cajas completas. La devolución
+    // y su nota de crédito quedarían vivas apuntando a fruta que ya no existe.
+    const [devVive] = await sql.query(
+      `select r.return_number
+       from customer_return_lines l
+       join customer_returns r on r.id = l.return_id
+       join lots lo on lo.id = l.new_lot_id
+       where lo.purchase_order_id = $1 and r.cancelled_at is null
+       order by r.id limit 1`,
+      [po.id],
+    );
+    if (devVive)
+      throw new Error(
+        `Esta carga tiene fruta devuelta por un cliente en la devolución ${devVive.return_number}. Cancélala primero (Ventas → la orden → Devoluciones) y después cancela la carga.`,
       );
     const lots = await sql.query(
       `select id, lot_number, original_qty::text, current_qty::text, unit, status from lots where purchase_order_id = $1`,
@@ -10725,6 +10796,660 @@ export const createCreditInvoice = createServerFn({ method: "POST" })
       attributions,
     };
   });
+const RETURN_DESTINATION_LABEL: Record<string, string> = {
+  restock: "Regresó al inventario",
+  destroyed: "Destruida",
+  not_returned: "No regresó",
+};
+/**
+ * Área #3: lo que se puede devolver de una venta. Un renglón por despacho
+ * vivo, con lo que ya se devolvió de él — el tope real de la captura.
+ */
+export const listReturnable = createServerFn({ method: "GET" })
+  .validator(z.object({ sales_order_id: z.number() }))
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const rows = await sql.query(
+      `select a.id as allocation_id, a.quantity::text,
+              coalesce((select sum(crl.quantity) from customer_return_lines crl
+                         join customer_returns cr on cr.id = crl.return_id
+                         where crl.allocation_id = a.id and cr.cancelled_at is null),0)::text as devuelto_total,
+              sol.id as sales_order_line_id, sol.unit, coalesce(sol.unit_price,0)::text as unit_price,
+              lo.id as lot_id, lo.lot_number, lo.unit_cost::text, lo.origin_country,
+              p.name as product_name, ps.calibre, ps.sku_code,
+              po.id as purchase_order_id, po.po_number, coalesce(po.deal_type,'firme') as deal_type,
+              po.liquidated_at::text, s.name as supplier_name,
+              sh.id as shipment_id, sh.bol_number
+       from sale_line_allocations a
+       join sales_order_lines sol on sol.id = a.sales_order_line_id
+       join lots lo on lo.id = a.lot_id
+       join products p on p.id = lo.product_id
+       left join pack_styles ps on ps.id = lo.pack_style_id
+       left join purchase_orders po on po.id = lo.purchase_order_id
+       left join suppliers s on s.id = po.supplier_id
+       left join shipments sh on sh.id = a.shipment_id
+       where sol.sales_order_id = $1 and a.cancelled_at is null
+       order by a.id`,
+      [data.sales_order_id],
+    );
+    return rows.map((r) => {
+      const quantity = n(r.quantity);
+      const returned = n(r.devuelto_total);
+      return {
+        allocation_id: r.allocation_id as number,
+        sales_order_line_id: r.sales_order_line_id as number,
+        lot_id: r.lot_id as number,
+        lot_number: String(r.lot_number),
+        description: packDescription(String(r.product_name), null, r.calibre),
+        sku_code: r.sku_code ?? null,
+        unit: r.unit || "caja",
+        unit_price: n(r.unit_price),
+        unit_cost: n(r.unit_cost),
+        origin_country: r.origin_country ?? null,
+        quantity,
+        returned_qty: returned,
+        returnable: Math.max(quantity - returned, 0),
+        purchase_order_id: r.purchase_order_id ?? null,
+        po_number: r.po_number ?? null,
+        deal_type: String(r.deal_type ?? "firme"),
+        liquidated_at: r.liquidated_at ?? null,
+        supplier_name: r.supplier_name ?? null,
+        // En firme la fruta ya es de Plein: el golpe no se le atribuye al
+        // productor, aunque la caja haya llegado mal.
+        attributable: String(r.deal_type ?? "firme") !== "firme",
+        shipment_id: r.shipment_id ?? null,
+        bol_number: r.bol_number ?? null,
+      };
+    });
+  });
+/**
+ * Área #3: la devolución del cliente, de punta a punta y en una sola captura.
+ * Mueve la fruta (regresa como lote devuelto, se destruye o nunca volvió) y
+ * el dinero (nota de crédito con su atribución), para que las dos no puedan
+ * contarse cosas distintas.
+ */
+export const createCustomerReturn = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      sales_order_id: z.number(),
+      return_date: ISO_DATE.optional(),
+      claim_reference: z.string().optional(),
+      inspection_type: z.string().optional(),
+      inspection_folio: z.string().optional(),
+      notes: z.string().optional(),
+      customer_note: z.string().optional(),
+      // Dónde entra la fruta que regresa. Solo se pide si hay renglón 'restock'.
+      location_id: z.number().optional(),
+      lines: z
+        .array(
+          z.object({
+            allocation_id: z.number(),
+            quantity: z.number().positive(),
+            destination: z.enum(["restock", "destroyed", "not_returned"]),
+            cause: z.enum(["grower", "plein"]),
+            reason: z.string().min(1),
+            credit_per_unit: z.number().min(0),
+            destroy_reason: z.string().optional(),
+            destroy_certificate: z.string().optional(),
+            not_returned_detail: z.string().optional(),
+            salvage_amount: z.number().min(0).optional(),
+          }),
+        )
+        .min(1),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [so] = await sql.query(
+      `select id, so_number, customer_id, status from sales_orders where id = $1`,
+      [data.sales_order_id],
+    );
+    if (!so) throw new Error("Orden de venta no encontrada");
+    if (so.status === "cancelled")
+      throw new Error(
+        `${so.so_number} está cancelada: sus despachos ya se revirtieron. Una venta cancelada no tiene devolución.`,
+      );
+    // ── 1. Validar TODO antes de escribir nada ──────────────────────────
+    // Una devolución crea documento, lotes, merma y nota de crédito. Si algo
+    // truena a la mitad, el reintento duplicaría la nota al cliente.
+    const porAsignacion = new Map<number, number>();
+    const resueltas: {
+      row: (typeof data.lines)[number];
+      alloc: any;
+      qty: number;
+      creditAmount: number;
+    }[] = [];
+    let necesitaUbicacion = false;
+    for (const row of data.lines) {
+      const [alloc] = await sql.query(
+        `select a.id, a.quantity::text,
+                coalesce((select sum(crl.quantity) from customer_return_lines crl
+                         join customer_returns cr on cr.id = crl.return_id
+                         where crl.allocation_id = a.id and cr.cancelled_at is null),0)::text as devuelto_total,
+                a.lot_id, a.cancelled_at, sol.id as sales_order_line_id, sol.sales_order_id,
+                sol.unit, coalesce(sol.unit_price,0)::text as unit_price,
+                lo.lot_number, lo.product_id, lo.pack_style_id, lo.supplier_id, lo.unit_cost::text,
+                lo.purchase_order_id, lo.purchase_order_line_id, lo.grade, lo.origin_country,
+                lo.pack_date::text, coalesce(po.deal_type,'firme') as deal_type, po.po_number
+         from sale_line_allocations a
+         join sales_order_lines sol on sol.id = a.sales_order_line_id
+         join lots lo on lo.id = a.lot_id
+         left join purchase_orders po on po.id = lo.purchase_order_id
+         where a.id = $1`,
+        [row.allocation_id],
+      );
+      if (!alloc) throw new Error("Ese despacho no existe");
+      if (Number(alloc.sales_order_id) !== Number(data.sales_order_id))
+        throw new Error("Ese despacho no es de esta venta");
+      if (alloc.cancelled_at)
+        throw new Error(
+          `El despacho del lote ${alloc.lot_number} ya se canceló: esa venta se revirtió, no se devuelve.`,
+        );
+      const yaDevuelto = porAsignacion.get(alloc.id) ?? n(alloc.devuelto_total);
+      const disponible = n(alloc.quantity) - yaDevuelto;
+      if (row.quantity > disponible + 1e-4)
+        throw new Error(
+          `Lote ${alloc.lot_number}: se despacharon ${qtyText(n(alloc.quantity))} ${alloc.unit} y ya se devolvieron ${qtyText(yaDevuelto)} — quedan ${qtyText(Math.max(disponible, 0))}.`,
+        );
+      if (row.credit_per_unit > n(alloc.unit_price) + 1e-6)
+        throw new Error(
+          `Lote ${alloc.lot_number}: el crédito por ${alloc.unit} (${money2(row.credit_per_unit)}) no puede ser mayor al precio facturado (${money2(n(alloc.unit_price))}).`,
+        );
+      if (row.destination === "destroyed" && !row.destroy_reason?.trim())
+        throw new Error(
+          `Lote ${alloc.lot_number}: destruir fruta exige motivo. PACA pide documentar cada caja destruida.`,
+        );
+      if (row.destination === "not_returned" && !row.not_returned_detail?.trim())
+        throw new Error(
+          `Lote ${alloc.lot_number}: captura qué pasó con la fruta que no regresó (se vendió en destino, se donó, se tiró).`,
+        );
+      if (row.destination === "restock") necesitaUbicacion = true;
+      porAsignacion.set(alloc.id, yaDevuelto + row.quantity);
+      resueltas.push({
+        row,
+        alloc,
+        qty: row.quantity,
+        creditAmount: round2(row.quantity * row.credit_per_unit),
+      });
+    }
+    if (necesitaUbicacion && !data.location_id)
+      throw new Error("Elige a qué ubicación entra la fruta que regresa.");
+    const creditTotal = round2(resueltas.reduce((s, r) => s + r.creditAmount, 0));
+    // ── 2. La nota de crédito: mismos topes que el camino normal ────────
+    const base = creditTotal > 0.009 ? await loadSaleInvoiceForCredit(sql, data.sales_order_id) : null;
+    if (creditTotal > 0.009 && !base)
+      throw new Error(
+        "Esta venta no tiene factura viva: factura primero y después registra la devolución con su crédito. (Si no vas a acreditar nada, deja el crédito por unidad en cero.)",
+      );
+    let resolvedAttributions: Awaited<ReturnType<typeof validateCreditRows>> = [];
+    let creditLines: { product_id: number; credit_type: "devolucion"; qty: number; credit_per_unit: number }[] = [];
+    if (base) {
+      const byProduct = new Map(base.lines.map((l) => [l.product_id, l]));
+      const porProducto = new Map<number, { qty: number; amount: number; maxUnit: number }>();
+      for (const r of resueltas) {
+        if (r.creditAmount <= 0) continue;
+        const productId = Number(r.alloc.product_id);
+        const inv = byProduct.get(productId);
+        if (!inv)
+          throw new Error(
+            `El lote ${r.alloc.lot_number} es de un producto que no está en la factura ${base.invoice.invoice_number}.`,
+          );
+        const cur = porProducto.get(productId) ?? { qty: 0, amount: 0, maxUnit: 0 };
+        cur.qty += r.qty;
+        cur.amount += r.creditAmount;
+        cur.maxUnit = Math.max(cur.maxUnit, r.row.credit_per_unit);
+        porProducto.set(productId, cur);
+      }
+      for (const [productId, agg] of porProducto) {
+        const inv = byProduct.get(productId)!;
+        if (agg.qty > inv.quantity + 1e-9)
+          throw new Error(
+            `${inv.description}: se facturaron ${qtyText(inv.quantity)} ${inv.unit} — no se pueden devolver ${qtyText(agg.qty)}.`,
+          );
+        const remaining = inv.amount - inv.credited_amount;
+        if (agg.amount > remaining + 0.009)
+          throw new Error(
+            `${inv.description}: ya hay ${money2(inv.credited_amount)} acreditados de ${money2(inv.amount)} — máximo acreditable ${money2(Math.max(remaining, 0))}.`,
+          );
+        creditLines.push({
+          product_id: productId,
+          credit_type: "devolucion",
+          qty: agg.qty,
+          credit_per_unit: Math.round((agg.amount / agg.qty) * 10000) / 10000,
+        });
+      }
+      const invoiceRemaining = base.invoice.total - base.invoice.credited_total;
+      if (creditTotal > invoiceRemaining + 0.009)
+        throw new Error(
+          `La factura ${base.invoice.invoice_number} ya tiene ${money2(base.invoice.credited_total)} acreditados — máximo acreditable ${money2(Math.max(invoiceRemaining, 0))}.`,
+        );
+      // La culpa viaja por el mismo camino que ya existe (C-1b): solo la del
+      // productor le baja el neto; la de Plein queda documentada y no le
+      // cuesta nada a él. En firme no se atribuye: esa fruta ya es de Plein.
+      const porCarga = new Map<number, { amount: number; motivos: string[]; lot_id: number }>();
+      for (const r of resueltas) {
+        if (r.creditAmount <= 0) continue;
+        if (String(r.alloc.deal_type) === "firme") continue;
+        if (r.alloc.purchase_order_id == null) continue;
+        const poId = Number(r.alloc.purchase_order_id);
+        if (r.row.cause !== "grower") continue;
+        const cur = porCarga.get(poId) ?? { amount: 0, motivos: [], lot_id: Number(r.alloc.lot_id) };
+        cur.amount += r.creditAmount;
+        cur.motivos.push(`${r.alloc.lot_number}: ${r.row.reason.trim()}`);
+        porCarga.set(poId, cur);
+      }
+      resolvedAttributions = await validateCreditRows(
+        sql,
+        {
+          sales_order_id: data.sales_order_id,
+          credit_total: creditTotal,
+          invoice_id: null,
+          invoice_number: "de esta devolución",
+        },
+        [...porCarga.entries()].map(([purchase_order_id, v]) => ({
+          purchase_order_id,
+          lot_id: v.lot_id,
+          cause: "grower" as const,
+          reason: v.motivos.join(" · "),
+          amount: round2(v.amount),
+        })),
+      );
+    }
+    // ── 3. Escribir ─────────────────────────────────────────────────────
+    const staffName = await staffNameFor(sql, context.userId);
+    const returnDate = data.return_date || todayISO();
+    const return_number = await nextCode(sql, "customer_returns", "return_number", "DEV-", 3);
+    const returnId = (
+      await sql.query(
+        `insert into customer_returns
+         (return_number, sales_order_id, customer_id, invoice_id, return_date, claim_reference,
+          inspection_type, inspection_folio, notes, credit_total, created_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
+        [
+          return_number,
+          data.sales_order_id,
+          so.customer_id,
+          base?.invoice.id ?? null,
+          returnDate,
+          data.claim_reference?.trim() || null,
+          data.inspection_type?.trim() || null,
+          data.inspection_folio?.trim() || null,
+          data.notes?.trim() || null,
+          creditTotal,
+          staffName,
+        ],
+      )
+    )[0].id as number;
+    const lotesNuevos: { lot_number: string; qty: number; destination: string }[] = [];
+    for (const r of resueltas) {
+      const { alloc, row, qty } = r;
+      // El renglón se escribe PRIMERO: es el único candado contra un reintento
+      // (el tope de cajas devueltas se lee de esta tabla). Si se escribiera al
+      // final y algo tronara a media escritura, el reintento no vería nada y
+      // volvería a sumar `returned_qty` y `rts_qty` — el costo de venta
+      // restado dos veces, en silencio.
+      const lineId = (
+        await sql.query(
+          `insert into customer_return_lines
+           (return_id, sales_order_line_id, allocation_id, lot_id, quantity, unit, destination,
+            new_lot_id, destroy_reason, destroy_certificate, not_returned_detail, salvage_amount,
+            cause, reason, credit_per_unit, credit_amount)
+           values ($1,$2,$3,$4,$5,$6,$7,null,$8,$9,$10,$11,$12,$13,$14,$15) returning id`,
+          [
+            returnId,
+            alloc.sales_order_line_id,
+            alloc.id,
+            alloc.lot_id,
+            qty,
+            alloc.unit || "caja",
+            row.destination,
+            row.destination === "destroyed" ? row.destroy_reason!.trim() : null,
+            row.destination === "destroyed" ? row.destroy_certificate?.trim() || null : null,
+            row.destination === "not_returned" ? row.not_returned_detail!.trim() : null,
+            row.destination === "not_returned" ? (row.salvage_amount ?? 0) : 0,
+            row.cause,
+            row.reason.trim(),
+            row.credit_per_unit,
+            r.creditAmount,
+          ],
+        )
+      )[0].id as number;
+      // `returned_qty` solo cuenta la fruta que DE VERDAD volvió a la cámara:
+      // es lo que saca del costo de venta, porque esas cajas están otra vez en
+      // el inventario y cobrarlas como vendidas y tenerlas en existencia al
+      // mismo tiempo las contaría dos veces. La destruida y la que nunca
+      // regresó se quedan costeadas como vendidas — es la verdad económica:
+      // esa fruta se fue y no volvió. Su golpe viaja por la nota de crédito.
+      if (row.destination === "restock")
+        await sql.query(
+          `update sale_line_allocations set returned_qty = coalesce(returned_qty,0) + $1 where id = $2`,
+          [qty, alloc.id],
+        );
+      // `rts_qty` en cambio documenta TODA caja devuelta, volviera o no: es el
+      // rastro que PACA pide y el que la liquidación le enseña al productor.
+      await sql.query(`update lots set rts_qty = coalesce(rts_qty,0) + $1 where id = $2`, [
+        qty,
+        alloc.lot_id,
+      ]);
+      let newLotId: number | null = null;
+      if (row.destination === "restock") {
+        // Lote NUEVO marcado devuelto: esta fruta ya viajó, y revolverla con
+        // la que nunca salió de la cámara borraría ese rastro.
+        const lot = await insertLot(sql, {
+          product_id: alloc.product_id,
+          supplier_id: alloc.supplier_id,
+          pack_style_id: alloc.pack_style_id,
+          qty,
+          unit: alloc.unit || "caja",
+          unit_cost: n(alloc.unit_cost),
+          location_id: data.location_id,
+          quality_state: "retenido",
+          quality_note: `Devuelta por el cliente — ${row.reason.trim()}`,
+          poId: alloc.purchase_order_id,
+          poLineId: alloc.purchase_order_line_id,
+          pallets: null,
+          received_date: returnDate,
+          pack_date: alloc.pack_date || null,
+          grade: alloc.grade || null,
+          origin_country: alloc.origin_country || null,
+          notes: `Devolución ${return_number} · lote origen ${alloc.lot_number}`,
+        });
+        newLotId = lot.lotId;
+        await sql.query(`update lots set returned_from_lot_id = $1, held = true where id = $2`, [
+          alloc.lot_id,
+          newLotId,
+        ]);
+        lotesNuevos.push({ lot_number: lot.lot_number, qty, destination: row.destination });
+        await sql.query(`update customer_return_lines set new_lot_id = $1 where id = $2`, [
+          newLotId,
+          lineId,
+        ]);
+      }
+    }
+    // ── 4. La nota de crédito, del mismo documento ──────────────────────
+    let credit: { id: number; invoice_number: string; total: number } | null = null;
+    if (base && creditLines.length) {
+      const issue = returnDate;
+      const invoice_number = await nextCode(
+        sql,
+        "invoices",
+        "invoice_number",
+        `PP-${issue.slice(0, 4)}-CR-`,
+        3,
+      );
+      const notes =
+        [
+          `Devolución ${return_number}`,
+          data.claim_reference?.trim() ? `Reclamo ${data.claim_reference.trim()}` : null,
+          data.customer_note?.trim(),
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      const creditId = (
+        await sql.query(
+          `insert into invoices (invoice_number, sales_order_id, customer_id, status, issue_date, due_date, subtotal, total, paid, notes, invoice_type, sales_rep, parent_invoice_id)
+           values ($1,$2,$3,'open',$4,null,$5,$5,0,$6,'credit',$7,$8) returning id`,
+          [
+            invoice_number,
+            data.sales_order_id,
+            so.customer_id,
+            issue,
+            -creditTotal,
+            notes,
+            staffName,
+            base.invoice.id,
+          ],
+        )
+      )[0].id as number;
+      // Se liga de inmediato: si algo tronara más abajo, una nota suelta
+      // seguiría bajándole el saldo al cliente sin que la devolución la
+      // conozca — y cancelar la devolución la dejaría viva.
+      await sql.query(`update customer_returns set credit_invoice_id = $1 where id = $2`, [
+        creditId,
+        returnId,
+      ]);
+      const byProduct = new Map(base.lines.map((l) => [l.product_id, l]));
+      for (const l of creditLines) {
+        const inv = byProduct.get(l.product_id)!;
+        await sql.query(
+          `insert into invoice_lines (invoice_id, product_id, pack_style_id, description, quantity, unit, unit_price, amount, credit_type)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,'devolucion')`,
+          [
+            creditId,
+            l.product_id,
+            inv.pack_style_id ?? null,
+            `${inv.description} — Devolución ${return_number}`,
+            l.qty,
+            inv.unit,
+            -l.credit_per_unit,
+            -round2(l.qty * l.credit_per_unit),
+          ],
+        );
+      }
+      await writeCreditRows(
+        sql,
+        context,
+        { invoice_id: creditId, parent_invoice_id: base.invoice.id },
+        resolvedAttributions,
+      );
+      credit = { id: creditId, invoice_number, total: -creditTotal };
+    }
+    return {
+      id: returnId,
+      return_number,
+      credit,
+      credit_total: creditTotal,
+      lots: lotesNuevos,
+      attributions: resolvedAttributions.map((a) => ({
+        po_number: a.po_number,
+        supplier_name: a.supplier_name,
+        amount: a.amount,
+        goes_to_supplement: a.goes_to_supplement,
+      })),
+    };
+  });
+/** Las devoluciones de una venta (o todas), para la pantalla y el documento. */
+export const listCustomerReturns = createServerFn({ method: "GET" })
+  .validator(z.object({ sales_order_id: z.number().optional() }).optional())
+  .middleware([authMiddleware])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const soId = data?.sales_order_id ?? null;
+    const heads = await sql.query(
+      `select r.id, r.return_number, r.sales_order_id, so.so_number, r.customer_id, c.name as customer_name,
+              r.invoice_id, i.invoice_number, r.credit_invoice_id, ci.invoice_number as credit_number,
+              ci.status as credit_status, r.return_date::text, r.claim_reference,
+              r.inspection_type, r.inspection_folio, r.notes, r.credit_total::text,
+              r.created_by, r.created_at::text, r.cancelled_at::text, r.cancelled_by, r.cancel_reason
+       from customer_returns r
+       join sales_orders so on so.id = r.sales_order_id
+       join customers c on c.id = r.customer_id
+       left join invoices i on i.id = r.invoice_id
+       left join invoices ci on ci.id = r.credit_invoice_id
+       ${soId != null ? "where r.sales_order_id = $1" : ""}
+       order by r.id desc`,
+      soId != null ? [soId] : [],
+    );
+    if (!heads.length) return [];
+    const lines = await sql.query(
+      `select l.id, l.return_id, l.quantity::text, l.unit, l.destination, l.cause, l.reason,
+              l.destroy_reason, l.destroy_certificate, l.not_returned_detail, l.salvage_amount::text,
+              l.credit_per_unit::text, l.credit_amount::text,
+              lo.lot_number, p.name as product_name, ps.calibre,
+              nl.lot_number as new_lot_number, nl.current_qty::text as new_lot_qty,
+              po.po_number, s.name as supplier_name
+       from customer_return_lines l
+       join lots lo on lo.id = l.lot_id
+       join products p on p.id = lo.product_id
+       left join pack_styles ps on ps.id = lo.pack_style_id
+       left join lots nl on nl.id = l.new_lot_id
+       left join purchase_orders po on po.id = lo.purchase_order_id
+       left join suppliers s on s.id = po.supplier_id
+       where l.return_id = any($1::int[]) order by l.id`,
+      [heads.map((h) => h.id)],
+    );
+    return heads.map((h) => ({
+      ...h,
+      credit_total: n(h.credit_total),
+      lines: lines
+        .filter((l) => l.return_id === h.id)
+        .map((l) => ({
+          ...l,
+          quantity: n(l.quantity),
+          salvage_amount: n(l.salvage_amount),
+          credit_per_unit: n(l.credit_per_unit),
+          credit_amount: n(l.credit_amount),
+          new_lot_qty: l.new_lot_qty == null ? null : n(l.new_lot_qty),
+          destination_label: RETURN_DESTINATION_LABEL[l.destination] ?? l.destination,
+        })),
+    }));
+  });
+/**
+ * Cancelar una devolución la deshace entera: la fruta, el crédito al cliente y
+ * la atribución al productor. Se niega en cuanto algo ya salió a un tercero o
+ * ya se movió, porque entonces deshacerla dejaría números inventados.
+ */
+export const cancelCustomerReturn = createServerFn({ method: "POST" })
+  .validator(z.object({ return_id: z.number(), reason: z.string().min(1) }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const [ret] = await sql.query(
+      `select id, return_number, credit_invoice_id, cancelled_at from customer_returns where id = $1`,
+      [data.return_id],
+    );
+    if (!ret) throw new Error("Devolución no encontrada");
+    if (ret.cancelled_at)
+      throw new Error(`La devolución ${ret.return_number} ya está cancelada`);
+    const lines = await sql.query(
+      `select id, allocation_id, lot_id, quantity::text, destination, new_lot_id
+       from customer_return_lines where return_id = $1 order by id`,
+      [data.return_id],
+    );
+    // ── Validar todo antes de deshacer nada ────────────────────────────
+    if (ret.credit_invoice_id != null) {
+      const [ci] = await sql.query(
+        `select invoice_number, status, paid::text from invoices where id = $1`,
+        [ret.credit_invoice_id],
+      );
+      if (ci && ci.status !== "cancelled") {
+        const [rendida] = await sql.query(
+          `select coalesce(gs.settlement_number, sup.supplement_number) as doc, po.po_number
+           from grower_credit_attributions a
+           join purchase_orders po on po.id = a.purchase_order_id
+           left join grower_settlements gs on gs.id = a.settlement_id
+           left join grower_settlement_supplements sup on sup.id = a.supplement_id
+           where a.invoice_id = $1 and a.cancelled_at is null
+             and (a.settlement_id is not null or a.supplement_id is not null)
+           order by a.id limit 1`,
+          [ret.credit_invoice_id],
+        );
+        if (rendida)
+          throw new Error(
+            `La nota ${ci.invoice_number} de esta devolución ya se le rindió al productor en ${rendida.doc} de ${rendida.po_number}: ese documento ya bajó el monto de su neto y no se reescribe. Corrige con un ajuste a favor del productor en esa carga.`,
+          );
+      }
+    }
+    for (const l of lines) {
+      if (l.destination !== "restock" || l.new_lot_id == null) continue;
+      const [lot] = await sql.query(
+        `select lot_number, original_qty::text, current_qty::text, coalesce(waste_qty,0)::text as waste_qty,
+                closed_at, pack_out_id
+         from lots where id = $1`,
+        [l.new_lot_id],
+      );
+      if (!lot) continue;
+      const [vendido] = await sql.query(
+        `select coalesce(sum(quantity),0)::text as v from sale_line_allocations
+         where lot_id = $1 and cancelled_at is null`,
+        [l.new_lot_id],
+      );
+      const [reempacado] = await sql.query(
+        `select count(*)::text as v from pack_out_lines where lot_id = $1`,
+        [l.new_lot_id],
+      );
+      // El lote se borra al deshacer, así que TODA tabla que lo referencie
+      // tiene que estar limpia o el delete truena a media cancelación — con
+      // los contadores ya restados y el crédito todavía vivo.
+      const [despachado] = await sql.query(
+        `select count(*)::text as v from sale_line_allocations where lot_id = $1`,
+        [l.new_lot_id],
+      );
+      const [clasificado] = await sql.query(
+        `select count(*)::text as v from lot_dispositions where lot_id = $1`,
+        [l.new_lot_id],
+      );
+      const [rendido] = await sql.query(
+        `select ((select count(*) from grower_settlement_lots where lot_id = $1)
+               + (select count(*) from grower_settlement_supplement_lots where lot_id = $1))::text as v`,
+        [l.new_lot_id],
+      );
+      if (n(despachado?.v) > 0)
+        throw new Error(
+          `El lote devuelto ${lot.lot_number} ya se despachó en una venta (aunque esa venta se haya cancelado después): ese rastro no se borra. La devolución se cancela mientras el lote no se haya movido.`,
+        );
+      if (n(clasificado?.v) > 0)
+        throw new Error(
+          `El lote devuelto ${lot.lot_number} ya se clasificó en la disposición del remanente. Quita esa clasificación en la liquidación de la carga y vuelve a intentar.`,
+        );
+      if (n(rendido?.v) > 0)
+        throw new Error(
+          `El lote devuelto ${lot.lot_number} ya viajó en una liquidación al productor: ese documento no se reescribe. Corrige con un ajuste a favor del productor en esa carga.`,
+        );
+      if (n(vendido?.v) > 1e-6)
+        throw new Error(
+          `El lote devuelto ${lot.lot_number} ya se revendió: cancelar la devolución dejaría vendida fruta que nunca volvió. Cancela primero esos despachos.`,
+        );
+      if (n(reempacado?.v) > 0)
+        throw new Error(
+          `El lote devuelto ${lot.lot_number} ya se reempacó: cancela primero ese reempaque.`,
+        );
+      if (n(lot.waste_qty) > 1e-6)
+        throw new Error(`El lote devuelto ${lot.lot_number} ya tiene merma registrada.`);
+      if (Math.abs(n(lot.current_qty) - n(lot.original_qty)) > 1e-6)
+        throw new Error(
+          `El lote devuelto ${lot.lot_number} ya no tiene sus ${qtyText(n(lot.original_qty))} cajas completas: algo se movió. Revísalo en Inventario antes de cancelar.`,
+        );
+    }
+    // ── Deshacer ───────────────────────────────────────────────────────
+    const staffName = await staffNameFor(sql, context.userId);
+    for (const l of lines) {
+      const qty = n(l.quantity);
+      if (l.destination === "restock")
+        await sql.query(
+          `update sale_line_allocations set returned_qty = greatest(coalesce(returned_qty,0) - $1, 0) where id = $2`,
+          [qty, l.allocation_id],
+        );
+      await sql.query(
+        `update lots set rts_qty = greatest(coalesce(rts_qty,0) - $1, 0) where id = $2`,
+        [qty, l.lot_id],
+      );
+      if (l.new_lot_id != null) {
+        await sql.query(`delete from inventory_movements where lot_id = $1`, [l.new_lot_id]);
+        await sql.query(`delete from inventory where lot_id = $1`, [l.new_lot_id]);
+        await sql.query(`update customer_return_lines set new_lot_id = null where id = $1`, [l.id]);
+        await sql.query(`delete from lots where id = $1`, [l.new_lot_id]);
+      }
+    }
+    if (ret.credit_invoice_id != null) {
+      await sql.query(
+        `update grower_credit_attributions set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2
+         where invoice_id = $3 and cancelled_at is null`,
+        [staffName, `Devolución ${ret.return_number} cancelada: ${data.reason.trim()}`, ret.credit_invoice_id],
+      );
+      await sql.query(
+        `update invoices set status = 'cancelled', notes = coalesce(notes,'') || $1 where id = $2 and status <> 'cancelled'`,
+        [` · Cancelada con la devolución ${ret.return_number}: ${data.reason.trim()}`, ret.credit_invoice_id],
+      );
+    }
+    await sql.query(
+      `update customer_returns set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`,
+      [staffName, data.reason.trim(), data.return_id],
+    );
+    return { return_number: ret.return_number };
+  });
 export const listGlAccounts = createServerFn({ method: "GET" })
   .middleware([moduleMiddleware("finance")])
   .handler(async () => {
@@ -10810,7 +11535,7 @@ export const getFinancials = createServerFn({ method: "GET" })
       `select coalesce(invoice_type,'sale') as invoice_type, total::text, paid::text, issue_date::text, status from invoices`,
     );
     const cogsRows = await sql.query(`
-    select coalesce(sum(a.quantity * coalesce(lots.unit_cost,0)),0)::text as cogs,
+    select coalesce(sum((a.quantity - coalesce(a.returned_qty,0)) * coalesce(lots.unit_cost,0)),0)::text as cogs,
            coalesce((select sum(sol.quantity_shipped * coalesce(sol.unit_price,0)) from sales_order_lines sol),0)::text as sales
     from sale_line_allocations a
     left join lots on lots.id = a.lot_id
@@ -11845,6 +12570,7 @@ export type LiveWipeCounts = {
   certificates: number;
   supplements: number;
   adjustments: number;
+  customer_returns: number;
 };
 
 function wipeTotal(c: LiveWipeCounts) {
@@ -11865,7 +12591,8 @@ function wipeTotal(c: LiveWipeCounts) {
     c.dispositions +
     c.certificates +
     c.supplements +
-    c.adjustments
+    c.adjustments +
+    c.customer_returns
   );
 }
 
@@ -11896,6 +12623,7 @@ async function countLiveActivity(sql: any): Promise<LiveWipeCounts> {
     certificates: await n(`select count(*)::text as c from destruction_certificates`),
     supplements: await n(`select count(*)::text as c from grower_settlement_supplements`),
     adjustments: await n(`select count(*)::text as c from grower_adjustments`),
+    customer_returns: await n(`select count(*)::text as c from customer_returns`),
   };
 }
 
@@ -11975,7 +12703,15 @@ async function wipeLiveActivity(sql: any) {
   // Los lotes hijos apuntan al reempaque (lots.pack_out_id) y se borran más
   // abajo: soltar la referencia primero o el borrado truena por FK.
   await sql.query(`update lots set pack_out_id = null where pack_out_id is not null`);
+  // Y el lote devuelto apunta al lote que lo originó (migración 0047).
+  await sql.query(
+    `update lots set returned_from_lot_id = null where returned_from_lot_id is not null`,
+  );
   await sql.query(`delete from pack_outs`);
+  // Área #3: la devolución apunta a despachos, lotes y facturas — se borra
+  // antes que los tres o el borrado truena por llave foránea.
+  await sql.query(`delete from customer_return_lines`);
+  await sql.query(`delete from customer_returns`);
   await sql.query(`delete from waste_events`);
   await sql.query(`delete from inventory_movements`);
   await sql.query(`delete from inventory`);
