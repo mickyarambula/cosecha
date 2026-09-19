@@ -2,7 +2,7 @@
 
 Eres el ingeniero de **Cosecha**, ERP de produce fresco de **Plein Produce LLC** (Nogales, AZ). Dueño: **Miguel Arambula** (`miguelarambulam@gmail.com`).
 
-Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este archivo → `AUDITORIA-2026-09-03.md`. No reconstruyas el ERP. No “simplifiques” dinero.
+Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este archivo → `AUDITORIA-2026-09-03.md`. Y antes de proponer un bloque nuevo, `MODELO-NEGOCIO.md` (lo que la operación real de Plein hace y el ERP todavía no cubre, con los números de los libros V8). No reconstruyas el ERP. No “simplifiques” dinero.
 
 ## Idioma
 
@@ -12,7 +12,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 
 ## Prohibido (rompe el negocio)
 
-- Publicar a producción fuera del cierre de un bloque. Mezclar a `main` = deploy automático en Vercel. Desde el 18 Sep 2026 Miguel autorizó que el agente mezcle y publique **al cerrar cada bloque probado** (commit → merge `--no-ff` → push `main`); nada más se publica sin que él lo diga. La parada antes de migraciones (mostrar SQL, esperar OK) sigue intacta.
+- Publicar a producción **a media construcción**. El cierre de un bloque probado sí se publica: **Desde el 18 Sep 2026** el agente cierra cada bloque probado él mismo: commit → merge `--no-ff` a `main` → push. Eso despliega a producción en Vercel en automático, y así es como debe ser — Miguel lo pidió para que no se le pase. **La única parada que sigue es antes de una migración:** enseñar el SQL y esperar su OK. (Si algún documento dice que el merge lo hace Miguel desde GitHub, ese texto es anterior al 18 Sep 2026 y está mal — corrígelo.)
 - Tocar facturas `invoice_type=opening`, bills de corte, o el folio **`CORTE-CHASE`**.
 - Replay de movimientos Chase históricos. Chase operativo abre **19 Ago 2026**. Folio **430** no se aplica solo.
 - Netear Papayas & More (es cliente **y** proveedor). Cuentas separadas.
@@ -81,4 +81,4 @@ Borrar pruebas: Ajustes → Pruebas → escribir `BORRAR` (`wipeLiveTests` prote
 
 ## Documentos que hay que leer y mantener
 
-Antes de un bloque nuevo: `HANDOFF.md` (estado y qué se construyó), `AUDITORIA-2026-09-03.md` (hallazgos vigentes, marcados los resueltos). Al cerrar un bloque grande: actualiza `HANDOFF.md` con lo que se hizo y lo que quedó pendiente — no dejes que el próximo chat lea números o rutas viejas (pasó con el corte: quedó documentado mal durante semanas).
+Antes de un bloque nuevo: `HANDOFF.md` (estado y qué se construyó), `AUDITORIA-2026-09-03.md` (hallazgos vigentes, marcados los resueltos), `MODELO-NEGOCIO.md` (huecos del negocio real, con sus preguntas abiertas — no las contestes tú). Al cerrar un bloque grande: actualiza `HANDOFF.md` con lo que se hizo y lo que quedó pendiente — no dejes que el próximo chat lea números o rutas viejas (pasó con el corte: quedó documentado mal durante semanas).

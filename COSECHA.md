@@ -3,9 +3,11 @@
 ERP de **Plein Produce LLC** (Nogales, AZ). Dueño: Miguel.
 Este repo es el desarrollo entero: backend, frontend, diseño, migraciones, PDF, auth.
 
-Si otro chat o proyecto usa esto como base: **no reconstruyas Cosecha**. Lee el repo. Reutiliza stack, tokens, server functions y patrones. No publiques. No toques el corte ni Chase histórico. No reescribas una liquidación ya emitida (`purchase_orders.liquidated_at`).
+Si otro chat o proyecto usa esto como base: **no reconstruyas Cosecha**. Lee el repo. Reutiliza stack, tokens, server functions y patrones. No publiques *ese* proyecto desde aquí. No toques el corte ni Chase histórico. No reescribas una liquidación ya emitida (`purchase_orders.liquidated_at`).
 
-Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CLAUDE.md` → `AUDITORIA-2026-09-03.md` (hallazgos vigentes, marcados los que ya se resolvieron y en qué bloque).
+Si trabajas **en Cosecha**, es al revés: al cerrar un bloque probado se mezcla a `main` y se publica — ver «Auth» abajo.
+
+Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CLAUDE.md` → `AUDITORIA-2026-09-03.md` (hallazgos vigentes, marcados los que ya se resolvieron y en qué bloque) → `MODELO-NEGOCIO.md` (lo que el negocio real hace y el ERP no cubre).
 
 ## Idioma
 
@@ -67,8 +69,8 @@ Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquid
 
 1. Fuente de verdad = libros V8 Drive (Ingresos / Egresos / Chase), **no Cargas**.
 2. Corte apertura **2026-08-19** (no 2026-06-30 — ese fue el corte v1, reemplazado desde el mismo commit que lo introdujo; ver `HANDOFF.md` si encuentras el número viejo en algún lado):
-   - AR opening `$673,014.43` (50 facturas `invoice_type=opening`)
-   - AP opening `$570,097.56` (62 bills sin PO)
+   - AR opening `$673,014.43` (50 facturas `invoice_type=opening`) — **es SALDO**: $797,038.13 facturado menos $124,023.70 cobrado dentro del propio corte
+   - AP opening `$570,097.56` (62 bills sin PO) — **es SALDO**: $635,041.48 menos $64,943.92 ya pagado
    - Chase `$9,361.05` folio `CORTE-CHASE`
    - JEAMS `$52,447.33` (GL `20250`)
    - Equity plug `$59,830.59` (GL `30000`)
@@ -78,10 +80,10 @@ Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquid
 5. **Papayas & More** es cliente **y** proveedor. Cuentas separadas. No netear.
 6. Programada (PX-72775 / PX-72868) **no** se importó.
 7. **No replay** de Chase histórico. Chase operativo abre 19 Ago 2026. Folio 430 no se aplica solo. No tocar `CORTE-CHASE`.
-8. `wipeLiveTests` (Ajustes → Pruebas, escribir `BORRAR`) borra actividad live y **protege** opening + `CORTE-CHASE` + todo el catálogo (productos, clientes, proveedores, ubicaciones) — el catálogo no se limpia con este botón porque no es "actividad de prueba", es dato maestro.
+8. `wipeLiveTests` (Ajustes → Pruebas, escribir `BORRAR`) borra actividad live y **protege** opening + `CORTE-CHASE` + todo el catálogo (productos, clientes, proveedores, ubicaciones) — el catálogo no se limpia con este botón porque no es "actividad de prueba", es dato maestro. **Es global:** uno lo corre y se lleva la actividad de todos, incluido lo que alguien tenga a medias en ese momento. Con varias personas capturando, acordar quién lo corre y avisar antes.
 8b. **Corregir el costo en firme** (`updatePurchaseOrder`) baja a los lotes de **su** línea (`purchase_order_line_id`, nunca por producto) y recalcula en cascada los lotes hijos de reempaque (`recomputeRepackCosts`). Aplica hacia atrás, también a cajas ya vendidas — el COGS se lee vivo. Con factura de proveedor viva **bloquea** (cancela la FAC-, corrige, regenera); con liquidación emitida no aplica; en consignación/comisión el costo se define al liquidar.
 9. Una liquidación emitida (`liquidated_at`) **no se reescribe**. Correcciones van por complementaria (`grower_settlement_supplements`), nunca editando lo ya emitido.
-10. YTD 2026 histórico se queda en V8. Cosecha arranca en el corte.
+10. YTD 2026 histórico se queda en V8. Cosecha arranca en el corte. **Miguel puso esta regla en revisión** (19 Sep 2026): quiere registrar las 92 cargas de dic 2025 – jun 2026. Las anclas YA contienen su resultado resumido, así que registrarlas como actividad normal las contaría dos veces. Tres caminos en `MODELO-NEGOCIO.md`; se inclina por el (a), registro histórico consultable fuera de contabilidad. **Sin confirmar — no construir nada que dependa de esto.**
 11. GL: `16000` JP Morgan Chase, `20250` JEAMS, `30000` equity, `12000` AR, `20100` AP, `21000` por remitir a productores, `50100` remitido al productor (su contrapartida en resultados).
 
 ## Auth
@@ -89,7 +91,7 @@ Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquid
 Primer admin o `miguelarambulam@gmail.com` reclama staff.
 Módulos: orders, warehouse, contacts, finance, reports, settings.
 Roles: admin, seller, buyer, warehouse — el mapa rol→módulos está en `src/lib/access.ts` (`ROLE_MODULES`), no en `nav.ts` (ese solo decide dónde aparece cada pantalla en el menú).
-Ajustes → Equipo para otorgar. Mezclar a `main` publica solo (Vercel). Desde el 18 Sep 2026 el agente mezcla y publica al cerrar cada bloque probado, por pedido de Miguel; fuera de eso no se publica nada sin que él lo diga. La parada antes de migraciones sigue.
+Ajustes → Equipo para otorgar. Mezclar a `main` publica solo (Vercel). **Desde el 18 Sep 2026** el agente cierra cada bloque probado él mismo: commit → merge `--no-ff` a `main` → push. Eso despliega a producción en Vercel en automático, y así es como debe ser — Miguel lo pidió para que no se le pase. **La única parada que sigue es antes de una migración:** enseñar el SQL y esperar su OK.
 
 ## Módulos UI
 
