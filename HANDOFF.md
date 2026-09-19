@@ -192,7 +192,8 @@ captura honesta y la carga que cierra bien). Con eso **no queda ningún hallazgo
 - **Área de mejora #5 — conciliación**: importar el estado de cuenta de Chase (CSV) y cruce
   parcial/múltiple. Fecha, método y referencia ya se capturan (bloque de pagos).
 - Hallazgos ALTOS que siguen abiertos: **16** (12 server fns sin candado de rol), **21**, **22**,
-  **24**, **26**. Están descritos con archivo y línea en `AUDITORIA-2026-09-03.md`. Los hallazgos 11,
+  **24**, **26**, y **51** (el vencimiento de la factura de proveedor sale de un "+7 días" inventado
+  en el código — hace pagar hasta 13 días antes de tiempo; agregado el 19 Sep 2026). Están descritos con archivo y línea en `AUDITORIA-2026-09-03.md`. Los hallazgos 11,
   13, 15, 17, 18, 19, 20, **12** y **23** se cerraron en la sesión 4.
 - `purchase_orders.paid` quedó sin escritores tras el bloque de pagos: la columna existe y ya no se usa
   (no se borró a propósito).

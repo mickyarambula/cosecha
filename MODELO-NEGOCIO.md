@@ -8,6 +8,22 @@ Léelo junto con `AUDITORIA-2026-09-03.md` (lo que está mal en lo ya construido
 
 ---
 
+## Cómo leer los números de este documento
+
+**Los saldos del V8 son fotos de un día que ya pasó.** Los $52,447.33 de JEAM, los $211,191.67 de aportaciones, las 92 cargas: cuando el sistema esté operando van a ser otros números. **No construyas nada amarrado a esas cifras** — ni una migración que las siembre, ni un cálculo que las asuma, ni una prueba que las fije.
+
+**Lo permanente es la FORMA de operar.** Eso no caduca y es lo que hay que cubrir:
+
+- Compra en **pesos** y vende en **dólares**.
+- En la serie de Northgate gana **50 centavos por caja sin tocar la fruta**.
+- Tiene vencimientos de **3 y de 31 días con el mismo proveedor** — el plazo es del documento, no de la relación.
+- Reparte **nómina y gasto financiero** entre cargas, y los reparte **con criterios distintos**.
+- Su **FOB cambia** entre Mexicali, McAllen y Los Ángeles.
+
+Las cifras de abajo están para dimensionar qué tan caro sale cada hueco, no para programarlas.
+
+---
+
 ## La escala que hace que esto importe
 
 **92 cargas, diciembre 2025 a junio 2026:**
@@ -96,7 +112,22 @@ Esto ya está en la auditoría como hallazgo **25** (marcado ⚠️ PARCIAL). No
 - La factura de un productor mexicano, ¿se congela en dólares al TC pactado, o se revalúa al pagar?
 - El diferencial cambiario, ¿lo absorbe Plein o se le descuenta al productor? (Toca PACA y la liquidación.)
 - ¿Compra dólares por adelantado? ¿En qué cuenta caen?
-- En comisión pura, ¿el neto al productor se paga en dólares o en pesos? De eso depende si entra o no a la exposición.
+- ¿Compra dólares por adelantado, y en qué cuenta caen? *(dato de Miguel)*
+- Los nombres y plazos reales por proveedor. *(dato de Miguel)*
+
+> ### Recomendación del agente — **confirmada por Miguel el 19 Sep 2026**
+>
+> **El tipo de cambio es el que le dan al comprar dólares.** El DOF es referencia fiscal; lo que cuesta dinero es el del banco. Registrar al DOF y pagar al del banco fabrica una diferencia falsa en cada operación.
+>
+> **Un solo TC pactado por carga.** El 17.23 del cotizador contra el 17.35 del análisis de costos es el síntoma: dos documentos de la misma carga con tipos de cambio distintos. Los dos tienen que leer el TC pactado del mismo lugar.
+>
+> **La factura del productor se congela en dólares al TC pactado.** No es preferencia: revaluarla movería el total de un documento ya emitido y con eso se cae `saldo = total − paid`, que es regla que no se toca. La diferencia al pagar va a resultado cambiario.
+>
+> **El diferencial lo absorbe Plein.** Le pactaste un precio en pesos, así que el riesgo del dólar es de Plein por definición del trato; y en consignación y comisión la liquidación tiene que mostrar lo que produjo su fruta, no una pérdida financiera ajena. *Excepción:* si el trato se pacta en dólares, no hay exposición que repartir.
+>
+> **La moneda de pago al productor: default por proveedor, editable en el documento.** Mismo patrón que el plazo de pago — el default evita teclearlo cada vez, pero la moneda es del documento, no de la relación.
+>
+> **Si no compra dólares por adelantado**, la pieza de inventario de divisa queda vacía y no estorba. Constrúyela así.
 
 ---
 
@@ -114,7 +145,20 @@ El dinero **ya está** en el P&L como gasto operativo. Lo que no existe es la re
 
 **Depende de:** el bloque 0, del **periodo**, y de la nómina (si se quiere prorratear). **Tamaño: mediano.**
 
-**Preguntas abiertas:** ¿cuál es el criterio de reparto (cajas, dólares vendidos, pallets)? ¿Qué partidas entran al pool? ¿Entra la nómina?
+**Preguntas abiertas:** ninguna de diseño — resueltas abajo. Falta el dato de qué partidas concretas del V8 entran a cada bolsa. *(dato de Miguel)*
+
+> ### Recomendación del agente — **corregida y confirmada por Miguel el 19 Sep 2026**
+>
+> **Dos bolsas, no una. Su V8 ya las trae separadas en dos columnas y hay que respetarlo:**
+>
+> | Bolsa | Criterio de reparto | Por qué |
+> |---|---|---|
+> | **Nómina + administrativo** | **por cajas recibidas** | Escalan con el volumen que se maneja, no con el precio. Repartir por dólares vendidos le cargaría más overhead a la carga que se vendió cara, que es al revés de la realidad. El motor de prorrateo por caja ya funciona. |
+> | **Gasto financiero** | **NO por cajas** | Escala con **dinero parado por tiempo**, no con volumen. Y es coherente con la regla de JEAM: el interés va al proyecto que usó el dinero. Una carga chica financiada seis meses cuesta más que una grande pagada de contado. |
+>
+> **El prorrateo no crea filas de gasto nuevas.** El indirecto ya está sumado en el P&L; si el reparto genera gastos, la utilidad baja dos veces. El pool necesita tabla propia — la alternativa "barata" de reusar la tabla de gastos reabre el hallazgo 14 sola.
+>
+> **Nunca "a cargo del productor".** Un indirecto que llegue a su liquidación le cobra la nómina de Plein.
 
 ---
 
@@ -134,7 +178,15 @@ El dinero **ya está** en el P&L como gasto operativo. Lo que no existe es la re
 - Mexicali / Nayarit / McAllen / LA — ¿son FOB de **venta** (donde el cliente toma la fruta) o de **compra** (donde Plein la recoge)? Cambia en qué tabla vive.
 - ¿Plein paga el flete de salida y lo cobra en la factura, o es por cuenta del cliente?
 - ¿Un camión de salida puede llevar dos ventas?
-- ¿El flete de salida se le descuenta alguna vez al productor, o siempre es de Plein?
+- ¿Plein paga el flete de salida y lo cobra en la factura, o es por cuenta del cliente? *(dato de Miguel — constrúyelo para que el gasto PUEDA generar línea en la factura; en produce pasan las dos)*
+
+> ### Recomendación del agente — **confirmada por Miguel el 19 Sep 2026**
+>
+> **Dos puntos FOB separados, no uno.** Mexicali y Nayarit son origen en México; McAllen y Los Ángeles son cruce y destino. En la hoja del V8 están mezclados en una sola columna, y una sola columna los va a seguir revolviendo. Modelar **punto de origen** (compra) y **punto de entrega** (venta) por separado.
+>
+> **Repartible entre ventas desde el día uno.** En produce un camión lleva dos ventas rutinariamente. Esto no es teoría: no haberlo hecho del lado compra **es el hallazgo 14**, y costó un bloque entero arreglarlo con migración de reparación incluida.
+>
+> **El flete de salida nunca se le descuenta al productor.** Su fruta se entregó en el punto pactado; lo que Plein gaste llevándola a su cliente es costo de vender. Cobrárselo es cobrar dos veces sobre la misma comisión.
 
 ---
 
@@ -156,7 +208,15 @@ Cuidado con una cosa: si alguien "arregla" esto escribiendo vencimientos sobre l
 
 **Depende de:** nada técnico. Solo del plazo real por proveedor. **Tamaño: chico.** Es el segundo mejor valor por esfuerzo.
 
-**Preguntas abiertas:** ¿plazo real por proveedor? (No inventar el 7 ni copiar el 21 del corte.) En el V8, ¿el "monto vencido" se mide contra la fecha capturada o contra documento + días de plazo? ¿Un gasto sin factura del proveedor tiene vencimiento?
+**Preguntas abiertas:** en el V8, ¿el "monto vencido" se mide contra la fecha capturada o contra documento + días de plazo? *(dato de Miguel)*
+
+> ### Recomendación del agente — **confirmada por Miguel el 19 Sep 2026**
+>
+> **El plazo es del DOCUMENTO, no del proveedor.** Miguel tiene vencimientos de **3 y de 31 días con el mismo proveedor**. Así que: **default por proveedor** para no teclearlo cada vez, **editable en cada documento**. Mismo patrón que la moneda de pago.
+>
+> **Mientras no haya plazo capturado, el vencimiento va en blanco** y la pantalla dice "sin plazo capturado". Hoy hay un **"+7 días" inventado en el código** que lo está haciendo pagar hasta 13 días antes de tiempo. En blanco es honesto; el 7 es mentira. *(Registrado como hallazgo **51** en `AUDITORIA-2026-09-03.md`.)*
+>
+> **Un gasto sin factura del proveedor es corriente** hasta que la factura llegue — no nace vencido.
 
 ---
 
@@ -184,7 +244,26 @@ El patrón ya está probado en el repo: los adelantos al productor son exactamen
 - ¿Cómo se parte hoy el $52,447.33 entre operativo y back to back? Sin ese corte no hay base para devengar el 6 %. Si no está partido, ¿la back to back abre en cero desde hoy?
 - ¿El 6 % es sobre saldo promedio diario o a fin de mes? ¿360 o 365 días? ¿Se capitaliza o se paga aparte?
 - ¿Hay contratos con productores ya vigentes de esa línea? ¿El interés lo absorbe Plein o va al proyecto?
-- Las 8 disposiciones de dic 2025 – ene 2026: ¿se capturan como historia, o se quedan fuera como el Chase histórico?
+- ¿Hay contratos con productores ya vigentes de la línea back to back? *(dato de Miguel)*
+
+> ### Recomendación del agente — **corregida por Miguel el 19 Sep 2026**
+>
+> **La línea NO se defaultea a nada. El devengo queda bloqueado hasta que Miguel traiga el corte real.**
+>
+> Mi recomendación original era dejar los $52,447.33 completos como operativo sin interés y abrir la back to back en cero. **Era una contradicción mía**: tres párrafos más abajo, en aportaciones, yo mismo decía que los "Depósito back to back" podían ser esa misma línea. Y sí lo son: **en los traspasos hay $82,700 etiquetados "back 2 back" entre agosto y septiembre, hoy clasificados como aportación**. Defaultear todo a "sin interés" **le esconde un pasivo** y le regala un gasto financiero que sí existe.
+>
+> Entonces:
+> - La línea nace **marcada como "pendiente de corte real"**.
+> - **El devengo del 6 % no corre** mientras esa marca esté puesta — no se devenga sobre una base desconocida.
+> - La pantalla dice explícitamente que el saldo está sin partir, en vez de mostrar un número que parece bueno.
+> - Los $82,700 se revisan **antes** de tocar nada: si son financiamiento, no son capital.
+>
+> **Lo que sí queda confirmado de esta línea:**
+> - **El interés va al proyecto que usó el dinero**, que es el punto entero de una back to back.
+> - **Pero nunca toca la liquidación del productor.** Cobrarle el costo del dinero de José es lo que PACA no permite y lo que las reglas del ERP ya prohíben en otros lados. Al P&L de esa carga sí; al account of sales no.
+> - **Convención estándar si el contrato no la fija:** saldo promedio diario, base 360, interés pagadero y no capitalizado. Y sea cual sea, **el devengo se congela al cerrar el mes**, igual que una liquidación — un interés que se recalcula para atrás nunca cuadra.
+> - **Las 8 disposiciones de dic 2025 – ene 2026 se quedan fuera**, igual que el Chase histórico: el saldo de apertura ya contiene su resultado, y capturarlas lo contaría dos veces.
+> - **JEAM no se modela como cuenta de pago.** Lo fue solo al arranque; desde el 21 de enero todo sale de Chase.
 
 ---
 
@@ -208,7 +287,19 @@ Lo más cercano que existe son los **adelantos al productor**, que sirven a medi
 - "Depósito back to back": ¿aportación de socio o financiamiento? Cambia la cuenta.
 - ¿Los $21,000 los retiró el mismo socio que aportó?
 - ¿La semilla se le descuenta 100 % al productor? ¿Y si no entrega: se castiga, se arrastra a la siguiente temporada, o se cobra?
-- ¿Las fechas son anteriores al 19 de agosto de 2026? Si sí, ya están dentro del corte y no se recapturan.
+- ¿Las fechas son anteriores al 19 de agosto de 2026? Si sí, ya están dentro del corte y no se recapturan. *(dato de Miguel)*
+
+> ### Recomendación del agente — **confirmada por Miguel el 19 Sep 2026**
+>
+> **Los "Depósito back to back" probablemente NO son capital.** El nombre coincide con la línea de JEAM, y hay **$82,700 etiquetados "back 2 back" entre agosto y septiembre clasificados como aportación**. Si son financiamiento, son **pasivo**. Clasificarlos mal infla el capital y esconde deuda. **Verificarlo antes de registrar un peso** — está atado al bloque de JEAM, no se resuelven por separado.
+>
+> **Modela con socio desde el primer día.** Hay más de una contraparte y no cuesta nada dejarlo listo.
+>
+> **La semilla: 100 % recuperable** contra las liquidaciones del productor. Es un adelanto, no un regalo, y el motor de recuperación ya existe.
+>
+> **Si no entrega: castigo explícito, con motivo, nunca automático** — que se vea como la decisión que es.
+>
+> **Topa el adelanto de semilla a lo que sus cargas históricas producen.** Si se le adelanta más de lo que su cosecha va a rendir, el adelanto no se recupera nunca y solo se descubre al final de la temporada.
 
 ---
 
@@ -227,7 +318,17 @@ No hay tabla de empleados. La que existe (`staff`) es de **acceso al sistema**, 
 
 **Depende de:** el bloque 0 (para la cuenta contable). De los indirectos, solo si se quiere prorratear. **Tamaño: mediano.**
 
-**Preguntas abiertas:** nombres reales de los empleados y su área — **no los tengo**. ¿Los $42,145 son bruto o neto? ¿Hay retenciones aparte? ¿Periodicidad? ¿Los 13 ya salieron por Chase? ¿Alguna nómina se le cobra a un productor?
+**Preguntas abiertas:** nombres reales de los empleados y su área — **no los tengo**. ¿Periodicidad? ¿Los 13 registros ya salieron por Chase? *(datos de Miguel)*
+
+> ### Recomendación del agente — **confirmada por Miguel el 19 Sep 2026**
+>
+> **Captura bruto y deducciones por separado**, aunque hoy solo tenga el neto a la mano. El P&L quiere el costo completo; registrar solo el neto subestima el costo para siempre y nunca permite conciliar.
+>
+> **Nunca se le cobra a un productor.** Sin excepción.
+>
+> **Las que ya salieron por Chase nacen marcadas "ya pagadas"**, o inflan las cuentas por pagar con dinero que ya salió — el ancla pasaría de $570,097.56 a $612,242.56.
+>
+> **No inventar un proveedor "Nómina".** La tabla de gastos exige proveedor; por eso la nómina necesita su propio camino, no el de gastos.
 
 ---
 
@@ -245,9 +346,15 @@ Este orden minimiza el retrabajo. **No está aprobado** — es la recomendación
 **7.** Aportaciones, retiros y semilla.
 **8.** Brokerage de margen fijo.
 
+**Fuera de este orden, a propósito:** las 92 cargas históricas (decisión abierta — no se construye nada, se retoma cuando el sistema esté operando) y cualquier cosa amarrada a un saldo del V8.
+
 **Por qué el brokerage va al final y no al principio.** Parece el más sencillo (una columna y listo) y es el más caro. El costo de venta del ERP sale **únicamente** del lote del despacho: una carga directa sin lote da **costo cero en silencio**. En Northgate: se evaporan **$24,816** y la utilidad sale **$25,344 en vez de $528**. Hay que darle costo propio al despacho y reescribir la consulta del costo de venta, que además ya lee las devoluciones del bloque 09.
 
-**Preguntas abiertas del brokerage:** ¿lleva BOL, y quién lo emite? ¿Plein asume PACA sobre esa fruta (define si aplican devoluciones y reclamos)? ¿Términos de pago y cobro propios de la serie P?
+**Preguntas abiertas del brokerage:** ¿lleva BOL, y quién lo emite? ¿Términos de pago y cobro propios de la serie P? *(datos de Miguel)*
+
+> ### Recomendación del agente — **confirmada por Miguel el 19 Sep 2026**
+>
+> **Plein asume PACA completo sobre esa fruta.** Compra a 23.50 y factura a 24.00: toma título y está en la cadena. Que la fruta no toque su bodega no lo saca. Constrúyelo asumiendo PACA — **devoluciones y reclamos aplican**, y por eso se apoya en el bloque 09 que ya está hecho.
 
 ---
 
@@ -267,7 +374,7 @@ No se ve la regla: no es una proporción fija, no es todo o nada, y YTH16 va ent
 
 ---
 
-## Decisión pendiente de Miguel: las 92 cargas históricas
+## Las 92 cargas históricas — decisión abierta, congelada a propósito
 
 Miguel quiere registrar las **92 cargas de diciembre 2025 a junio 2026**.
 
@@ -281,7 +388,13 @@ Tres caminos:
 
 **(c) No entran.** Se quedan en el V8, como está escrito hoy.
 
-**Nada que dependa de esto se construye hasta que Miguel lo confirme.**
+> ### Decisión de Miguel, 19 Sep 2026: **NO se construye nada para esto por ahora.**
+>
+> Ni el marcado estructural, ni los candados, ni la pantalla. **Se retoma cuando el sistema ya esté operando**, no antes. Queda **fuera del orden de bloques**: ningún bloque puede depender de esta decisión ni prepararse para ella.
+>
+> Si aparece la tentación de "dejarlo listo por si acaso", no. Las 92 cargas son un saldo del V8 —una foto de un día que ya pasó— y para cuando se retome, el número va a ser otro.
+
+*(Si algún día se toma el camino (a): lo que tiene que garantizar es que el marcado sea **estructural, no una etiqueta** — si una sola lectura de dinero se olvida de filtrarlas, se cuentan $1.49 millones dos veces y el corte deja de cuadrar. Anotado para entonces, no para ahora.)*
 
 ---
 

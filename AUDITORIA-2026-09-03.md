@@ -177,6 +177,12 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 ---
 
+### ALTO — agregado el 19 Sep 2026
+
+51. **La factura de proveedor se vence a 7 días inventados, y eso hace pagar antes de tiempo.** `createBillFromPO` (`produce-server.ts:8227`) y `createBillFromSettlement` (`:5195`) escriben `due_date = addDaysISO(issue, 7)` **a fuego**. Ese 7 no salió de ningún plazo real: la tabla `suppliers` **no tiene columna de plazo de pago** (`migrations/0002_produce.sql:24-35`) — solo `customers` la tiene (`0002:44`), y también `customer_pos` (`0021:21`) y `sales_orders` (`0021:24`). Del lado proveedor no existe. Hoy: una FAC- de $21,271.01 emitida el 19 de agosto sale vencida el 27; si el plazo real es de 21 días no vence hasta el 9 de septiembre, y Miguel **paga 13 días antes**. No es cosmético — es dinero parado antes de tiempo sobre un negocio de 5.3 % de margen neto. Es el mismo patrón prohibido en `CLAUDE.md` ("rellenar un dato que el usuario no capturó") que ya causó los hallazgos 11, 13, 15, 17, 18, 19 y 20. **Debería:** plazo **por documento** con default por proveedor — Miguel tiene vencimientos de **3 y de 31 días con el mismo proveedor** — y sin plazo capturado el vencimiento va **en blanco**, no inventado. Cuidado al corregirlo: escribir vencimientos sobre facturas `invoice_type='opening'` altera documentos congelados del corte. Ver `MODELO-NEGOCIO.md` → "Antigüedad por fecha compromiso".
+
+---
+
 ## Áreas de mejora (ordenadas por valor para el negocio)
 
 **1. Liquidación al productor cerrada de punta a punta — grande.**
