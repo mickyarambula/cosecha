@@ -454,7 +454,7 @@ function Page() {
                                     {l.lot_number}
                                   </button>
                                 </td>
-                                <td>{l.origin_country || "MX"}</td>
+                                <td>{l.origin_country || "—"}</td>
                                 <td>{l.po_number ? `PO #${poShort(l.po_number)}` : "—"}</td>
                                 <td>{l.unit_cost ? money(l.unit_cost) : <span className="text-danger">PAS</span>}</td>
                                 <td>{fecha(l.received_date)}</td>
