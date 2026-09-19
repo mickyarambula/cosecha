@@ -16,7 +16,7 @@ Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CL
 
 - TanStack Start + Router + React 19 + Tailwind v4 + Radix/shadcn
 - Server functions: `createServerFn` + zod + `authMiddleware`/`moduleMiddleware(módulo)` en [`src/lib/produce-server.ts`](src/lib/produce-server.ts)
-- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0045` (crece con cada bloque; revisa `ls migrations/` para el número real)
+- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0046` (crece con cada bloque; revisa `ls migrations/` para el número real)
 - Auth: Better Auth, Google + correo. Staff por módulos
 - i18n: [`src/lib/i18n.ts`](src/lib/i18n.ts)
 - PDF: [`src/lib/doc-pdf.ts`](src/lib/doc-pdf.ts) — descarga archivo, no `window.print`
@@ -50,7 +50,7 @@ Chrome: rail de módulos + tabs de sección. Tablas con números tabular. Factur
 
 ## Flujo operativo
 
-1. OC (`purchase_orders`) → `receiveMerchandise` crea lotes **con lo capturado** (fecha de recepción y de empaque, grado, origen de la línea, pallets a prorrata; sin dato va null — nada de `'México'` de relleno) → `createBillFromPO` (CxP). En consignación, la bill nace del **congelado** si la carga ya tiene liquidación (`liquidated_at`), no del cálculo vivo.
+1. OC (`purchase_orders`) → `receiveMerchandise` crea lotes **con lo capturado** (fecha de recepción y de empaque, grado, origen de la línea, pallets a prorrata; sin dato va null — nada de `'México'` de relleno) → `createBillFromPO` (CxP). Lo **rechazado cierra la línea**: va a `purchase_order_lines.quantity_rejected`, el pendiente es `ordered − received − rejected` y la carga sale de "por llegar"; no se suma a lo recibido porque en firme la factura es recibido × costo y eso le pagaría al productor la fruta rechazada. Un reenvío del productor es **una carga nueva**. En consignación, la bill nace del **congelado** si la carga ya tiene liquidación (`liquidated_at`), no del cálculo vivo.
 2. OV (`sales_orders`) → `shipSalesLine` descuenta lote (cada despacho se liga a su camión con `sale_line_allocations.shipment_id`; el BOL ampara solo eso y congela `bol_issued_at`) → `createInvoiceFromSO` (CxC, línea con empaque/calibre y `pack_style_id`; "Enviar a" = destino de la OV). Cancelar una venta ya rendida al productor **marca** la asignación (`sale_line_allocations.cancelled_at`), no la borra.
 3. CPO (`customer_pos`) → `convertCustomerPOToSO`.
 4. Pack-out (`createPackOut`, hereda la carga de origen) / waste / hold / close lote. Ubicación del lote: catálogo en `locations`, pantalla Almacén → Ubicaciones (`listLocations`/`createLocation`/`updateLocation`/`setLocationActive`).
@@ -78,6 +78,7 @@ Documentos públicos: `/doc/:tipo/:id` (factura, oc, ov, cpo, **liq** — liquid
 6. Programada (PX-72775 / PX-72868) **no** se importó.
 7. **No replay** de Chase histórico. Chase operativo abre 19 Ago 2026. Folio 430 no se aplica solo. No tocar `CORTE-CHASE`.
 8. `wipeLiveTests` (Ajustes → Pruebas, escribir `BORRAR`) borra actividad live y **protege** opening + `CORTE-CHASE` + todo el catálogo (productos, clientes, proveedores, ubicaciones) — el catálogo no se limpia con este botón porque no es "actividad de prueba", es dato maestro.
+8b. **Corregir el costo en firme** (`updatePurchaseOrder`) baja a los lotes de **su** línea (`purchase_order_line_id`, nunca por producto) y recalcula en cascada los lotes hijos de reempaque (`recomputeRepackCosts`). Aplica hacia atrás, también a cajas ya vendidas — el COGS se lee vivo. Con factura de proveedor viva **bloquea** (cancela la FAC-, corrige, regenera); con liquidación emitida no aplica; en consignación/comisión el costo se define al liquidar.
 9. Una liquidación emitida (`liquidated_at`) **no se reescribe**. Correcciones van por complementaria (`grower_settlement_supplements`), nunca editando lo ya emitido.
 10. YTD 2026 histórico se queda en V8. Cosecha arranca en el corte.
 11. GL: `16000` JP Morgan Chase, `20250` JEAMS, `30000` equity, `12000` AR, `20100` AP, `21000` por remitir a productores, `50100` remitido al productor (su contrapartida en resultados).

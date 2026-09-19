@@ -1,0 +1,16 @@
+-- Hallazgo 23 (AUDITORIA-2026-09-03): un rechazo en recepción dejaba la carga
+-- "pendiente" para siempre.
+--
+-- La línea rechazada no tocaba ningún contador: `quantity_received` se quedaba
+-- igual, el estado de la orden se calculaba como `pedido − recibido` y esa
+-- fruta seguía contándose como "por llegar" en Almacén y alertando en el
+-- tablero, aunque nunca fuera a llegar. Tampoco quedaba rastro de CUÁNTAS
+-- cajas se rechazaron, que es justo lo que PACA pide documentar.
+--
+-- No se puede resolver subiendo `quantity_received`: en trato firme la factura
+-- al proveedor es `recibido × costo`, así que eso le pagaría al productor la
+-- fruta que Plein rechazó. Por eso la cantidad rechazada vive en su propia
+-- columna: cierra la línea sin tocar lo que se debe pagar.
+--
+-- Aditiva: una columna con default cero. No toca filas ni el corte.
+alter table purchase_order_lines add column if not exists quantity_rejected numeric(14, 3) not null default 0;
