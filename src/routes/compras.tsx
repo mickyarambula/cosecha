@@ -743,21 +743,28 @@ function Page() {
                           ) : null}
                         </div>
                         {l.skuCode ? <div className="text-xs text-subtle">{l.skuCode}</div> : null}
+                        {/* El campo de origen vivía aquí SIN ETIQUETA, una cajita
+                            entre la unidad y una casilla — imposible saber qué era.
+                            El modal de Editar orden sí lo rotula; esta pantalla no.
+                            Y la casilla "Orgánico" no tenía ni estado ni columna en
+                            la base: no guardaba nada. Prometer un dato que no se
+                            guarda es justo lo que este bloque vino a quitar. */}
                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
                           <span>{l.unit}</span>
-                          <Input
-                            className="h-8 w-14"
-                            value={l.origin}
-                            onChange={(e) =>
-                              setLines((p) =>
-                                p.map((x) =>
-                                  x.key === l.key ? { ...x, origin: e.target.value } : x,
-                                ),
-                              )
-                            }
-                          />
-                          <label className="flex items-center gap-1">
-                            <input type="checkbox" className="size-3.5 accent-action" /> {t("Organic")}
+                          <label className="flex items-center gap-1.5">
+                            {t("Origin")}
+                            <Input
+                              className="h-8 w-20"
+                              placeholder={t("Country")}
+                              value={l.origin}
+                              onChange={(e) =>
+                                setLines((p) =>
+                                  p.map((x) =>
+                                    x.key === l.key ? { ...x, origin: e.target.value } : x,
+                                  ),
+                                )
+                              }
+                            />
                           </label>
                         </div>
                       </td>
@@ -766,7 +773,7 @@ function Page() {
                         <div className="grid w-40 grid-cols-2 gap-1">
                           <Input
                             title={t("Pallets")}
-                            placeholder="Pallets"
+                            placeholder={t("Pallets")}
                             value={l.pallets}
                             onChange={(e) =>
                               setLines((p) =>
@@ -778,7 +785,7 @@ function Page() {
                           />
                           <Input
                             title={t("Cases per pallet")}
-                            placeholder="Cases/plt"
+                            placeholder={t("Cases/plt")}
                             value={l.unitsPerPallet}
                             onChange={(e) =>
                               setLines((p) =>
@@ -2077,7 +2084,7 @@ function EditOrderModal({
                   <div className="grid w-36 grid-cols-2 gap-1">
                     <Input
                       disabled={locked}
-                      placeholder="Pallets"
+                      placeholder={t("Pallets")}
                       value={l.pallets}
                       onChange={(e) =>
                         setLines((p) =>
@@ -2087,7 +2094,7 @@ function EditOrderModal({
                     />
                     <Input
                       disabled={locked}
-                      placeholder="Cases/plt"
+                      placeholder={t("Cases/plt")}
                       value={l.unitsPerPallet}
                       onChange={(e) =>
                         setLines((p) =>

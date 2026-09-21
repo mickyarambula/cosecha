@@ -860,6 +860,9 @@ const ES: Record<string, string> = {
   "Non-Inventory Items": "Artículos no inventariables",
   Organic: "Orgánico",
   "Pallets / cases per pallet": "Pallets / cajas por pallet",
+  // Los dos campos de pallets de Nueva orden seguían en inglés en una
+  // pantalla en español. ("Origin" y "Country" ya existen más arriba.)
+  "Cases/plt": "Cajas/plt",
   "Payment status": "Estatus de pago",
   "Placed on": "Colocada el",
   "Plein commission": "Comisión de Plein",
