@@ -2988,7 +2988,15 @@ function SettlementModal({
               </p>
             ) : null
           ) : null}
-          <div className="mt-4 overflow-x-auto">
+          {/* La tabla trae 19 columnas y no cabe: las que importan al revisar
+              una carga —Ingreso, Costo, Gastos y Ganancia por lote— quedan a la
+              derecha, fuera de vista. Sin este aviso parece que no existen.
+              (Miguel se atoró justo aquí probando el bloque 07.) */}
+          <p className="mt-4 text-xs text-muted">
+            La tabla es más ancha que la pantalla: <b>deslízala a la derecha</b> para ver{" "}
+            <b>Ingreso, T. cost, Gastos, Ganancia $</b> y <b>Costo/unidad</b> de cada lote.
+          </p>
+          <div className="mt-2 overflow-x-auto">
             <table className="w-full min-w-[980px] text-left text-sm">
               <thead className="border-y border-border bg-surface-2 text-[11px] uppercase tracking-wide text-muted">
                 <tr>
