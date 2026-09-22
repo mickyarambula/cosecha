@@ -1113,6 +1113,8 @@ const ES: Record<string, string> = {
   Original: "Original",
   Remaining: "Restante",
   "Expenses for this vendor live in Finance → Expenses.": "Los gastos de este proveedor viven en Finanzas → Gastos.",
+  "This section belongs to {m}. Ask an administrator to grant you access.":
+    "Esta sección es de {m}. Pídele a un administrador que te dé ese acceso.",
   "No returns recorded for this vendor.": "No hay devoluciones registradas para este proveedor.",
   "Delete vendor": "Eliminar proveedor",
 

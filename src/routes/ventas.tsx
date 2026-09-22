@@ -11,7 +11,7 @@ import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
-import { useAccess } from "@/components/access-gate";
+import { useHasModule } from "@/components/access-gate";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
@@ -1044,11 +1044,11 @@ function SoDetail({
   );
   const [destSaving, setDestSaving] = useState(false);
   const customerLocations = locations.filter((l) => l.customer_id === row.customer_id);
-  // Área #3: registrar o cancelar una devolución escribe en Finanzas (nota de
-  // crédito y atribución al productor). Sin ese módulo el botón no se ofrece,
-  // para no llevar a un vendedor a llenar el modal y tronar al guardar.
-  const access = useAccess();
-  const puedeDevolver = Boolean(access?.modules?.includes("finance"));
+  // Área #3: la nota de crédito y la devolución escriben en Finanzas (el
+  // documento de crédito y la atribución al productor). Sin ese módulo los
+  // botones no se ofrecen, para no llevar a un vendedor a llenar el modal y
+  // tronar al guardar — el servidor los rechaza con `moduleMiddleware`.
+  const puedeDevolver = useHasModule("finance");
   // Lo que el cliente ya devolvió de esta venta.
   const returns = useAsync(
     () => listCustomerReturns({ data: { sales_order_id: row.id } }),
@@ -1287,9 +1287,11 @@ function SoDetail({
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <p className="text-link">{t("Audit log")}</p>
-          <button type="button" className="mt-2 block text-link" onClick={onCredit}>
-            {t("Create credit invoice")}
-          </button>
+          {puedeDevolver ? (
+            <button type="button" className="mt-2 block text-link" onClick={onCredit}>
+              {t("Create credit invoice")}
+            </button>
+          ) : null}
           {puedeDevolver ? (
             <button type="button" className="mt-2 block text-link" onClick={onReturn}>
               Registrar devolución

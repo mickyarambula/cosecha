@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { ModuleNotice, useHasModule } from "@/components/access-gate";
 import { Kpi, Panel } from "@/components/app-shell";
 import { orderLabel } from "@/components/ui/badge";
 import { FilterField, FilterRow } from "@/components/product-picker";
@@ -34,14 +35,22 @@ function Page() {
   // conectado a nada. Ahora recorta el P&L de verdad.
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
+  // Reportes tiene dos secciones: Ventas (módulo `reports`) y Financieros
+  // (P&L, Balance, Balanza y Liquidaciones), que son Finanzas. Quien entra a
+  // la pantalla no necesariamente puede ver los estados: un vendedor trae
+  // `reports` y no `finance`. El servidor ya los rechaza; aquí se les dice por
+  // qué en vez de enseñarles un error.
+  const puedeFinanzas = useHasModule("finance");
   const fin = useAsync(
     () =>
-      getFinancials({
-        data: { from: desde || undefined, to: hasta || undefined },
-      }),
-    [desde, hasta],
+      puedeFinanzas
+        ? getFinancials({
+            data: { from: desde || undefined, to: hasta || undefined },
+          })
+        : Promise.resolve(null),
+    [desde, hasta, puedeFinanzas],
   );
-  const settlements = useAsync(() => listSettlements(), []);
+  const settlements = useAsync(() => (puedeFinanzas ? listSettlements() : Promise.resolve([])), [puedeFinanzas]);
   const rows = sales.data ?? [];
 
   const byCustomer = useMemo(() => {
@@ -68,6 +77,12 @@ function Page() {
   }, [rows]);
 
   if (tab === "pl" || tab === "balance" || tab === "trial" || tab === "settlements") {
+    if (!puedeFinanzas)
+      return (
+        <div className="p-5">
+          <ModuleNotice module="finance" />
+        </div>
+      );
     const f = fin.data;
     const accts = f?.accounts ?? [];
     if (tab === "settlements") {
