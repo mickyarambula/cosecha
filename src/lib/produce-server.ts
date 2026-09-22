@@ -12720,6 +12720,64 @@ async function wipeLiveActivity(sql: any) {
   const lotIds = await ids(`select id from lots`);
   const billIds = await ids(`select id from supplier_bills where purchase_order_id is not null`);
   const expIds = await ids(`select id from expenses`);
+  // ── Hallazgo 44: el ancla del corte se rompía para siempre ────────────
+  // Las facturas y bills de apertura NO se borran (son el corte), pero sus
+  // cobros y pagos sí. Al borrarlos sin devolverles su `paid`, el documento
+  // se quedaba con el abono de una prueba que ya no existe y el saldo bajaba
+  // en definitiva: cobrar $5,000 contra una factura del corte y correr
+  // BORRAR dejaba CxC en 668,014.43 — reproducido — sin forma de rearmarlo.
+  //
+  // Se devuelve exactamente lo que esas aplicaciones habían aplicado, así que
+  // el documento vuelve a su abono original del corte, ni más ni menos.
+  // Solo se tocan los documentos que SOBREVIVEN al borrado: los demás se van
+  // completos unas líneas más abajo.
+  await sql.query(`
+    update invoices i set paid = greatest(i.paid - v.aplicado, 0)
+    from (
+      select pa.target_id as id, coalesce(sum(pa.amount),0) as aplicado
+      from payment_applications pa
+      where pa.target_kind = 'invoice'
+      group by pa.target_id
+    ) v
+    where v.id = i.id and coalesce(i.invoice_type,'sale') = 'opening'
+  `);
+  await sql.query(`
+    update supplier_bills b set paid = greatest(b.paid - v.aplicado, 0)
+    from (
+      select pa.target_id as id, coalesce(sum(pa.amount),0) as aplicado
+      from payment_applications pa
+      where pa.target_kind = 'bill'
+      group by pa.target_id
+    ) v
+    where v.id = b.id and b.purchase_order_id is null
+  `);
+  // El pago de fruta (`registerPago`) sube `supplier_bills.paid` sin pasar por
+  // payment_applications: se devuelve desde el movimiento de caja que se borra.
+  await sql.query(`
+    update supplier_bills b set paid = greatest(b.paid - v.pagado, 0)
+    from (
+      select cm.supplier_bill_id as id, coalesce(sum(abs(cm.amount)),0) as pagado
+      from cash_movements cm
+      where cm.supplier_bill_id is not null and cm.folio <> 'CORTE-CHASE'
+        and cm.cancelled_at is null
+      group by cm.supplier_bill_id
+    ) v
+    where v.id = b.id and b.purchase_order_id is null
+  `);
+  // Y el cobro de cliente por `registerCobro`, mismo caso del lado CxC.
+  await sql.query(`
+    update invoices i set paid = greatest(i.paid - v.cobrado, 0)
+    from (
+      select cm.invoice_id as id, coalesce(sum(cm.amount),0) as cobrado
+      from cash_movements cm
+      where cm.invoice_id is not null and cm.folio <> 'CORTE-CHASE'
+        and cm.cancelled_at is null and cm.amount > 0
+        and not exists (select 1 from payment_applications pa
+                        where pa.cash_movement_id = cm.id and pa.target_kind = 'invoice')
+      group by cm.invoice_id
+    ) v
+    where v.id = i.id and coalesce(i.invoice_type,'sale') = 'opening'
+  `);
   await sql.query(`delete from payment_applications`);
   // La complementaria apunta al ADE-, la REM- y la FAC- que le nacieron, y
   // esas tres se borran antes que ella: soltar las ligas primero.
