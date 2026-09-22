@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { useAccess } from "@/components/access-gate";
+import { ModuleNotice, useAccess, useHasModule } from "@/components/access-gate";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { MODULE_IDS, MODULE_LABELS, modulesForRole } from "@/lib/access";
@@ -329,7 +329,13 @@ function Departments() {
 
 function Concepts() {
   const t = useT();
-  const concepts = useAsync(() => listConcepts({ data: { activeOnly: false } }), []);
+  // El catálogo de conceptos de dinero es Finanzas: es lo que decide a qué
+  // cuenta va cada gasto. El servidor lo exige; aquí no se ofrece sin eso.
+  const puedeFinanzas = useHasModule("finance");
+  const concepts = useAsync(
+    () => (puedeFinanzas ? listConcepts({ data: { activeOnly: false } }) : Promise.resolve([])),
+    [puedeFinanzas],
+  );
   const [kind, setKind] = useState<"ingreso" | "gasto">("gasto");
   const [partida, setPartida] = useState("Gasto Administrativo");
   const [name, setName] = useState("");
@@ -356,6 +362,8 @@ function Concepts() {
       setSaving(false);
     }
   }
+
+  if (!puedeFinanzas) return <ModuleNotice module="finance" />;
 
   return (
     <div className="mx-auto max-w-3xl p-6">

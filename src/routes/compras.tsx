@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Printer, Trash2 } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
+import { useHasModule } from "@/components/access-gate";
 import { MetaCard, Modal } from "@/components/app-shell";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { ConceptSelect } from "@/components/concepts";
@@ -139,6 +140,8 @@ const GRUPOS: [keyof typeof DEFECTOS, string][] = [
 ];
 
 function Page() {
+  // Los gastos de la carga son Finanzas; sin ese módulo no se capturan aquí.
+  const puedeFinanzas = useHasModule("finance");
   const t = useT();
   const { tab } = Route.useSearch();
   const navigate = useNavigate();
@@ -634,13 +637,15 @@ function Page() {
           <MetaCard
             label="Expenses"
             action={
-              <button
-                type="button"
-                className="text-xs text-link"
-                onClick={() => setExpenseFor("draft")}
-              >
-                {t("Add new")}
-              </button>
+              puedeFinanzas ? (
+                <button
+                  type="button"
+                  className="text-xs text-link"
+                  onClick={() => setExpenseFor("draft")}
+                >
+                  {t("Add new")}
+                </button>
+              ) : null
             }
           >
             {money(draftExpenses.reduce((s, g) => s + g.amount, 0))}
@@ -1473,6 +1478,10 @@ function PoDetail({
   onCancel: () => void;
   saving: boolean;
 }) {
+  // La liquidación al productor y los gastos de la carga escriben en Finanzas
+  // (`moduleMiddleware("finance")` en el servidor). Sin ese módulo no se
+  // ofrecen: antes el botón estaba a la vista y tronaba al guardar.
+  const puedeFinanzas = useHasModule("finance");
   const pending = row.lines.some(
     (l) => l.quantity_ordered - l.quantity_received - (l.quantity_rejected || 0) > 0.0001,
   );
@@ -1539,9 +1548,11 @@ function PoDetail({
         <MetaCard
           label="Expenses"
           action={
-            <button type="button" className="text-xs text-link" onClick={onExpense}>
-              {t("Add new")}
-            </button>
+            puedeFinanzas ? (
+              <button type="button" className="text-xs text-link" onClick={onExpense}>
+                {t("Add new")}
+              </button>
+            ) : null
           }
         >
           {money(row.expense_total)}
@@ -1733,9 +1744,11 @@ function PoDetail({
         <div className="rounded-md border border-border p-3 text-sm">
           <p className="text-link">{t("Audit log")}</p>
           <p className="mt-2 text-subtle">{t("Return to shipper")}</p>
-          <button type="button" className="mt-2 text-link" onClick={onShare}>
-            {t("Share vendor portal to contacts")}
-          </button>
+          {puedeFinanzas ? (
+            <button type="button" className="mt-2 text-link" onClick={onShare}>
+              {t("Share vendor portal to contacts")}
+            </button>
+          ) : null}
         </div>
         <div className="rounded-md border border-border p-3 text-sm">
           <div className="flex justify-between">
@@ -1774,14 +1787,16 @@ function PoDetail({
             {t("Capture vendor invoice")}
           </Button>
         ) : null}
-        {received && row.status !== "cancelled" ? (
+        {received && row.status !== "cancelled" && puedeFinanzas ? (
           <Button size="sm" onClick={onSettle}>
             {t("Calculate settlement")}
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" onClick={onShare}>
-          {t("Share vendor portal")}
-        </Button>
+        {puedeFinanzas ? (
+          <Button size="sm" variant="outline" onClick={onShare}>
+            {t("Share vendor portal")}
+          </Button>
+        ) : null}
         {row.status !== "cancelled" ? (
           <Button size="sm" variant="outline" onClick={onCancel}>
             {t("Cancel order")}

@@ -29,6 +29,8 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 - Atribuirle a un productor más crédito del que su carga aportó a esa venta: el tope es **acumulado** sobre la venta, entre todas las notas de crédito.
 - Cobrarle a un productor el monto COMPLETO de un gasto compartido: lo que se le descuenta es `expense_po_links.amount_applied` de SU carga. `expenses.purchase_order_id` ya solo es "la carga principal", no la fuente del dinero.
 - Rellenar un dato que el usuario no capturó (origen `'MX'`, precio `$35`, cantidad = lote completo, categoría o monto de gasto). En blanco es honesto; inventado le llega al productor en su liquidación o al cliente en su factura.
+- Publicar una server fn de **escritura** con solo `authMiddleware`. Pide el módulo de la pantalla donde vive (`moduleMiddleware("orders")`, o varios si vive en dos). Lo que no es de un módulo pide `staffMiddleware` (staff activo). Única excepción a propósito: `getMyAccess` y los tres enlaces públicos por token (portal del productor, documento impreso, membrete). Y si el candado es de otro módulo que el de la pantalla, **esconde el botón** con `useHasModule` — un botón que truena al guardar es peor que no tenerlo.
+- Fechar con `new Date()` en el servidor. La fecha del negocio es la de Nogales: `todayISO()` / `todayYYMM()` de `src/lib/utils.ts`. El servidor corre en UTC y después de las 5 de la tarde fecha mañana.
 - Mandar correo desde la app. Enviar = Outlook `mailto` + WhatsApp `wa.me` + PDF descargado.
 - `window.print()` como camino de PDF. Usar `src/lib/doc-pdf.ts` (jspdf, descarga).
 - Modales hijos de sticky / `backdrop-filter`. Portal a `document.body`.

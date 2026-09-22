@@ -1,10 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
-import { authMiddleware, moduleMiddleware } from "@/lib/auth/middleware";
+import { authMiddleware, moduleMiddleware, staffMiddleware } from "@/lib/auth/middleware";
 import { z } from "zod";
 import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
 import { convertWeight } from "@/lib/units";
-import { addDaysISO, num, SHIPMENT_STATUSES, skuCodeOf, termsDays, todayISO } from "@/lib/utils";
+import { addDaysISO, num, SHIPMENT_STATUSES, skuCodeOf, termsDays, todayISO, todayYYMM } from "@/lib/utils";
 
 // Intentionally `Promise<any>`, not `Promise<Sql>` — every one of this file's
 // ~150 `sql.query(...)` calls would need an explicit row-shape generic before
@@ -159,8 +159,9 @@ async function nextCode(sql, table, column, prefix, pad = 3) {
   throw new Error(`No se pudo asignar un folio libre en la serie ${prefix}.`);
 }
 function lotPrefix() {
-  const d = /* @__PURE__ */ new Date();
-  return `LOT-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}-`;
+  // Fecha de Nogales, no del servidor: el 30 a las 6 pm el folio no puede
+  // saltar al mes siguiente.
+  return `LOT-${todayYYMM()}-`;
 }
 function moneyStatus(total, paid) {
   if (paid >= total - 0.009) return "paid";
@@ -466,7 +467,7 @@ async function cancelCashMovementById(sql, context, id, expectedKind, reason) {
   return { folio: mov.folio };
 }
 export const getDashboard = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const empty = {
       counts: {
@@ -611,7 +612,7 @@ export const getDashboard = createServerFn({ method: "GET" })
     }
   });
 export const listProducts = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const sql = await getSql();
     const products = await sql.query(
@@ -646,7 +647,7 @@ export const createProduct = createServerFn({ method: "POST" })
       net_weight: z.number().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const sku = data.sku?.trim() || (await nextCode(sql, "products", "sku", "SKU-"));
@@ -678,7 +679,7 @@ export const createSku = createServerFn({ method: "POST" })
       weight_unit: z.string().default("lb"),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [p] = await sql.query(`select id, sku, default_unit from products where id = $1`, [
@@ -710,7 +711,7 @@ export const createSku = createServerFn({ method: "POST" })
     };
   });
 export const listSuppliers = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (
       await (
@@ -740,7 +741,7 @@ export const createSupplier = createServerFn({ method: "POST" })
       commission_rate: z.number().min(0).nullable().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("contacts")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const code = await nextCode(sql, "suppliers", "code", "PRO-");
@@ -808,7 +809,7 @@ export const updateSupplier = createServerFn({ method: "POST" })
       commission_rate: z.number().min(0).nullable().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("contacts")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -835,7 +836,7 @@ export const updateSupplier = createServerFn({ method: "POST" })
     return { id: data.id };
   });
 export const listCustomers = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (await getSql())
       .query(`select id, code, name, contact_name, phone, email, city, payment_terms, notes, is_active,
@@ -857,7 +858,7 @@ export const createCustomer = createServerFn({ method: "POST" })
       tambien_proveedor: z.boolean().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("contacts")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const code = await nextCode(sql, "customers", "code", "CLI-");
@@ -921,7 +922,7 @@ export const updateCustomer = createServerFn({ method: "POST" })
       is_active: z.boolean().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("contacts")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -947,7 +948,7 @@ export const updateCustomer = createServerFn({ method: "POST" })
 // compras — ese no tiene customer_id ni dirección completa.
 export const listCustomerLocations = createServerFn({ method: "GET" })
   .validator(z.object({ customer_id: z.number().optional() }))
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     if (data.customer_id) {
@@ -973,7 +974,7 @@ export const createCustomerLocation = createServerFn({ method: "POST" })
       is_default: z.boolean().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("contacts", "orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [{ c }] = await sql.query(
@@ -1015,7 +1016,7 @@ export const updateCustomerLocation = createServerFn({ method: "POST" })
       receiving_instructions: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("contacts", "orders")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -1035,7 +1036,7 @@ export const updateCustomerLocation = createServerFn({ method: "POST" })
   });
 export const setDefaultCustomerLocation = createServerFn({ method: "POST" })
   .validator(z.object({ id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("contacts")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [loc] = await sql.query(`select customer_id from customer_locations where id = $1`, [
@@ -1050,7 +1051,7 @@ export const setDefaultCustomerLocation = createServerFn({ method: "POST" })
   });
 export const listLocations = createServerFn({ method: "GET" })
   .validator(z.object({ include_inactive: z.boolean().optional() }).optional())
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     return (await getSql())
       .query(
@@ -1084,7 +1085,7 @@ export const createLocation = createServerFn({ method: "POST" })
       set_point_unit: z.enum(["C", "F"]).nullable().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const code = await nextCode(
@@ -1135,7 +1136,7 @@ export const updateLocation = createServerFn({ method: "POST" })
       set_point_unit: z.enum(["C", "F"]).nullable().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const code = data.code.trim();
@@ -1167,7 +1168,7 @@ export const updateLocation = createServerFn({ method: "POST" })
   });
 export const setLocationActive = createServerFn({ method: "POST" })
   .validator(z.object({ id: z.number(), is_active: z.boolean() }))
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -1175,7 +1176,7 @@ export const setLocationActive = createServerFn({ method: "POST" })
     return { ok: true };
   });
 export const listValueLists = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const rows = await (
       await getSql()
@@ -1197,7 +1198,7 @@ export const addValueList = createServerFn({ method: "POST" })
       value: z.string().min(1),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const value = data.value.trim();
@@ -1223,7 +1224,7 @@ export const addValueList = createServerFn({ method: "POST" })
 // proveedor de Plein, y cuando sí lo es (Suárez Brokerage, Cornejos Trucking)
 // se liga al registro de suppliers que ya existe en vez de duplicar el dato.
 export const listCustomsBrokers = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (await getSql()).query(`
     select cb.id, cb.name, cb.country, cb.license_number, cb.contact_name, cb.phone, cb.email, cb.notes, cb.is_active,
@@ -1246,7 +1247,7 @@ export const createCustomsBroker = createServerFn({ method: "POST" })
       notes: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     return {
@@ -1283,7 +1284,7 @@ export const updateCustomsBroker = createServerFn({ method: "POST" })
       is_active: z.boolean(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -1307,7 +1308,7 @@ export const updateCustomsBroker = createServerFn({ method: "POST" })
   });
 
 export const listBorderCrossings = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (await getSql()).query(
       `select id, name, port_mx, port_us, state_mx, state_us, is_active from border_crossings order by name`,
@@ -1323,7 +1324,7 @@ export const createBorderCrossing = createServerFn({ method: "POST" })
       state_us: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const name = data.name.trim();
@@ -1358,7 +1359,7 @@ export const updateBorderCrossing = createServerFn({ method: "POST" })
       is_active: z.boolean(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -1378,7 +1379,7 @@ export const updateBorderCrossing = createServerFn({ method: "POST" })
   });
 
 export const listCarriers = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (await getSql()).query(`
     select c.id, c.name, c.country, c.scac, c.caat, c.contact_name, c.phone, c.is_active,
@@ -1400,7 +1401,7 @@ export const createCarrier = createServerFn({ method: "POST" })
       supplier_id: z.number().nullable().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     return {
@@ -1435,7 +1436,7 @@ export const updateCarrier = createServerFn({ method: "POST" })
       is_active: z.boolean(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -1457,7 +1458,7 @@ export const updateCarrier = createServerFn({ method: "POST" })
   });
 
 export const listCarrierUnits = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (await getSql()).query(
       `select id, carrier_id, unit_type, plates, economic_number, make_model, model_year, is_active from carrier_units order by id`,
@@ -1474,7 +1475,7 @@ export const createCarrierUnit = createServerFn({ method: "POST" })
       model_year: z.number().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     return {
@@ -1506,7 +1507,7 @@ export const updateCarrierUnit = createServerFn({ method: "POST" })
       is_active: z.boolean(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -1526,7 +1527,7 @@ export const updateCarrierUnit = createServerFn({ method: "POST" })
   });
 
 export const listDrivers = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (await getSql()).query(
       `select id, carrier_id, name, license_number, license_state, phone, is_active from drivers order by id`,
@@ -1542,7 +1543,7 @@ export const createDriver = createServerFn({ method: "POST" })
       phone: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     return {
@@ -1572,7 +1573,7 @@ export const updateDriver = createServerFn({ method: "POST" })
       is_active: z.boolean(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -1635,7 +1636,7 @@ export const listShipments = createServerFn({ method: "GET" })
       sales_order_id: z.number().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const where = data.purchase_order_id
@@ -1689,7 +1690,7 @@ export const createShipment = createServerFn({ method: "POST" })
       ...shipmentFields,
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data, context }) => {
     const sql = await getSql();
     if (data.shipment_type === "entrada" && !data.purchase_order_id)
@@ -1746,7 +1747,7 @@ export const updateShipment = createServerFn({ method: "POST" })
       ...shipmentFields,
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [existing] = await sql.query(`select shipment_type from shipments where id = $1`, [
@@ -1795,7 +1796,7 @@ export const setShipmentStatus = createServerFn({ method: "POST" })
       status: z.string(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [existing] = await sql.query(`select shipment_type from shipments where id = $1`, [
@@ -1816,7 +1817,7 @@ export const issueBol = createServerFn({ method: "POST" })
       shipment_id: z.number(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [s] = await sql.query(
@@ -1857,7 +1858,7 @@ export const issueBol = createServerFn({ method: "POST" })
  */
 export const listShipmentCargo = createServerFn({ method: "GET" })
   .validator(z.object({ shipment_id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [s] = await sql.query(
@@ -1898,7 +1899,7 @@ export const setShipmentCargo = createServerFn({ method: "POST" })
       allocation_ids: z.array(z.number()),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [s] = await sql.query(
@@ -1949,7 +1950,7 @@ export const getBolDoc = createServerFn({ method: "GET" })
       shipment_id: z.number(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [s] = await sql.query(
@@ -2052,7 +2053,7 @@ export const listPallets = createServerFn({ method: "GET" })
       purchase_order_id: z.number(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const pallets = await sql.query(
@@ -2089,7 +2090,7 @@ export const addPallets = createServerFn({ method: "POST" })
       notes: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(`select id from purchase_orders where id = $1`, [
@@ -2126,7 +2127,7 @@ export const updatePallet = createServerFn({ method: "POST" })
       notes: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [pallet] = await sql.query(`select purchase_order_id from pallets where id = $1`, [
@@ -2152,7 +2153,7 @@ export const deletePallet = createServerFn({ method: "POST" })
       id: z.number(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [pallet] = await sql.query(
@@ -2188,7 +2189,7 @@ export const getPalletLabels = createServerFn({ method: "GET" })
       purchase_order_id: z.number(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(
@@ -2256,7 +2257,7 @@ export const getLotLabels = createServerFn({ method: "GET" })
       purchase_order_id: z.number(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(
@@ -2298,7 +2299,7 @@ export const getLotLabels = createServerFn({ method: "GET" })
     };
   });
 export const listLots = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const sql = await getSql();
     const lots = await sql.query(`
@@ -2375,7 +2376,7 @@ export const listLots = createServerFn({ method: "GET" })
   });
 export const getLotTrace = createServerFn({ method: "GET" })
   .validator(z.object({ lotId: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const movements = await sql.query(
@@ -2433,7 +2434,7 @@ export const setLotQuality = createServerFn({ method: "POST" })
       quality_note: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [lot] = await sql.query(`select id, lot_number from lots where id = $1`, [data.lot_id]);
@@ -6072,7 +6073,7 @@ export const wasteLot = createServerFn({ method: "POST" })
       notes: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [lot] = await sql.query(
@@ -6119,7 +6120,7 @@ export const holdLot = createServerFn({ method: "POST" })
       held: z.boolean(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -6137,7 +6138,7 @@ export const holdLot = createServerFn({ method: "POST" })
   });
 export const closeLot = createServerFn({ method: "POST" })
   .validator(z.object({ lot_id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -6157,7 +6158,7 @@ export const updatePalletDef = createServerFn({ method: "POST" })
       weight_unit_pallet: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .handler(async ({ data }) => {
     await (
       await getSql()
@@ -6280,7 +6281,7 @@ export const getVendorPortal = createServerFn({ method: "GET" })
     };
   });
 export const getWarehouse = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const sql = await getSql();
     const incoming = await sql.query(`
@@ -6310,7 +6311,7 @@ export const getWarehouse = createServerFn({ method: "GET" })
     };
   });
 export const listPurchasedLots = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     return (
       await (
@@ -6338,7 +6339,7 @@ export const listPurchasedLots = createServerFn({ method: "GET" })
     }));
   });
 export const listPurchaseOrders = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const sql = await getSql();
     const orders = await sql.query(`
@@ -6472,7 +6473,7 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
         .min(1),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     if (data.deal_type === "firme") {
       if (data.lines.some((l) => !(n(l.unit_cost) > 0)))
@@ -6574,7 +6575,7 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
         .min(1),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(
@@ -7176,7 +7177,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
         .min(1),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(
@@ -7425,7 +7426,7 @@ export const receiveMerchandise = createServerFn({ method: "POST" })
     };
   });
 export const listSalesOrders = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const sql = await getSql();
     const orders = await sql.query(`
@@ -7534,7 +7535,7 @@ export const createSalesOrder = createServerFn({ method: "POST" })
         .min(1),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const so_number = await nextCode(sql, "sales_orders", "so_number", "OV-");
@@ -7587,7 +7588,7 @@ export const setSalesOrderDestination = createServerFn({ method: "POST" })
       ship_to_location_id: z.number().nullable(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [so] = await sql.query(`select customer_id from sales_orders where id = $1`, [
@@ -7608,7 +7609,7 @@ export const setSalesOrderDestination = createServerFn({ method: "POST" })
     return { ok: true };
   });
 export const listCustomerPOs = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const sql = await getSql();
     const orders = await sql.query(`
@@ -7676,7 +7677,7 @@ export const createCustomerPO = createServerFn({ method: "POST" })
     const file = form.get("file");
     return { payload, file: file instanceof File ? file : null };
   })
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const { payload } = data;
@@ -7690,13 +7691,7 @@ export const createCustomerPO = createServerFn({ method: "POST" })
         bytes: Buffer.from(await data.file.arrayBuffer()),
       };
     }
-    const d = /* @__PURE__ */ new Date();
-    const cpo_number = await nextCode(
-      sql,
-      "customer_pos",
-      "cpo_number",
-      `CPO-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}-`,
-    );
+    const cpo_number = await nextCode(sql, "customer_pos", "cpo_number", `CPO-${todayYYMM()}-`);
     const id = (
       await sql.query(
         `insert into customer_pos
@@ -7739,7 +7734,7 @@ export const createCustomerPO = createServerFn({ method: "POST" })
   });
 export const convertCustomerPOToSO = createServerFn({ method: "POST" })
   .validator(z.object({ customer_po_id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [cpo] = await sql.query(
@@ -7817,7 +7812,7 @@ export const rejectCustomerPO = createServerFn({ method: "POST" })
       reason: z.string().trim().min(1, "Escribe el motivo del rechazo"),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data, context }) => {
     const sql = await getSql();
     const [cpo] = await sql.query(`select id, cpo_number, status from customer_pos where id = $1`, [
@@ -7840,7 +7835,7 @@ export const extractCustomerPO = createServerFn({ method: "POST" })
     if (!(file instanceof File)) throw new Error("Falta el archivo");
     return file;
   })
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data: file }) => {
     if (file.size > MAX_ATTACHMENT_BYTES)
       return { ok: false as const, reason: "El archivo pesa más de 15 MB — súbelo más chico." };
@@ -7886,7 +7881,7 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
       notes: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     if (data.deal_type === "firme") {
       if (!(n(data.unit_cost) > 0))
@@ -7989,7 +7984,7 @@ export const shipSalesLine = createServerFn({ method: "POST" })
       location_id: z.number(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [line] = await sql.query(
@@ -8072,7 +8067,7 @@ export const shipSalesLine = createServerFn({ method: "POST" })
   });
 export const createInvoiceFromSO = createServerFn({ method: "POST" })
   .validator(z.object({ sales_order_id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     // Solo cuenta la factura de venta: una nota de crédito también cuelga de
@@ -8154,7 +8149,7 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" })
   });
 export const createBillFromPO = createServerFn({ method: "POST" })
   .validator(z.object({ purchase_order_id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
     // Solo la bill BASE cuenta: las FAC- de las complementarias son aparte.
@@ -10807,7 +10802,7 @@ const RETURN_DESTINATION_LABEL: Record<string, string> = {
  */
 export const listReturnable = createServerFn({ method: "GET" })
   .validator(z.object({ sales_order_id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const rows = await sql.query(
@@ -11253,7 +11248,7 @@ export const createCustomerReturn = createServerFn({ method: "POST" })
 /** Las devoluciones de una venta (o todas), para la pantalla y el documento. */
 export const listCustomerReturns = createServerFn({ method: "GET" })
   .validator(z.object({ sales_order_id: z.number().optional() }).optional())
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     const sql = await getSql();
     const soId = data?.sales_order_id ?? null;
@@ -11808,7 +11803,7 @@ export const listPartySkus = createServerFn({ method: "GET" })
       product_id: z.number().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async ({ data }) => {
     return (await getSql()).query(
       `select ps.id, ps.party_kind, ps.party_id, coalesce(c.name, s.name) as party_name,
@@ -11842,7 +11837,7 @@ export const savePartySku = createServerFn({ method: "POST" })
       notes: z.string().optional(),
     }),
   )
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse", "contacts")])
   .handler(async ({ data }) => {
     return {
       id: (
@@ -11867,7 +11862,7 @@ export const savePartySku = createServerFn({ method: "POST" })
   });
 export const deletePartySku = createServerFn({ method: "POST" })
   .validator(z.object({ id: z.number() }))
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse", "contacts")])
   .handler(async ({ data }) => {
     await (await getSql()).query(`delete from party_skus where id = $1`, [data.id]);
     return { ok: true };
@@ -11915,7 +11910,7 @@ export const saveCompany = createServerFn({ method: "POST" })
     return loadCompany(sql);
   });
 export const getAppSettings = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const rows = await (await getSql()).query(`select key, value from app_settings`);
     return Object.fromEntries(rows.map((r) => [r.key, r.value]));
@@ -11938,7 +11933,7 @@ export const saveAppSetting = createServerFn({ method: "POST" })
     return { ok: true };
   });
 export const listDepartments = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => (await getSql()).query(`select id, name from departments order by id`));
 export const addDepartment = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -12202,7 +12197,7 @@ async function resolveLotOrigins(
   return { roots: [...roots.values()], chain };
 }
 export const listPackOuts = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () => {
     const sql = await getSql();
     const heads = (
@@ -12243,7 +12238,7 @@ export const listPackOuts = createServerFn({ method: "GET" })
     }));
   });
 export const createPackOut = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
+  .middleware([moduleMiddleware("warehouse")])
   .validator(
     z.object({
       pack_date: z.string().optional(),
@@ -12580,7 +12575,7 @@ export const ignoreBankLine = createServerFn({ method: "POST" })
     return { ok: true };
   });
 export const recordSend = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .validator(
     z.object({
       channel: z.enum(["email", "whatsapp"]),
@@ -12610,7 +12605,7 @@ export const recordSend = createServerFn({ method: "POST" })
     return { ok: true };
   });
 export const listSendEvents = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
+  .middleware([staffMiddleware])
   .handler(async () =>
     (await getSql()).query(
       `select id, channel, doc_tipo, doc_id, doc_number, party_name, address, created_at::text from send_events order by id desc limit 80`,

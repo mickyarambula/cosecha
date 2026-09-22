@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 import { Navigate, useRouterState } from "@tanstack/react-router";
 import { BrandMark } from "@/components/brand";
 import { UserButton } from "@/lib/auth/gates";
-import { canAccess, type StaffAccess } from "@/lib/access";
+import { canAccess, MODULE_LABELS, type ModuleId, type StaffAccess } from "@/lib/access";
 import { useT } from "@/lib/i18n";
 import { getMyAccess } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
@@ -11,6 +11,31 @@ const AccessContext = createContext<StaffAccess | null>(null);
 
 export function useAccess(): StaffAccess | null {
   return useContext(AccessContext);
+}
+
+/**
+ * ¿Esta persona trae el módulo? Es la misma pregunta que el servidor le hace a
+ * `moduleMiddleware`, hecha en la pantalla para no ofrecer un botón que va a
+ * tronar al guardar. La ruta ya la cuida `canAccess`; esto es para los pedazos
+ * de una pantalla que pertenecen a OTRO módulo — la liquidación al productor
+ * vive en Compras pero es dinero, y el P&L vive en Reportes pero es Finanzas.
+ */
+export function useHasModule(module: ModuleId): boolean {
+  const staff = useAccess();
+  if (!staff || staff.status !== "active") return false;
+  return staff.role === "admin" || staff.modules.includes(module);
+}
+
+/** Lo que se pinta en lugar de la sección que esta persona no puede tocar. */
+export function ModuleNotice({ module }: { module: ModuleId }) {
+  const t = useT();
+  return (
+    <div className="rounded-md border border-border bg-surface-2 p-4 text-sm text-muted">
+      {t("This section belongs to {m}. Ask an administrator to grant you access.", {
+        m: t(MODULE_LABELS[module]),
+      })}
+    </div>
+  );
 }
 
 function asStaff(s: {

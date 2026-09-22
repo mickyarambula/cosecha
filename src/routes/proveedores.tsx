@@ -1,3 +1,4 @@
+import { ModuleNotice, useHasModule } from "@/components/access-gate";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal } from "@/components/app-shell";
@@ -27,6 +28,8 @@ function Page() {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [vtab, setVtab] = useState<"skus" | "lots" | "account" | "expenses" | "returns">("skus");
+  // La cuenta corriente del productor (adelantos) es Finanzas.
+  const puedeFinanzas = useHasModule("finance");
   const [advOpen, setAdvOpen] = useState(false);
   const [cancelArm, setCancelArm] = useState<number | null>(null);
   const [adv, setAdv] = useState({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "" });
@@ -51,8 +54,11 @@ function Page() {
   const [advErr, setAdvErr] = useState<string | null>(null);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
   const account = useAsync(
-    () => (sel != null && vtab === "account" ? getGrowerAccount({ data: { supplier_id: sel } }) : Promise.resolve(null)),
-    [sel, vtab],
+    () =>
+      sel != null && vtab === "account" && puedeFinanzas
+        ? getGrowerAccount({ data: { supplier_id: sel } })
+        : Promise.resolve(null),
+    [sel, vtab, puedeFinanzas],
   );
 
   const list = useMemo(() => {
@@ -346,7 +352,11 @@ function Page() {
                   </button>
                 ))}
               </div>
-              {vtab === "skus" ? (
+              {vtab === "account" && !puedeFinanzas ? (
+                <div className="mt-3">
+                  <ModuleNotice module="finance" />
+                </div>
+              ) : vtab === "skus" ? (
                 <div className="mt-3">
                   <PartySkuPanel partyKind="vendor" partyId={current.id} />
                 </div>

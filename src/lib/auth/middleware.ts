@@ -55,12 +55,27 @@ export const authMiddleware = createMiddleware({ type: "function" })
  * server function directly. Use in place of `authMiddleware` on any function
  * that only one module's people should touch.
  */
-export function moduleMiddleware(moduleId: ModuleId) {
+export function moduleMiddleware(...moduleIds: ModuleId[]) {
   return createMiddleware({ type: "function" })
     .middleware([authMiddleware])
     .server(async ({ next, context }) => {
       const { requireModule } = await import("./access.server");
-      await requireModule(context.userId, moduleId);
+      await requireModule(context.userId, moduleIds);
       return next();
     });
 }
+
+/**
+ * Composes on top of `authMiddleware`: requires that the caller be **active
+ * staff**, without asking for any module in particular. Use it where a module
+ * would be the wrong question — reading a catalog that several screens need,
+ * or noting that a document was sent — but where somebody who just signed up
+ * and is still `pending` has no business writing or reading company data.
+ */
+export const staffMiddleware = createMiddleware({ type: "function" })
+  .middleware([authMiddleware])
+  .server(async ({ next, context }) => {
+    const { requireActiveStaff } = await import("./access.server");
+    await requireActiveStaff(context.userId);
+    return next();
+  });

@@ -68,9 +68,45 @@ export function fechaLong(f: string | null | undefined): string {
   return d.toLocaleDateString(dateLocaleTag(), { month: "short", day: "numeric", year: "numeric" });
 }
 
+/**
+ * Zona horaria del negocio. Plein vende desde Nogales, AZ y compra en Nogales,
+ * Sonora: las dos están en UTC-7 todo el año (Arizona no mueve el reloj y
+ * Sonora dejó de moverlo en 2022). El servidor corre en UTC, así que sin esto
+ * todo lo que se captura después de las 5 de la tarde nace fechado al día
+ * siguiente — folios de lote y de CPO incluidos.
+ */
+export const BUSINESS_TZ = "America/Phoenix";
+
+const NOGALES_YMD = (() => {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: BUSINESS_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  } catch {
+    // Un runtime sin datos de zonas horarias: mejor la hora local que nada.
+    return null;
+  }
+})();
+
+/** Hoy en Nogales, `YYYY-MM-DD`. Da lo mismo en el servidor y en el navegador. */
 export function todayISO(): string {
+  if (NOGALES_YMD) {
+    const parts = NOGALES_YMD.formatToParts(new Date());
+    const get = (t: string) => parts.find((x) => x.type === t)?.value ?? "";
+    const [y, m, d] = [get("year"), get("month"), get("day")];
+    if (y && m && d) return `${y}-${m}-${d}`;
+  }
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** `YYMM` de hoy en Nogales — la parte de fecha de los folios (`LOT-2609-`, `CPO-2609-`). */
+export function todayYYMM(): string {
+  const iso = todayISO();
+  return `${iso.slice(2, 4)}${iso.slice(5, 7)}`;
 }
 
 export function addDaysISO(iso: string, days: number): string {
