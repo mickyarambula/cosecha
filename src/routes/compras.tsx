@@ -47,6 +47,7 @@ import {
   DEFECTOS,
   INSPECCION_TIPOS,
   RESULTADOS_REC,
+  dueFromTerms,
   fecha,
   money,
   pct,
@@ -177,6 +178,8 @@ function Page() {
   const [shareId, setShareId] = useState<number | null>(null);
   const [shareLevel, setShareLevel] = useState<"po" | "basic" | "detailed">("po");
   const [settleId, setSettleId] = useState<number | null>(null);
+  const [billFor, setBillFor] = useState<number | null>(null);
+  const [billDraft, setBillDraft] = useState({ issue_date: "", due_date: "" });
   const [editId, setEditId] = useState<number | null>(null);
   const [cancelPo, setCancelPo] = useState<{ id: number; po_number: string } | null>(null);
   const [draft, setDraft] = useState({
@@ -202,6 +205,9 @@ function Page() {
     amount: "",
     // Hallazgo 19: este campo existía en la pantalla y no se guardaba.
     date: todayISO(),
+    // Hallazgo 51: la fecha compromiso. En blanco mientras no llegue la
+    // factura del proveedor — "sin plazo", no vencido.
+    due: "",
     invoice: "",
     notes: "",
     payable: true,
@@ -367,6 +373,7 @@ function Page() {
           alloc_by: expDraft.by as "pallet" | "unit",
           charged_to: expDraft.charged_to as "grower" | "plein",
           issue_date: expDraft.date || undefined,
+          due_date: expDraft.due || undefined,
         },
       ]);
       setExpenseFor(null);
@@ -386,6 +393,7 @@ function Page() {
           alloc_by: expDraft.by as "pallet" | "unit",
           charged_to: expDraft.charged_to as "grower" | "plein",
           issue_date: expDraft.date || undefined,
+          due_date: expDraft.due || undefined,
         },
       });
       setExpenseFor(null);
@@ -532,10 +540,22 @@ function Page() {
     }
   }
 
+  // Hallazgo 51: capturar la factura del proveedor era UN CLIC que inventaba
+  // tres datos — la fecha (ponía hoy), el vencimiento (+7 días escritos a
+  // fuego) y nada preguntaba. Ahora pide la fecha real de la factura y su
+  // vencimiento, proponiendo el plazo guardado del proveedor. Sin plazo, el
+  // vencimiento se queda en blanco: en blanco es honesto.
   async function facturarProv(poId: number) {
     setSaving(true);
     try {
-      const r = await createBillFromPO({ data: { purchase_order_id: poId } });
+      const r = await createBillFromPO({
+        data: {
+          purchase_order_id: poId,
+          issue_date: billDraft.issue_date || undefined,
+          due_date: billDraft.due_date || undefined,
+        },
+      });
+      setBillFor(null);
       setMsg(t("Vendor bill {n} for {amount}", { n: r.bill_number, amount: money(r.total) }));
       await orders.reload();
     } catch (err) {
@@ -1105,7 +1125,18 @@ function Page() {
                             row={row}
                             onReceive={() => openRecepcion(row.id)}
                             onEdit={() => setEditId(row.id)}
-                            onBill={() => void facturarProv(row.id)}
+                            onBill={() => {
+                              setBillFor(row.id);
+                              setBillDraft({
+                                issue_date: todayISO(),
+                                due_date: dueFromTerms(
+                                  todayISO(),
+                                  (suppliers.data ?? []).find((s) => s.id === row.supplier_id)
+                                    ?.payment_terms,
+                                ) ?? "",
+                              });
+                              setMsg(null);
+                            }}
                             onExpense={() => setExpenseFor(row.id)}
                             onShare={() => {
                               setShareLevel(
@@ -1414,6 +1445,61 @@ function Page() {
             </div>
           </div>
         </Modal>
+      ) : null}
+
+      {billFor != null ? (
+        (() => {
+          const po = list.find((p) => p.id === billFor);
+          const prov = (suppliers.data ?? []).find((sp) => sp.id === po?.supplier_id);
+          return (
+            <Modal
+              title={t("Capture vendor invoice")}
+              onClose={() => setBillFor(null)}
+            >
+              <p className="text-sm text-muted">
+                {po?.po_number} · {prov?.name}
+                {prov?.payment_terms ? ` · plazo guardado: ${prov.payment_terms}` : ""}
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <Field label="Invoice date">
+                  <Input
+                    type="date"
+                    value={billDraft.issue_date}
+                    onChange={(e) => {
+                      const issue = e.target.value;
+                      setBillDraft({
+                        issue_date: issue,
+                        due_date: issue
+                          ? (dueFromTerms(issue, prov?.payment_terms) ?? billDraft.due_date)
+                          : billDraft.due_date,
+                      });
+                    }}
+                  />
+                </Field>
+                <Field label="Due date">
+                  <Input
+                    type="date"
+                    value={billDraft.due_date}
+                    onChange={(e) => setBillDraft({ ...billDraft, due_date: e.target.value })}
+                  />
+                </Field>
+              </div>
+              <p className="mt-2 text-xs text-muted">
+                {prov?.payment_terms
+                  ? "El vencimiento sale del plazo guardado del proveedor. Cámbialo si esta factura trae otro."
+                  : "Este proveedor no tiene plazo guardado, así que el vencimiento queda en blanco. Captúralo aquí o en su ficha."}
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setBillFor(null)}>
+                  {t("Cancel")}
+                </Button>
+                <Button disabled={saving || !billDraft.issue_date} onClick={() => void facturarProv(billFor)}>
+                  {t("Capture vendor invoice")}
+                </Button>
+              </div>
+            </Modal>
+          );
+        })()
       ) : null}
 
       {settleId ? (
@@ -2245,6 +2331,7 @@ function ExpenseModal({
     by: string;
     charged_to: string;
     date: string;
+    due: string;
   };
   setForm: (v: typeof form) => void;
   onClose: () => void;
@@ -2294,6 +2381,13 @@ function ExpenseModal({
           <Input
             value={form.invoice}
             onChange={(e) => setForm({ ...form, invoice: e.target.value })}
+          />
+        </Field>
+        <Field label="Due date">
+          <Input
+            type="date"
+            value={form.due}
+            onChange={(e) => setForm({ ...form, due: e.target.value })}
           />
         </Field>
       </div>

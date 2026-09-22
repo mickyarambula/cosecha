@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal, TabActions } from "@/components/app-shell";
+import { AgingTable, groupAging } from "@/components/aging-table";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { SendButton } from "@/components/send-doc";
@@ -11,7 +12,7 @@ import { COMPANY } from "@/lib/company";
 import { useT } from "@/lib/i18n";
 import { cancelInvoice, listCustomers, listInvoices, registerCustomerPayment } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { aging30, fecha, money, PAY_METHODS, todayISO } from "@/lib/utils";
+import { fecha, money, PAY_METHODS, todayISO } from "@/lib/utils";
 
 type Search = { tab?: string };
 export const Route = createFileRoute("/cxc")({
@@ -266,43 +267,16 @@ function Page() {
   }
 
   if (tab === "aging" || tab === "unpaid") {
-    const byCust = new Map<string, { current: number; b30: number; b60: number; b90: number; b91: number; total: number }>();
-    for (const r of rows) {
-      if (r.saldo <= 0 && r.invoice_type !== "credit") continue;
-      const cur = byCust.get(r.customer_name) ?? { current: 0, b30: 0, b60: 0, b90: 0, b91: 0, total: 0 };
-      cur[aging30(r.due_date || r.issue_date)] += r.saldo;
-      cur.total += r.saldo;
-      byCust.set(r.customer_name, cur);
-    }
+    // Hallazgo 51: por fecha compromiso, y lo que no la trae se ve aparte en
+    // "Sin plazo" en vez de esconderse en "corriente".
     return (
-      <div className="overflow-x-auto p-4">
-        <table className="w-full min-w-[800px] text-left text-sm">
-          <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
-            <tr>
-              <th className="px-3 py-2">{t("Customer")}</th>
-              <th className="px-3 py-2 text-right">{t("Current")}</th>
-              <th className="px-3 py-2 text-right">1-30</th>
-              <th className="px-3 py-2 text-right">31-60</th>
-              <th className="px-3 py-2 text-right">61-90</th>
-              <th className="px-3 py-2 text-right">91+</th>
-              <th className="px-3 py-2 text-right">{t("Total")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[...byCust.entries()].map(([name, v]) => (
-              <tr key={name} className="border-b border-border">
-                <td className="px-3 py-2">{name}</td>
-                <td className="px-3 py-2 text-right text-link">{money(v.current)}</td>
-                <td className="px-3 py-2 text-right text-link">{money(v.b30)}</td>
-                <td className="px-3 py-2 text-right text-link">{money(v.b60)}</td>
-                <td className="px-3 py-2 text-right text-link">{money(v.b90)}</td>
-                <td className="px-3 py-2 text-right text-link">{money(v.b91)}</td>
-                <td className="px-3 py-2 text-right">{money(v.total)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <AgingTable
+        header="Customer"
+        groups={groupAging<(typeof rows)[number]>(
+          rows.filter((r) => r.saldo > 0.009 || r.invoice_type === "credit"),
+          (r) => r.customer_name,
+        )}
+      />
     );
   }
 

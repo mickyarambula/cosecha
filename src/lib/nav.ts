@@ -144,6 +144,10 @@ export const MODULES: ModuleDef[] = [
         to: "/cxp",
         label: "Payables",
         starred: true,
+        tabs: [
+          { label: "Vendor invoices", tab: "bills" },
+          { label: "Debt Aging", tab: "aging" },
+        ],
       },
       {
         to: "/tesoreria",

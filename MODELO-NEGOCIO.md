@@ -210,6 +210,12 @@ Cuidado con una cosa: si alguien "arregla" esto escribiendo vencimientos sobre l
 
 **Preguntas abiertas:** en el V8, ¿el "monto vencido" se mide contra la fecha capturada o contra documento + días de plazo? *(dato de Miguel)*
 
+> **✅ CONSTRUIDO — 22 Sep 2026 (rama `antiguedad-por-vencimiento`, migración 0049).** Plazo default por proveedor (en blanco hasta capturarlo), vencimiento capturable en la factura del proveedor y en el gasto, un solo cálculo por fecha compromiso que leen CxC, CxP y Gastos, y la pestaña de antigüedad de CxP. La columna **"Sin plazo"** separa lo que falta capturar de lo que está corriente.
+>
+> **La pregunta abierta se contestó sola al leer los libros:** los 112 documentos del corte traen **fecha de vencimiento capturada**, no calculada — y los plazos varían (21 días en la gran mayoría, pero también 22, 23, 28 y 41). Por eso el vencimiento se guarda como **fecha en el documento** y el plazo del proveedor es solo el atajo para proponerla. Miguel sigue pudiendo corregir esto si en el V8 significaba otra cosa.
+>
+> **Lo que falta capturar:** el plazo real de cada proveedor. La ficha ya enseña la pista sacada de sus propias facturas del corte, con un botón para aceptarla.
+
 > ### Recomendación del agente — **confirmada por Miguel el 19 Sep 2026**
 >
 > **El plazo es del DOCUMENTO, no del proveedor.** Miguel tiene vencimientos de **3 y de 31 días con el mismo proveedor**. Así que: **default por proveedor** para no teclearlo cada vez, **editable en cada documento**. Mismo patrón que la moneda de pago.

@@ -115,12 +115,61 @@ export function addDaysISO(iso: string, days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function termsDays(terms: string | null | undefined): number {
-  const t = String(terms || "").toLowerCase();
+/**
+ * Días de plazo de un texto como "Net 21", "COD" o "Contado".
+ * `null` cuando no dice nada: sin plazo capturado el vencimiento va **en
+ * blanco**, no inventado. Antes devolvía 14 días de la nada, y del lado
+ * proveedor el código ni siquiera preguntaba — se vencía a 7 (hallazgo 51).
+ */
+export function termsDays(terms: string | null | undefined): number | null {
+  const t = String(terms || "").trim().toLowerCase();
+  if (!t) return null;
   if (t.includes("cod") || t.includes("contado")) return 0;
   const m = t.match(/(\d+)/);
-  return m ? Number(m[1]) : 14;
+  return m ? Number(m[1]) : null;
 }
+
+/** El vencimiento que corresponde a una emisión y un plazo; `null` sin plazo. */
+export function dueFromTerms(
+  issueISO: string,
+  terms: string | null | undefined,
+): string | null {
+  const d = termsDays(terms);
+  return d === null ? null : addDaysISO(issueISO, d);
+}
+
+/**
+ * Antigüedad por **fecha compromiso**, que es la que decide cuándo pagar y
+ * cuándo cobrar. Un documento sin vencimiento capturado cae en `no_terms`: ni
+ * corriente ni vencido — falta el dato, y esconderlo en "corriente" es lo que
+ * hacía que un gasto se viera al corriente para siempre.
+ */
+export function agingByDue(
+  dueDate: string | null | undefined,
+  asOf = todayISO(),
+): "no_terms" | "current" | "b30" | "b60" | "b90" | "b91" {
+  if (!dueDate) return "no_terms";
+  return aging30(dueDate, asOf);
+}
+
+export const AGING_BUCKETS = ["current", "b30", "b60", "b90", "b91", "no_terms"] as const;
+export type AgingBucket = (typeof AGING_BUCKETS)[number];
+export const AGING_LABEL: Record<AgingBucket, string> = {
+  current: "Current",
+  b30: "1-30",
+  b60: "31-60",
+  b90: "61-90",
+  b91: "91+",
+  no_terms: "No terms",
+};
+export const emptyAging = (): Record<AgingBucket, number> => ({
+  current: 0,
+  b30: 0,
+  b60: 0,
+  b90: 0,
+  b91: 0,
+  no_terms: 0,
+});
 
 export const INSPECCION_TIPOS = [
   "Ninguna",
@@ -186,13 +235,18 @@ export const GASTO_CATEGORIAS = [
 
 export const PAY_METHODS = ["ACH", "Check", "Cash", "Credit card", "Wire"] as const;
 
+/**
+ * Tramos cortos (7/14/21 días) sobre la fecha que se le pase — hoy siempre la
+ * **fecha compromiso**. Un nulo cae en "current" por comodidad del llamador;
+ * quien quiera separar "sin plazo" usa `agingByDue`, que lo dice aparte.
+ */
 export function agingBucket(
-  issueDate: string | null | undefined,
+  dueDate: string | null | undefined,
   asOf = todayISO(),
 ): "current" | "d1" | "d8" | "d15" | "d22" {
-  if (!issueDate) return "current";
+  if (!dueDate) return "current";
   const days = Math.round(
-    (new Date(`${asOf}T12:00:00`).getTime() - new Date(`${issueDate}T12:00:00`).getTime()) /
+    (new Date(`${asOf}T12:00:00`).getTime() - new Date(`${dueDate}T12:00:00`).getTime()) /
       86400000,
   );
   if (days <= 0) return "current";

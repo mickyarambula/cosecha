@@ -1115,6 +1115,12 @@ const ES: Record<string, string> = {
   "Expenses for this vendor live in Finance → Expenses.": "Los gastos de este proveedor viven en Finanzas → Gastos.",
   "This section belongs to {m}. Ask an administrator to grant you access.":
     "Esta sección es de {m}. Pídele a un administrador que te dé ese acceso.",
+  "e.g. Net 21 or COD": "Ej. Net 21 o COD",
+  "Invoice date": "Fecha de la factura",
+  "Payables aging": "Antigüedad de lo que debes",
+  "Vendor invoices": "Facturas de proveedor",
+  "Nothing here yet.": "Todavía no hay nada aquí.",
+  "No terms": "Sin plazo",
   "No returns recorded for this vendor.": "No hay devoluciones registradas para este proveedor.",
   "Delete vendor": "Eliminar proveedor",
 

@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal, Kpi } from "@/components/app-shell";
+import { AgingTable, groupAging } from "@/components/aging-table";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
@@ -15,9 +16,21 @@ import {
   registerPagoProductor,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { fecha, money, PAY_METHODS, qty, todayISO } from "@/lib/utils";
+import { agingByDue, fecha, money, PAY_METHODS, qty, todayISO } from "@/lib/utils";
 
-export const Route = createFileRoute("/cxp")({ component: Page });
+type Search = { tab: string };
+
+export const Route = createFileRoute("/cxp")({
+  validateSearch: (s: Record<string, unknown>): Search => ({
+    tab: typeof s.tab === "string" ? s.tab : "bills",
+  }),
+  component: Page,
+});
+
+/** Pasó su fecha compromiso. Sin plazo capturado NO cuenta como vencida. */
+function vencida(due: string | null | undefined) {
+  return !!due && agingByDue(due) !== "current";
+}
 
 function matchTone(m: string) {
   if (m === "cuadrado") return "ok" as const;
@@ -27,6 +40,7 @@ function matchTone(m: string) {
 
 function Page() {
   const t = useT();
+  const { tab } = Route.useSearch();
   const bills = useAsync(() => listBills(), []);
   const payables = useAsync(() => listGrowerPayables(), []);
   const [pago, setPago] = useState<{ id: number; number: string; saldo: number } | null>(null);
@@ -44,7 +58,11 @@ function Page() {
     const saldo = rows.reduce((s, r) => s + r.saldo, 0);
     const abiertas = rows.filter((r) => r.saldo > 0.009).length;
     const descuadre = rows.filter((r) => r.match !== "cuadrado").length;
-    return { saldo, abiertas, descuadre };
+    // Hallazgo 51: vencido = pasó su fecha compromiso. Lo que no trae plazo
+    // capturado se cuenta aparte, no como vencido.
+    const vencido = rows.filter((r) => vencida(r.due_date)).reduce((s, r) => s + r.saldo, 0);
+    const sinPlazo = rows.filter((r) => r.saldo > 0.009 && !r.due_date).reduce((s, r) => s + r.saldo, 0);
+    return { saldo, abiertas, descuadre, vencido, sinPlazo };
   }, [rows]);
 
   async function pagar(e: React.FormEvent) {
@@ -85,14 +103,30 @@ function Page() {
     }
   }
 
+  // Hallazgo 51: CxP no tenía antigüedad. Los 62 documentos del corte traen su
+  // vencimiento real del V8, así que esta pestaña sirve desde el primer día.
+  if (tab === "aging") {
+    return (
+      <div>
+        <PageHeader
+          title="Payables aging"
+          subtitle="Lo que le debes a cada proveedor por fecha compromiso. Lo pagado no cuenta."
+        />
+        <AgingTable header="Vendor name" groups={groupAging<(typeof rows)[number]>(rows, (r) => r.supplier_name)} />
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageHeader
         title="Payments"
         subtitle="Vendor invoices matched against what was ordered and received. Opening bills from Egresos have no PO yet."
       />
-      <div className="mb-5 grid grid-cols-3 gap-3">
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
         <Kpi label="Balance" value={money(kpis.saldo)} />
+        <Kpi label="Overdue" value={money(kpis.vencido)} tone={kpis.vencido > 0.009 ? "danger" : "ok"} />
+        <Kpi label="No terms" value={money(kpis.sinPlazo)} tone={kpis.sinPlazo > 0.009 ? "warn" : "ok"} />
         <Kpi label="Open" value={String(kpis.abiertas)} tone={kpis.abiertas ? "warn" : "ok"} />
         <Kpi label="Receive mismatch" value={String(kpis.descuadre)} tone={kpis.descuadre ? "warn" : "ok"} />
       </div>
@@ -115,7 +149,15 @@ function Page() {
                 </p>
                 <h2 className="font-display text-lg font-semibold">{b.supplier_name}</h2>
                 <p className="text-xs text-muted">
-                  {fecha(b.issue_date)} · vence {fecha(b.due_date)}
+                  {fecha(b.issue_date)} ·{" "}
+                  {b.due_date ? (
+                    <>
+                      vence {fecha(b.due_date)}
+                      {vencida(b.due_date) ? <span className="ml-1 text-danger">vencida</span> : null}
+                    </>
+                  ) : (
+                    <span className="text-warn">sin plazo capturado</span>
+                  )}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
