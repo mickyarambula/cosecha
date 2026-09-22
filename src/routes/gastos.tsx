@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { BarSplit, Drawer, Modal, TabActions } from "@/components/app-shell";
+import { AgingTable, groupAging } from "@/components/aging-table";
 import { ConceptSelect } from "@/components/concepts";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +26,7 @@ import {
   type PayableRow,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
-import { aging30, agingBucket, errorMessage, fecha, money, PAY_METHODS, qty, todayISO } from "@/lib/utils";
+import { agingBucket, agingByDue, errorMessage, fecha, money, PAY_METHODS, qty, todayISO } from "@/lib/utils";
 
 type Search = { tab?: string; expense?: number };
 export const Route = createFileRoute("/gastos")({
@@ -71,14 +72,20 @@ function Page() {
     const total = all.reduce((s, r) => s + r.amount, 0);
     const unpaid = all.reduce((s, r) => s + r.saldo, 0);
     const paid = total - unpaid;
+    // Hallazgo 51: todo por FECHA COMPROMISO, y lo que no la trae se cuenta
+    // aparte en `sinPlazo`. Meterlo en "corriente" hacía que un gasto sin
+    // plazo capturado se viera al día para siempre.
     const buckets = { current: 0, d1: 0, d8: 0, d15: 0, d22: 0 };
-    const aging = { current: 0, b30: 0, b60: 0, b90: 0, b91: 0 };
+    let sinPlazo = 0;
     for (const r of all) {
       if (r.saldo <= 0) continue;
-      buckets[agingBucket(r.issue_date)] += r.saldo;
-      aging[aging30(r.issue_date)] += r.saldo;
+      if (!r.due_date) {
+        sinPlazo += r.saldo;
+        continue;
+      }
+      buckets[agingBucket(r.due_date)] += r.saldo;
     }
-    return { total, unpaid, paid, buckets, aging };
+    return { total, unpaid, paid, buckets, sinPlazo };
   }, [rows]);
 
   function keyOf(r: PayableRow) {
@@ -111,69 +118,16 @@ function Page() {
   }
 
   if (tab === "aging") {
-    const byVendor = new Map<string, { current: number; b30: number; b60: number; b90: number; b91: number; total: number }>();
-    for (const r of rows) {
-      if (r.saldo <= 0) continue;
-      const cur = byVendor.get(r.supplier_name) ?? { current: 0, b30: 0, b60: 0, b90: 0, b91: 0, total: 0 };
-      cur[aging30(r.issue_date)] += r.saldo;
-      cur.total += r.saldo;
-      byVendor.set(r.supplier_name, cur);
-    }
-    const entries = [...byVendor.entries()];
-    const tot = entries.reduce(
-      (s, [, v]) => ({
-        current: s.current + v.current,
-        b30: s.b30 + v.b30,
-        b60: s.b60 + v.b60,
-        b90: s.b90 + v.b90,
-        b91: s.b91 + v.b91,
-        total: s.total + v.total,
-      }),
-      { current: 0, b30: 0, b60: 0, b90: 0, b91: 0, total: 0 },
-    );
+    // Hallazgo 51: se mide por fecha compromiso, no por fecha de emisión. El
+    // servidor ya mandaba el vencimiento y esta pantalla lo ignoraba.
     return (
-      <div>
-        <p className="px-5 pt-4 text-sm text-muted">
-          {t("Each vendor’s POs and expenses based on what you owe that is within terms (current) and then what is overdue. Paid transactions are excluded.")}
-        </p>
-        <div className="overflow-x-auto p-4">
-          <table className="w-full min-w-[800px] text-left text-sm">
-            <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
-              <tr>
-                <th className="px-3 py-2">{t("Vendor name")}</th>
-                <th className="px-3 py-2 text-right">{t("Current")}</th>
-                <th className="px-3 py-2 text-right">1-30</th>
-                <th className="px-3 py-2 text-right">31-60</th>
-                <th className="px-3 py-2 text-right">61-90</th>
-                <th className="px-3 py-2 text-right">91+</th>
-                <th className="px-3 py-2 text-right">{t("Total")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map(([name, v]) => (
-                <tr key={name} className="border-b border-border">
-                  <td className="px-3 py-2">{name}</td>
-                  <td className="px-3 py-2 text-right text-link">{money(v.current)}</td>
-                  <td className="px-3 py-2 text-right text-link">{money(v.b30)}</td>
-                  <td className="px-3 py-2 text-right text-link">{money(v.b60)}</td>
-                  <td className="px-3 py-2 text-right text-link">{money(v.b90)}</td>
-                  <td className="px-3 py-2 text-right text-link">{money(v.b91)}</td>
-                  <td className="px-3 py-2 text-right">{money(v.total)}</td>
-                </tr>
-              ))}
-              <tr className="bg-surface-2 font-semibold">
-                <td className="px-3 py-2">{t("Totals")}</td>
-                <td className="px-3 py-2 text-right">{money(tot.current)}</td>
-                <td className="px-3 py-2 text-right">{money(tot.b30)}</td>
-                <td className="px-3 py-2 text-right">{money(tot.b60)}</td>
-                <td className="px-3 py-2 text-right">{money(tot.b90)}</td>
-                <td className="px-3 py-2 text-right">{money(tot.b91)}</td>
-                <td className="px-3 py-2 text-right">{money(tot.total)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <AgingTable
+        header="Vendor name"
+        groups={groupAging<PayableRow>(rows, (r) => r.supplier_name ?? "—")}
+        note={t(
+          "Each vendor’s POs and expenses based on what you owe that is within terms (current) and then what is overdue. Paid transactions are excluded.",
+        )}
+      />
     );
   }
 
@@ -214,8 +168,13 @@ function Page() {
             <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
               <span className="text-ok">{t("Current")} {money(kpis.buckets.current)}</span>
               <span className="text-warn">
-                {t("Overdue")} {money(kpis.unpaid - kpis.buckets.current)}
+                {t("Overdue")} {money(kpis.unpaid - kpis.buckets.current - kpis.sinPlazo)}
               </span>
+              {kpis.sinPlazo > 0.009 ? (
+                <span className="col-span-2 text-muted">
+                  {t("No terms")} {money(kpis.sinPlazo)} — falta capturar su vencimiento
+                </span>
+              ) : null}
               <span className="text-xs text-muted">{t("1-7 days")} {money(kpis.buckets.d1)}</span>
               <span className="text-xs text-muted">{t("8-14 days")} {money(kpis.buckets.d8)}</span>
               <span className="text-xs text-muted">{t("15-21 days")} {money(kpis.buckets.d15)}</span>
@@ -531,6 +490,7 @@ function CreateExpenseDrawer({
     payable: true,
     supplier_id: "",
     invoice: "",
+    due: "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -555,6 +515,9 @@ function CreateExpenseDrawer({
           payable: form.payable,
           // Hallazgo 19: antes este campo se capturaba y se tiraba.
           issue_date: form.date || undefined,
+          // Hallazgo 51: la fecha compromiso. En blanco = sin plazo, que es lo
+          // honesto mientras la factura del proveedor no llegue.
+          due_date: form.due || undefined,
         },
       });
       onSaved();
@@ -623,6 +586,13 @@ function CreateExpenseDrawer({
           <Field label="Invoice #">
             <Input value={form.invoice} onChange={(e) => setForm({ ...form, invoice: e.target.value })} />
           </Field>
+          <div className="flex flex-col gap-1">
+            <span className="label-caps">{t("Due date")}</span>
+            <Input type="date" value={form.due} onChange={(e) => setForm({ ...form, due: e.target.value })} />
+            <span className="text-xs text-muted">
+              Si aún no llega la factura del proveedor, déjalo en blanco: queda "sin plazo", no vencido.
+            </span>
+          </div>
           <Field label="Liability account">
             <Select defaultValue="20100">
               <option value="20100">20100 {t("Accounts Payable")}</option>
@@ -682,6 +652,7 @@ function ExpenseDetail({
     payable: boolean;
     charged_to: string;
     date: string;
+    due: string;
   } | null>(null);
 
   function startEdit() {
@@ -696,6 +667,7 @@ function ExpenseDetail({
       payable: !!d.payable,
       charged_to: d.charged_to || "plein",
       date: d.issue_date ? String(d.issue_date).slice(0, 10) : "",
+      due: d.due_date ? String(d.due_date).slice(0, 10) : "",
     });
     setEditing(true);
   }
@@ -795,6 +767,8 @@ function ExpenseDetail({
           payable: form.payable,
           charged_to: form.charged_to as "grower" | "plein",
           issue_date: form.date || undefined,
+          // Hallazgo 51: `null` explícito lo deja "sin plazo" a propósito.
+          due_date: form.due || null,
         },
       });
       setEditing(false);
@@ -965,6 +939,9 @@ function ExpenseDetail({
                 </Field>
                 <Field label="Fecha del gasto">
                   <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+                </Field>
+                <Field label="Due date">
+                  <Input type="date" value={form.due} onChange={(e) => setForm({ ...form, due: e.target.value })} />
                 </Field>
                 <Field label="Invoice #">
                   <Input value={form.invoice} onChange={(e) => setForm({ ...form, invoice: e.target.value })} />
@@ -1137,7 +1114,11 @@ function VendorPayModal({
 
   const applied = Object.values(checks).reduce((s, n) => s + n, 0);
   const due = openRows.reduce((s, r) => s + r.saldo, 0);
-  const overdue = openRows.filter((r) => agingBucket(r.issue_date) !== "current").reduce((s, r) => s + r.saldo, 0);
+  // Vencido = pasó su fecha compromiso. Lo que no tiene plazo capturado NO se
+  // cuenta como vencido (hallazgo 51): faltaba el dato, no el pago.
+  const overdue = openRows
+    .filter((r) => !["current", "no_terms"].includes(agingByDue(r.due_date)))
+    .reduce((s, r) => s + r.saldo, 0);
 
   async function submit() {
     const apps = Object.entries(checks)

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
 import { convertWeight } from "@/lib/units";
-import { addDaysISO, num, SHIPMENT_STATUSES, skuCodeOf, termsDays, todayISO, todayYYMM } from "@/lib/utils";
+import { dueFromTerms, num, SHIPMENT_STATUSES, skuCodeOf, todayISO, todayYYMM } from "@/lib/utils";
 
 // Intentionally `Promise<any>`, not `Promise<Sql>` — every one of this file's
 // ~150 `sql.query(...)` calls would need an explicit row-shape generic before
@@ -162,6 +162,16 @@ function lotPrefix() {
   // Fecha de Nogales, no del servidor: el 30 a las 6 pm el folio no puede
   // saltar al mes siguiente.
   return `LOT-${todayYYMM()}-`;
+}
+/**
+ * El plazo de pago guardado en la ficha del proveedor (migración 0049). Es
+ * solo el **default**: el plazo real es del documento — Miguel tiene
+ * vencimientos de 3 y de 31 días con el mismo proveedor. En blanco hasta que
+ * lo capture, y en blanco el vencimiento sale nulo, no inventado.
+ */
+async function supplierTerms(sql, supplierId) {
+  const [row] = await sql.query(`select payment_terms from suppliers where id = $1`, [supplierId]);
+  return row?.payment_terms ?? null;
 }
 function moneyStatus(total, paid) {
   if (paid >= total - 0.009) return "paid";
@@ -719,11 +729,49 @@ export const listSuppliers = createServerFn({ method: "GET" })
       ).query(`select id, code, name, contact_name, phone, email, city, country, notes, is_active,
            coalesce(es_proveedor, true) as es_proveedor,
            coalesce(es_cliente, false) as es_cliente,
-           linked_customer_id, commission_type, commission_rate::text, share_token
+           linked_customer_id, commission_type, commission_rate::text, share_token, payment_terms
     from suppliers order by name`)
     ).map((s) => ({
       ...s,
       commission_rate: s.commission_rate != null ? n(s.commission_rate) : null,
+    }));
+  });
+
+/**
+ * Lo que las facturas de ESTE proveedor dicen que fue su plazo — el que más se
+ * repite, con cuántas lo respaldan. No se escribe en ningún lado: es una pista
+ * para que Miguel capture el plazo default sin inventarlo ni teclearlo de
+ * memoria. Los 62 documentos del corte traen su vencimiento real del V8, así
+ * que la pista sirve desde el primer día.
+ */
+export const listSupplierTermHints = createServerFn({ method: "GET" })
+  .middleware([moduleMiddleware("contacts", "finance")])
+  .handler(async () => {
+    const rows = await (
+      await getSql()
+    ).query(`
+    select supplier_id, (due_date - issue_date) as days, count(*)::int as n
+      from supplier_bills
+     where due_date is not null and status <> 'cancelled'
+     group by supplier_id, (due_date - issue_date)
+  `);
+    const best = new Map();
+    for (const r of rows) {
+      const days = Number(r.days);
+      const n_ = Number(r.n);
+      const prev = best.get(r.supplier_id);
+      // El que más se repite; si empatan, el plazo más largo (el más prudente
+      // para decidir cuándo pagar).
+      if (!prev || n_ > prev.n || (n_ === prev.n && days > prev.days))
+        best.set(r.supplier_id, { days, n: n_ });
+    }
+    const totals = new Map();
+    for (const r of rows) totals.set(r.supplier_id, (totals.get(r.supplier_id) ?? 0) + Number(r.n));
+    return [...best.entries()].map(([supplier_id, v]) => ({
+      supplier_id,
+      days: v.days,
+      bills: v.n,
+      total_bills: totals.get(supplier_id) ?? v.n,
     }));
   });
 export const createSupplier = createServerFn({ method: "POST" })
@@ -737,6 +785,9 @@ export const createSupplier = createServerFn({ method: "POST" })
       country: z.string().optional(),
       notes: z.string().optional(),
       tambien_cliente: z.boolean().optional(),
+      /** Plazo de pago default, texto libre estilo "Net 21" o "COD". En blanco
+       *  hasta que Miguel lo capture: el vencimiento no se inventa. */
+      payment_terms: z.string().optional(),
       commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).nullable().optional(),
       commission_rate: z.number().min(0).nullable().optional(),
     }),
@@ -747,8 +798,8 @@ export const createSupplier = createServerFn({ method: "POST" })
     const code = await nextCode(sql, "suppliers", "code", "PRO-");
     const id = (
       await sql.query(
-        `insert into suppliers (code, name, contact_name, phone, email, city, country, notes, es_proveedor, es_cliente, commission_type, commission_rate)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11) returning id`,
+        `insert into suppliers (code, name, contact_name, phone, email, city, country, notes, es_proveedor, es_cliente, commission_type, commission_rate, payment_terms)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11,$12) returning id`,
         [
           code,
           data.name.trim(),
@@ -761,6 +812,7 @@ export const createSupplier = createServerFn({ method: "POST" })
           Boolean(data.tambien_cliente),
           data.commission_type ?? null,
           data.commission_type != null ? (data.commission_rate ?? null) : null,
+          data.payment_terms?.trim() || null,
         ],
       )
     )[0].id;
@@ -769,7 +821,7 @@ export const createSupplier = createServerFn({ method: "POST" })
       const customer_code_n = await nextCode(sql, "customers", "code", "CLI-");
       const cust = await sql.query(
         `insert into customers (code, name, contact_name, phone, email, city, payment_terms, notes, es_cliente, es_proveedor, linked_supplier_id)
-         values ($1,$2,$3,$4,$5,$6,'Net 14',$7,true,true,$8) returning id`,
+         values ($1,$2,$3,$4,$5,$6,null,$7,true,true,$8) returning id`,
         [
           customer_code_n,
           data.name.trim(),
@@ -805,6 +857,8 @@ export const updateSupplier = createServerFn({ method: "POST" })
       country: z.string().optional(),
       notes: z.string().optional(),
       is_active: z.boolean().optional(),
+      /** Plazo de pago default; `null` explícito lo borra y lo deja en blanco. */
+      payment_terms: z.string().nullable().optional(),
       commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).nullable().optional(),
       commission_rate: z.number().min(0).nullable().optional(),
     }),
@@ -816,7 +870,8 @@ export const updateSupplier = createServerFn({ method: "POST" })
     ).query(
       `update suppliers set name=$1, contact_name=$2, phone=$3, email=$4, city=$5, country=$6, notes=$7, is_active=coalesce($8, is_active),
        commission_type = case when $10::boolean then $11 else commission_type end,
-       commission_rate = case when $10::boolean then $12 else commission_rate end
+       commission_rate = case when $10::boolean then $12 else commission_rate end,
+       payment_terms = case when $13::boolean then $14 else payment_terms end
      where id=$9`,
       [
         data.name.trim(),
@@ -831,6 +886,8 @@ export const updateSupplier = createServerFn({ method: "POST" })
         data.commission_type !== undefined || data.commission_rate !== undefined,
         data.commission_type ?? null,
         data.commission_type != null ? (data.commission_rate ?? null) : null,
+        data.payment_terms !== undefined,
+        data.payment_terms?.trim() || null,
       ],
     );
     return { id: data.id };
@@ -5184,6 +5241,8 @@ export const issueSettlementSupplement = createServerFn({ method: "POST" })
     } else if (final_payment > 0.009 && c.deal_type === "consignacion") {
       bill_number = await nextCode(sql, "supplier_bills", "bill_number", "FAC-");
       const issue = todayISO();
+      // Mismo criterio que `createBillFromPO`: el plazo del proveedor, o nada.
+      const dueComp = dueFromTerms(issue, await supplierTerms(sql, c.parent.supplier_id));
       const sbId = (
         await sql.query(
           `insert into supplier_bills (bill_number, purchase_order_id, supplier_id, status, issue_date, due_date, ordered_qty, received_qty, total, paid, notes, supplement_id)
@@ -5193,7 +5252,7 @@ export const issueSettlementSupplement = createServerFn({ method: "POST" })
             data.purchase_order_id,
             c.parent.supplier_id,
             issue,
-            addDaysISO(issue, 7),
+            dueComp,
             c.breakdown.sold_units,
             final_payment,
             `Factura complementaria ${c.supplement_number} de ${c.po_number} (complementa ${c.base_bill?.bill_number ?? c.parent.settlement_number})`,
@@ -6837,6 +6896,10 @@ export const createExpense = createServerFn({ method: "POST" })
       /** Hallazgo 19: la fecha se capturaba y se tiraba; un flete de la semana
        *  pasada se fechaba hoy y nunca aparecía vencido. */
       issue_date: ISO_DATE.optional(),
+      /** Hallazgo 51: la fecha compromiso del gasto. La columna existe desde
+       *  la migración 0009 y nada la llenaba; en blanco es "sin plazo", que es
+       *  lo honesto mientras la factura del proveedor no llegue. */
+      due_date: ISO_DATE.optional(),
       alloc_by: z.enum(["pallet", "unit"]).optional(),
       charged_to: z.enum(["grower", "plein"]).optional(),
     }),
@@ -6851,8 +6914,8 @@ export const createExpense = createServerFn({ method: "POST" })
     const status = payable ? "open" : "paid";
     const id = (
       await sql.query(
-        `insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`,
+        `insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to, due_date)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
         [
           expense_number,
           data.category,
@@ -6869,6 +6932,7 @@ export const createExpense = createServerFn({ method: "POST" })
           data.notes || null,
           data.alloc_by || "pallet",
           data.charged_to || "plein",
+          data.due_date || null,
         ],
       )
     )[0].id;
@@ -6909,6 +6973,8 @@ export const updateExpense = createServerFn({ method: "POST" })
       notes: z.string().optional(),
       payable: z.boolean().optional(),
       issue_date: ISO_DATE.optional(),
+      /** `null` explícito borra el vencimiento y lo deja "sin plazo". */
+      due_date: ISO_DATE.nullable().optional(),
       alloc_by: z.enum(["pallet", "unit"]).optional(),
       charged_to: z.enum(["grower", "plein"]).optional(),
     }),
@@ -7000,6 +7066,7 @@ export const updateExpense = createServerFn({ method: "POST" })
        unit_cost = $4, invoice_number = $5, notes = $6, payable = $7,
        alloc_by = coalesce($8, alloc_by), charged_to = $9,
        issue_date = coalesce($10::date, issue_date),
+       due_date = case when $14::boolean then $15::date else due_date end,
        paid = $11, status = $12 where id = $13`,
       [
         data.category,
@@ -7015,6 +7082,8 @@ export const updateExpense = createServerFn({ method: "POST" })
         payable ? paid : data.amount,
         status,
         data.expense_id,
+        data.due_date !== undefined,
+        data.due_date ?? null,
       ],
     );
     if (nextPo !== oldPo && oldPo != null) {
@@ -8107,7 +8176,9 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" })
       throw new Error("No hay líneas con precio para facturar. Despacha o captura precio.");
     const subtotal = billable.reduce((s, l) => s + l.qty * l.unit_price, 0);
     const issue = todayISO();
-    const due = addDaysISO(issue, termsDays(so.payment_terms));
+    // Hallazgo 51: sin plazo capturado el vencimiento va en blanco. Antes
+    // `termsDays` devolvía 14 días de la nada cuando el cliente no traía plazo.
+    const due = dueFromTerms(issue, so.payment_terms);
     const invoice_number = await nextCode(
       sql,
       "invoices",
@@ -8148,7 +8219,16 @@ export const createInvoiceFromSO = createServerFn({ method: "POST" })
     };
   });
 export const createBillFromPO = createServerFn({ method: "POST" })
-  .validator(z.object({ purchase_order_id: z.number() }))
+  .validator(
+    z.object({
+      purchase_order_id: z.number(),
+      /** La fecha REAL de la factura del proveedor, no la de captura. */
+      issue_date: ISO_DATE.optional(),
+      /** Hallazgo 51: el plazo es del documento. Sin capturar, sale del plazo
+       *  default del proveedor; sin eso, el vencimiento queda en blanco. */
+      due_date: ISO_DATE.optional(),
+    }),
+  )
   .middleware([moduleMiddleware("orders")])
   .handler(async ({ data }) => {
     const sql = await getSql();
@@ -8207,7 +8287,12 @@ export const createBillFromPO = createServerFn({ method: "POST" })
           `La liquidación ${liq.settlement_number} de ${po.po_number} salió en cero o negativa: no nace factura de proveedor por esta carga.`,
         );
     }
-    const issue = todayISO();
+    const issue = data.issue_date || todayISO();
+    // Hallazgo 51: el "+7 días" estaba escrito a fuego y no salió de la
+    // operación — de las 62 facturas del corte, 53 vencieron a 21 días.
+    // Ahora: lo capturado en el documento, si no el plazo default del
+    // proveedor, y si tampoco hay, **en blanco**.
+    const due = data.due_date ?? dueFromTerms(issue, await supplierTerms(sql, po.supplier_id));
     const bill_number = await nextCode(sql, "supplier_bills", "bill_number", "FAC-");
     return {
       id: (
@@ -8219,7 +8304,7 @@ export const createBillFromPO = createServerFn({ method: "POST" })
             po.id,
             po.supplier_id,
             issue,
-            addDaysISO(issue, 7),
+            due,
             ordered,
             received,
             total,
@@ -9826,7 +9911,7 @@ export const listPayables = createServerFn({ method: "GET" })
     const sql = await getSql();
     const expenses = await sql.query(`
     select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
-           e.invoice_number, e.issue_date::text, coalesce(e.due_date, e.issue_date)::text as due_date,
+           e.invoice_number, e.issue_date::text, e.due_date::text,
            e.amount::text, e.paid::text, e.status, e.notes, po.po_number, e.purchase_order_id as po_id
     from expenses e
     join suppliers s on s.id = e.supplier_id

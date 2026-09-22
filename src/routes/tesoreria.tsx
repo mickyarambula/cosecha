@@ -108,7 +108,7 @@ function Page() {
                         {m.invoice_number}
                       </Link>
                     ) : m.bill_number ? (
-                      <Link to="/cxp" className="text-xs text-primary">
+                      <Link to="/cxp" search={{ tab: "bills" }} className="text-xs text-primary">
                         {m.bill_number}
                       </Link>
                     ) : null}

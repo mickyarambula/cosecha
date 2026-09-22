@@ -10,6 +10,7 @@ import {
   createGrowerAdvance,
   createSupplier,
   getGrowerAccount,
+  listSupplierTermHints,
   listLots,
   listSuppliers,
   updateSupplier,
@@ -24,6 +25,7 @@ function Page() {
   const t = useT();
   const { data, loading, reload } = useAsync(() => listSuppliers(), []);
   const lots = useAsync(() => listLots(), []);
+  const hints = useAsync(() => listSupplierTermHints(), []);
   const [sel, setSel] = useState<number | null>(null);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -33,7 +35,7 @@ function Page() {
   const [advOpen, setAdvOpen] = useState(false);
   const [cancelArm, setCancelArm] = useState<number | null>(null);
   const [adv, setAdv] = useState({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "" });
-  const [form, setForm] = useState({ name: "", contact_name: "", phone: "", email: "", city: "", country: "USA", notes: "", tambien_cliente: false });
+  const [form, setForm] = useState({ name: "", contact_name: "", phone: "", email: "", city: "", country: "USA", notes: "", tambien_cliente: false, payment_terms: "" });
   const [edit, setEdit] = useState({
     name: "",
     contact_name: "",
@@ -47,6 +49,7 @@ function Page() {
     services: true,
     commission_type: "",
     commission_rate: "",
+    payment_terms: "",
   });
   const [saving, setSaving] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
@@ -74,6 +77,9 @@ function Page() {
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [list]);
   const current = list.find((c) => c.id === sel) ?? null;
+  // Lo que dicen SUS propias facturas sobre a cuántos días vencen. Pista para
+  // capturar el plazo default sin inventarlo — nunca se escribe sola.
+  const pista = (hints.data ?? []).find((h) => h.supplier_id === sel) ?? null;
 
   function pick(id: number) {
     const c = (data ?? []).find((x) => x.id === id);
@@ -92,6 +98,7 @@ function Page() {
       services: true,
       commission_type: c.commission_type ?? "",
       commission_rate: c.commission_rate != null ? String(c.commission_rate) : "",
+      payment_terms: c.payment_terms ?? "",
     });
     setEditErr(null);
     setCancelErr(null);
@@ -132,6 +139,7 @@ function Page() {
             ? (edit.commission_type as "per_unit" | "gross_pct" | "net_pct")
             : null,
           commission_rate: edit.commission_rate ? Number(edit.commission_rate) : null,
+          payment_terms: edit.payment_terms.trim() || null,
         },
       });
       await reload();
@@ -232,9 +240,36 @@ function Page() {
                   <Input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
                 </Field>
                 <div className="mt-3 grid grid-cols-2 gap-3">
-                  <Field label="Net D">
-                    <Input defaultValue="0" />
-                  </Field>
+                  <div className="flex flex-col gap-1">
+                    <span className="label-caps">{t("Payment terms")}</span>
+                    <Input
+                      placeholder={t("e.g. Net 21 or COD")}
+                      value={edit.payment_terms}
+                      onChange={(e) => setEdit({ ...edit, payment_terms: e.target.value })}
+                    />
+                    {/* Hallazgo 51: la pista sale de SUS facturas, no de un número
+                        inventado. En blanco el vencimiento queda en blanco. */}
+                    {pista ? (
+                      <span className="text-xs text-muted">
+                        {pista.bills === 1
+                          ? `Su única factura con vencimiento capturado venció a ${pista.days} días.`
+                          : `${pista.bills} de sus ${pista.total_bills} facturas vencieron a ${pista.days} días.`}{" "}
+                        {!edit.payment_terms.trim() ? (
+                          <button
+                            type="button"
+                            className="text-link"
+                            onClick={() => setEdit({ ...edit, payment_terms: `Net ${pista.days}` })}
+                          >
+                            Usar Net {pista.days}
+                          </button>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted">
+                        Sin plazo, el vencimiento de su factura queda en blanco.
+                      </span>
+                    )}
+                  </div>
                   <Field label="Vendor code">
                     <Input defaultValue={current.code} />
                   </Field>
@@ -626,6 +661,13 @@ function Page() {
             </Field>
             <Field label="Email">
               <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            </Field>
+            <Field label="Payment terms">
+              <Input
+                placeholder={t("e.g. Net 21 or COD")}
+                value={form.payment_terms}
+                onChange={(e) => setForm({ ...form, payment_terms: e.target.value })}
+              />
             </Field>
             {formErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{formErr}</p> : null}
             <div className="flex justify-end gap-2">

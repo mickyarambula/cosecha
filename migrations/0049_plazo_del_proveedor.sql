@@ -1,0 +1,18 @@
+-- 0049: el plazo de pago del proveedor.
+--
+-- `customers` tiene `payment_terms` desde la migración 0002; `suppliers` nunca
+-- la tuvo, y por eso la factura de proveedor se vencía a 7 días escritos a
+-- fuego (`createBillFromPO`, `createBillFromSettlement`). Ese 7 no salió de la
+-- operación: de las 62 facturas de proveedor del corte, 53 vencieron a 21
+-- días, 5 a 22, 2 a 23, una a 28 y una a 41. Ninguna a 7. Sobre un margen neto
+-- de 5.3 %, pagar 13 días antes de tiempo es dinero parado.
+--
+-- Nace en blanco a propósito. El plazo es del DOCUMENTO —Miguel tiene
+-- vencimientos de 3 y de 31 días con el mismo proveedor—; esto es solo el
+-- default para no teclearlo en cada factura. Sin plazo capturado el
+-- vencimiento va en blanco, no inventado.
+--
+-- Aditiva: una columna nullable. No toca facturas `invoice_type='opening'`, ni
+-- los bills del corte, ni CORTE-CHASE, ni una liquidación emitida. No mueve un
+-- solo peso: el vencimiento no entra en ningún asiento.
+alter table suppliers add column if not exists payment_terms text;
