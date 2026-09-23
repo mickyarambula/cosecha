@@ -50,6 +50,21 @@ D = lambda x: Decimal(str(x or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF
 Z = Decimal("0")
 CENT = Decimal("0.01")
 PROGRAMADA = {"PX-72775", "PX-72868"}
+# Miguel, 23 Sep 2026: TODO lo que JEAMS deposita en Chase es préstamo. Desde
+# julio es la línea back to back (6.2 %) que fondea los programas con
+# productores; lo de enero a junio es préstamo sin costo.
+B2B_DESDE = "2026-07-01"
+# Quién debe cada pago de Financiamiento (Miguel, 23 Sep 2026, con los archivos
+# de los programas): los semilleros y el invernadero son proveedores del
+# programa; el deudor es el productor.
+DEUDOR = {
+    "Akambarhu Hortalizas": "Akambarhu Hortalizas",
+    "Santana Agricola": "Santana Agricola",
+    "Baja Plants": "Santana Agricola",          # invernadero del programa de brocolini
+    "Seed Company Aruba": "Santana Agricola",   # semilla del programa de brocolini
+}
+# Sierra Seed se reparte por su comentario en Chase (bell pepper → Akambarhu,
+# kabocha → Cornejos). Lo que no se pueda asignar se reporta, no se adivina.
 CHASE = "JP Morgan Chase"
 JEAM_ACCOUNT = "Jeam Capital"
 
@@ -203,24 +218,33 @@ def corte(v, cutoff, hoy):
 
     # Financiamiento a productores (activo) y depósitos de JEAMS en Chase (pasivo)
     fin = defaultdict(lambda: dict(monto=Z, renglones=[]))
+    chase_por_folio = {x["folio"]: x for x in v["chase"]}
     for r in v["egresos"]:
-        if r["concepto"] == "Financiamiento" and le(r["fecha_gasto"]):
-            f = fin[r["proveedor"] or "(sin nombre)"]
+        c = chase_por_folio.get(folio_of(r["desc"]))
+        # En Chase manda el tipo: una salida marcada "Prestamo" a un productor o
+        # semillero es financiamiento aunque en Egresos se haya capturado como
+        # costo (folio 422, semilla de Cornejos, quedó como "Materia prima").
+        es_prestamo = c is not None and c["tipo"] == "Prestamo" and c["egreso"] and "JEAMS" not in c["desc"].upper()
+        if r["concepto"] != "Financiamiento" and es_prestamo and r["tipo"] != "Pago" and le(r["fecha_gasto"]):
+            avisos.append(f"Egresos fila {r['row']}: {r['gasto']} a {r['proveedor']} ({r['desc']}) está como '{r['tipo']} · {r['concepto']}' pero en Chase es préstamo ('{c['comentario']}') — entra como financiamiento; corrígelo en el V8.")
+        elif r["concepto"] != "Financiamiento":
+            continue
+        if le(r["fecha_gasto"]):
+            nota = c["comentario"] if c else ""
+            deudor = DEUDOR.get(r["proveedor"])
+            if deudor is None and r["proveedor"].lower().startswith("sierra seed"):
+                t = nota.lower()
+                deudor = "Cornejos Horticola" if ("kabocha" in t or "cornejos" in t) else ("Akambarhu Hortalizas" if ("bell pepper" in t or "akambarhu" in t) else None)
+            if deudor is None:
+                deudor = f"SIN ASIGNAR ({r['proveedor'] or 'sin nombre'})"
+                avisos.append(f"Financiamiento sin deudor claro: {r['gasto']} a {r['proveedor']} el {r['fecha_gasto']} ({r['desc']}, Chase: '{nota}') — dime de qué productor es.")
+            f = fin[deudor]
             f["monto"] += r["gasto"]
-            c = next((x for x in v["chase"] if x["folio"] == folio_of(r["desc"])), None)
-            f["renglones"].append((r["fecha_gasto"], r["gasto"], r["desc"], c["comentario"] if c else ""))
+            f["renglones"].append((r["fecha_gasto"], r["gasto"], r["proveedor"], nota))
     dep = defaultdict(lambda: dict(monto=Z, renglones=[]))
     for r in v["chase"]:
         if "JEAMS" in r["desc"].upper() and r["tipo"] in ("Inversion", "Prestamo") and le(r["fecha"]):
-            txt = (r["comentario"] or "").lower()
-            if "back" in txt:
-                clase = "Back to back"
-            elif "semilla" in txt:
-                clase = "Semilla"
-            elif "retorno" in txt or "devolucion" in txt or r["egreso"]:
-                clase = "Devoluciones a JEAMS"
-            else:
-                clase = "Inversión / préstamo operativo"
+            clase = "Back to back (6.2 %)" if r["fecha"] >= B2B_DESDE else "Préstamo sin costo"
             d = dep[clase]
             d["monto"] += r["ingreso"] + r["egreso"]
             d["renglones"].append((r["fecha"], r["ingreso"] + r["egreso"], r["folio"], r["comentario"]))
@@ -233,9 +257,14 @@ def corte(v, cutoff, hoy):
 
     cxc_t = sum((x["saldo"] for x in cxc), Z)
     cxp_t = sum((x["saldo"] for x in cxp), Z)
+    fin_t = sum((f["monto"] for f in fin.values()), Z)
+    sin_costo = jeam + dep["Préstamo sin costo"]["monto"] if "Préstamo sin costo" in dep else jeam
+    b2b = dep["Back to back (6.2 %)"]["monto"] if "Back to back (6.2 %)" in dep else Z
     return dict(cutoff=cutoff, cxc=cxc, cxp=cxp, cxc_total=cxc_t, cxp_total=cxp_t, chase=chase, ultimo_folio=ultimo,
                 jeam=jeam, financiamiento=dict(fin), depositos_jeams=dict(dep), avisos=avisos,
-                chase_sin_registro=pendientes, capital=cxc_t + chase - cxp_t - jeam)
+                chase_sin_registro=pendientes, capital=cxc_t + chase - cxp_t - jeam,
+                financiamiento_total=fin_t, jeams_sin_costo=sin_costo, jeams_b2b=b2b,
+                capital_real=cxc_t + chase + fin_t - cxp_t - sin_costo - b2b)
 
 
 def money(x):
@@ -264,11 +293,20 @@ def report(c):
     for k, val in sorted(by_p.items(), key=lambda t: -t[1]):
         a(f"  {k:<36} {money(val):>14}")
     a("")
-    a("FINANCIAMIENTO A PRODUCTORES (no es gasto; pendiente de clasificar)")
+    a("BALANCE DE APERTURA COMPLETO (con la clasificación de Miguel del 23 Sep 2026)")
+    a(f"  Activo  · CxC                              {money(c['cxc_total']):>14}")
+    a(f"          · Chase                            {money(c['chase']):>14}")
+    a(f"          · Financiamiento a productores     {money(c['financiamiento_total']):>14}  (nada recuperado todavía)")
+    a(f"  Pasivo  · CxP                              {money(c['cxp_total']):>14}")
+    a(f"          · JEAMS sin costo                  {money(c['jeams_sin_costo']):>14}  (pagos directos de enero + depósitos ene–jun)")
+    a(f"          · JEAMS back to back 6.2 %         {money(c['jeams_b2b']):>14}  (depósitos desde julio)")
+    a(f"  Capital (cuadre)                           {money(c['capital_real']):>14}")
+    a("")
+    a("FINANCIAMIENTO A PRODUCTORES, POR DEUDOR")
     for k, f in sorted(c["financiamiento"].items(), key=lambda t: -t[1]["monto"]):
         a(f"  {k:<36} {money(f['monto']):>14}  ({len(f['renglones'])} pagos)")
     a(f"  {'Total':<36} {money(sum((f['monto'] for f in c['financiamiento'].values()), Z)):>14}")
-    a("DEPÓSITOS DE JEAMS EN CHASE (pendiente de clasificar)")
+    a("DEPÓSITOS DE JEAMS EN CHASE (todos préstamo)")
     for k, d in sorted(c["depositos_jeams"].items()):
         a(f"  {k:<36} {money(d['monto']):>14}  ({len(d['renglones'])} movimientos)")
     a("")
