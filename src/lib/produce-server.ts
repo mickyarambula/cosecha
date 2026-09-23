@@ -442,11 +442,10 @@ async function reverseCashMovementEffects(sql, mov) {
       ]);
       if (exp) {
         const paid = Math.max(n(exp.paid) - amt, 0);
-        await sql.query(`update expenses set paid=$1, status=$2 where id=$3`, [
-          paid,
-          moneyStatus(n(exp.amount), paid),
-          mov.expense_id,
-        ]);
+        await sql.query(
+          `update expenses set paid=$1, status=$2, paid_fx = greatest(coalesce(paid_fx,0) - $4, 0) where id=$3`,
+          [paid, moneyStatus(n(exp.amount), paid), mov.expense_id, pesos],
+        );
       }
     }
     if (mov.grower_payable_id) {
@@ -6161,12 +6160,19 @@ export const cancelGrowerAdvance = createServerFn({ method: "POST" })
       `update grower_advances set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`,
       [staffName, data.reason || null, adv.id],
     );
-    if (adv.cash_movement_id)
+    if (adv.cash_movement_id) {
       await sql.query(
         `update cash_movements set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2
        where id = $3 and folio <> 'CORTE-CHASE' and cancelled_at is null`,
         [staffName, data.reason || `Cancelación ${adv.advance_number}`, adv.cash_movement_id],
       );
+      // Hallazgo 42: la línea del estado de cuenta que estaba cuadrada con
+      // este movimiento vuelve a quedar abierta — el dinero ya no salió.
+      await sql.query(
+        `update bank_lines set cash_movement_id = null, status = 'open' where cash_movement_id = $1`,
+        [adv.cash_movement_id],
+      );
+    }
     return { advance_number: adv.advance_number };
   });
 export const wasteLot = createServerFn({ method: "POST" })
@@ -7039,6 +7045,15 @@ export const createExpense = createServerFn({ method: "POST" })
       /** Peso–dólar A: `amount` viene en esta moneda. En pesos, TC obligatorio. */
       currency: z.enum(["USD", "MXN"]).optional(),
       fx_rate: z.number().positive().optional(),
+      /**
+       * Gasto pagado desde Chase en el mismo paso (renta, cobros del banco,
+       * viáticos…): nace pagado Y deja su movimiento en Tesorería, con la fecha
+       * real del banco. En pesos, `fx_rate` es el TC al que convirtió el banco.
+       */
+      paid_from: z.enum(["chase"]).optional(),
+      pay_date: ISO_DATE.optional(),
+      method: z.string().optional(),
+      reference: z.string().optional(),
     }),
   )
   .middleware([moduleMiddleware("finance")])
@@ -7052,11 +7067,18 @@ export const createExpense = createServerFn({ method: "POST" })
     const sql = await getSql();
     // Nómina (0052): la partida "Gasto Nómina" vive en Finanzas → Nómina.
     await assertNotPayrollConcept(sql, data.category);
+    const fromChase = data.paid_from === "chase";
+    const payDate = data.pay_date || data.issue_date || todayISO();
+    // Validar la fecha del banco ANTES de escribir nada.
+    if (fromChase) await assertChasePayDate(sql, payDate, "Ya pagado, Chase ya lo refleja");
     const expense_number = await nextCode(sql, "expenses", "expense_number", "EXP-");
-    const payable = data.payable !== false;
+    // Pagado desde Chase es una cuenta por pagar que se liquida en el acto:
+    // si después se cancela ese pago, el gasto vuelve a CxP en vez de quedar
+    // como deuda invisible.
+    const payable = fromChase || data.payable !== false;
     const amount = data.amount;
-    const paid = payable ? 0 : amount;
-    const status = payable ? "open" : "paid";
+    const paid = fromChase || !payable ? amount : 0;
+    const status = paid > 0 ? "paid" : "open";
     const id = (
       await sql.query(
         `insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to, due_date, currency, amount_fx, fx_rate)
@@ -7093,9 +7115,37 @@ export const createExpense = createServerFn({ method: "POST" })
         [id, data.purchase_order_id, amount],
       );
     }
+    let folio: string | null = null;
+    if (fromChase) {
+      // Mismo movimiento que un pago de gasto: ligado por expense_id, así que
+      // cancelarlo en Gastos → Pagos o en Tesorería regresa el gasto a CxP.
+      // En pesos el TC del gasto ES el del banco: no hay resultado cambiario.
+      const [sup] = await sql.query(`select name from suppliers where id = $1`, [data.supplier_id]);
+      folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
+      await sql.query(
+        `insert into cash_movements (folio, mov_date, kind, counterparty, expense_id, amount, method, reference, notes, concept, amount_fx, fx_rate)
+         values ($1,$2,'pago',$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          folio,
+          payDate,
+          sup?.name ?? null,
+          id,
+          -amount,
+          raw.method?.trim() || null,
+          raw.reference?.trim() || null,
+          `Pago ${expense_number} · ${data.category}`,
+          data.category,
+          conv.amount_fx,
+          conv.fx,
+        ],
+      );
+      if (conv.amount_fx != null)
+        await sql.query(`update expenses set paid_fx = $1 where id = $2`, [conv.amount_fx, id]);
+    }
     return {
       id,
       expense_number,
+      folio,
     };
   });
 // Un gasto ya prorrateado en una liquidación facturada no se puede mover: la
@@ -7329,8 +7379,18 @@ export const cancelExpense = createServerFn({ method: "POST" })
       );
     let reversal: string | null = null;
     // Si ya salió dinero de caja, no se borra: entra un movimiento inverso para
-    // que la caja cuadre y quede el rastro de los dos lados.
-    if (paid > 0.009) {
+    // que la caja cuadre y quede el rastro de los dos lados. Solo lo que DE
+    // VERDAD salió de Chase por este gasto: un gasto "ya pagado" que nunca
+    // movió la caja tiene `paid` lleno y cero movimientos — revertir `paid`
+    // le metía a Chase dinero que nunca salió.
+    const [out] = await sql.query(
+      `select coalesce((select -sum(amount) from cash_movements where expense_id = $1 and cancelled_at is null), 0)
+            + coalesce((select sum(pa.amount) from payment_applications pa join cash_movements m on m.id = pa.cash_movement_id
+                         where pa.target_kind = 'expense' and pa.target_id = $1 and m.cancelled_at is null), 0) as v`,
+      [data.expense_id],
+    );
+    const cashOut = round2(Math.min(n(out?.v), paid));
+    if (cashOut > 0.009) {
       reversal = await nextCode(sql, "cash_movements", "folio", "MOV-");
       await sql.query(
         `insert into cash_movements (folio, mov_date, kind, counterparty, expense_id, amount, notes)
@@ -7340,7 +7400,7 @@ export const cancelExpense = createServerFn({ method: "POST" })
           todayISO(),
           exp.supplier_name,
           exp.id,
-          paid,
+          cashOut,
           `Reverso por cancelación de ${exp.expense_number}: ${data.reason}`,
         ],
       );
@@ -8002,10 +8062,19 @@ export const convertCustomerPOToSO = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [cpo] = await sql.query(
-      `select id, cpo_number, customer_id, customer_po_number, status, notes, requested_date::text, payment_terms, ship_to_location_id from customer_pos where id = $1`,
+      `select id, cpo_number, customer_id, customer_po_number, status, notes, requested_date::text, payment_terms, ship_to_location_id,
+              coalesce(currency,'USD') as currency
+         from customer_pos where id = $1`,
       [data.customer_po_id],
     );
     if (!cpo) throw new Error("Customer PO no encontrado");
+    // Hallazgo 54: la venta de Plein es en dólares y la orden de venta no
+    // tiene moneda. Convertir un pedido en pesos copiaba MX$ 500 como $500
+    // dólares. Mientras la venta en pesos no exista, se detiene y lo dice.
+    if (cpo.currency !== "USD")
+      throw new Error(
+        `${cpo.cpo_number} está en ${cpo.currency}. La orden de venta es en dólares: cambia el pedido a USD con los precios ya convertidos (y anota el tipo de cambio en las notas) antes de convertirlo.`,
+      );
     if (cpo.status === "converted") {
       const [existing] = await sql.query(
         `select so_number from sales_orders where customer_po_id = $1 order by id desc limit 1`,
@@ -8951,18 +9020,35 @@ export const cancelSupplierBill = createServerFn({ method: "POST" })
     // seguridad para cualquier bill sin OC que no traiga la marca.
     if (bill.bill_type === "opening" || bill.purchase_order_id == null)
       throw new Error("Es una factura del corte de apertura — no se puede cancelar");
-    if (n(bill.paid) > 0.009) {
+    // Hallazgo 21: parte de lo "pagado" puede ser adelanto recuperado (cruce
+    // sin caja). Eso no tiene folio que cancelar: al cancelar la factura se
+    // devuelve al adelanto, que vuelve a quedar pendiente de recuperar. Lo
+    // que salió de Chase sí se cancela antes, desde su pago.
+    const recoveries = await sql.query(
+      `select id, advance_id, amount::text from grower_advance_applications where supplier_bill_id = $1`,
+      [bill.id],
+    );
+    const recovered = round2(recoveries.reduce((s, r) => s + n(r.amount), 0));
+    const cashPaid = round2(n(bill.paid) - recovered);
+    if (cashPaid > 0.009) {
       const folios = await findPaymentFolios(sql, "bill", bill.id);
       throw new Error(
-        `Esta factura tiene $${n(bill.paid).toFixed(2)} pagado${folios.length ? ` (folio${folios.length > 1 ? "s" : ""} ${folios.join(", ")})` : ""}. Cancela ese pago primero.`,
+        `Esta factura tiene $${cashPaid.toFixed(2)} pagado${folios.length ? ` (folio${folios.length > 1 ? "s" : ""} ${folios.join(", ")})` : ""}. Cancela ese pago primero.`,
       );
+    }
+    for (const r of recoveries) {
+      await sql.query(
+        `update grower_advances set recovered = greatest(recovered - $1, 0) where id = $2`,
+        [n(r.amount), r.advance_id],
+      );
+      await sql.query(`delete from grower_advance_applications where id = $1`, [r.id]);
     }
     const staffName = await staffNameFor(sql, context.userId);
     await sql.query(
-      `update supplier_bills set status='cancelled', cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`,
+      `update supplier_bills set status='cancelled', paid = 0, cancelled_at=now(), cancelled_by=$1, cancel_reason=$2 where id=$3`,
       [staffName, data.reason || null, bill.id],
     );
-    return { bill_number: bill.bill_number };
+    return { bill_number: bill.bill_number, advances_returned: recovered };
   });
 
 export const cancelCustomerPayment = createServerFn({ method: "POST" })
@@ -13607,6 +13693,21 @@ export const registerCashMovement = createServerFn({ method: "POST" })
       (data.folio || "").trim() || (await nextCode(sql, "cash_movements", "folio", "MOV-"));
     const [dup] = await sql.query(`select id from cash_movements where folio = $1`, [folio]);
     if (dup) throw new Error(`Folio ${folio} already exists`);
+    // Una salida con concepto de GASTO movía Chase sin tocar el P&L (el
+    // concepto de la línea no lo lee nadie, hallazgo 32). Se captura en
+    // Gastos → "Pagado desde Chase", que hace las dos cosas en un paso.
+    if (data.direction === "out" && data.concept) {
+      const [c] = await sql.query(
+        `select partida from money_concepts where kind = 'gasto' and name = $1`,
+        [data.concept.trim()],
+      );
+      if (c)
+        throw new Error(
+          c.partida === PAYROLL_PARTIDA
+            ? `"${data.concept}" es nómina: captúrala en Finanzas → Nómina ("Ya salió de Chase"), que registra el movimiento y el P&L juntos.`
+            : `"${data.concept}" es un gasto: captúralo en Finanzas → Gastos → Nuevo gasto → "Pagado desde Chase". Así mueve Chase y entra al P&L en un solo paso; desde aquí solo movería la caja.`,
+        );
+    }
     const kind = data.kind || (data.direction === "in" ? "cobro" : "pago");
     const signed = data.direction === "in" ? data.amount : -data.amount;
     const date = data.mov_date || todayISO();
@@ -14087,21 +14188,25 @@ const payrollPaymentFields = {
  * empleado con la fecha real del banco; 'outside' solo marca la fecha. En los
  * dos casos el periodo sale de la 20300.
  */
+/**
+ * Un movimiento nuevo de Chase: ni futuro, ni anterior al corte (ese dinero
+ * ya vive en CORTE-CHASE). `alt` nombra la opción que sí aplica.
+ */
+async function assertChasePayDate(sql, payDate: string, alt: string) {
+  if (payDate > todayISO())
+    throw new Error("La fecha de pago es futura. Registra el pago cuando ya haya salido de Chase.");
+  const corte = await chaseCorteDate(sql);
+  if (corte && payDate < corte)
+    throw new Error(
+      `Ese pago salió el ${payDate}, antes del corte de Chase (${corte}): ese dinero ya está en el saldo de apertura. Márcalo como "${alt}".`,
+    );
+}
+
 /** Las reglas de fecha del pago, para validarlas ANTES de escribir nada. */
 async function assertPayrollPayDate(sql, mode: (typeof PAYROLL_PAY_MODES)[number], payDate: string) {
+  if (mode === "chase") return assertChasePayDate(sql, payDate, "ya pagada, Chase ya lo refleja");
   if (payDate > todayISO())
-    throw new Error(
-      mode === "chase"
-        ? "La fecha de pago es futura. Registra el pago cuando ya haya salido de Chase."
-        : "La fecha de pago es futura: un periodo no está pagado antes de pagarse.",
-    );
-  if (mode === "chase") {
-    const corte = await chaseCorteDate(sql);
-    if (corte && payDate < corte)
-      throw new Error(
-        `Ese pago salió el ${payDate}, antes del corte de Chase (${corte}): ese dinero ya está en el saldo de apertura. Márcalo como "ya pagada, Chase ya lo refleja".`,
-      );
-  }
+    throw new Error("La fecha de pago es futura: un periodo no está pagado antes de pagarse.");
 }
 
 async function applyPayrollPayment(

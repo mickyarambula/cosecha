@@ -115,7 +115,11 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 21. **Una bill con recuperación de adelantos no se puede cancelar ni deshacer.** `applyAdvanceRecovery` sube `supplier_bills.paid` sin cash_movement (3048-3053); `cancelSupplierBill` bloquea por `paid > 0` y pide "cancela ese pago primero" (5112-5117) pero no hay folio que cancelar ni función para revertir la recuperación.
 
+**✅ RESUELTO — rama `listo-para-operar` (23 Sep 2026).** Cancelar la factura devuelve la recuperación: cada `grower_advance_applications` de esa FAC- se borra y su monto regresa al adelanto (`recovered` baja), que vuelve a quedar pendiente. Lo pagado desde Chase sigue pidiendo cancelar su pago antes — y el mensaje ya solo cuenta la parte de caja, no la del adelanto.
+
 22. **El folio del BOL puede chocar.** `nextCode` toma la última fila por id (128), pero los BOL se emiten en orden de impresión (`issueBol` 1740): embarque 5 recibe BOL-001, luego embarque 3 recibe BOL-002, y el siguiente vuelve a calcular BOL-002 → falla el índice único de `0029`.
+
+**✅ YA ESTABA RESUELTO — confirmado el 23 Sep 2026.** Desde `0033_folio_counters` los folios salen de un contador por serie y `nextCode` salta cualquier folio ya tomado. Probado: tres BOL emitidos en desorden (embarque 3, 1, 2) dan BOL-001/002/003 sin chocar (`e2e-listo`).
 
 23. **Un rechazo en recepción deja la OC "pendiente" para siempre.** La línea rechazada no toca `quantity_received` (4049-4052, 4145-4149), el estado queda `partial` (4151-4160), `getWarehouse.incoming` sigue contando esa fruta como "por llegar" (3266-3272) y el dashboard la alerta.
 
@@ -128,6 +132,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 **⚠️ PARCIAL — PR #17 `detalles-bloque-b` (Detalle 4, 4 Sep 2026).** El síntoma visible se corrigió para dos categorías: "Fletes"/"Freight" y "Seguros"/"Insurance" ya caen juntas en su cuenta (51000 y 55000) en vez de irse a 59999 General — verificado, `currentOf` ahora suma ambos nombres explícitamente. La causa de fondo sigue igual y **verificada de nuevo hoy**: `currentOf` sigue con nombres de categoría hardcodeados en el código (una lista de `if (number === ...)`), y `gl_mappings` — que sí se guarda desde Ajustes → Automations — sigue sin ser consultado por `getFinancials`. Cualquier categoría nueva que no esté en esa lista hardcodeada se sigue yendo a 59999 General.
 
 26. **El estado de cuenta al cliente sale sin detalle y sin restar créditos.** `cxc.tsx:178-187` manda `lines` vacías → el PDF "Statement" solo trae el total (`send-doc.tsx:199-222`); `listInvoices.saldo = max(total − paid, 0)` (5173) deja las notas de crédito en saldo 0, así que no rebajan el estado de cuenta. *(créditos ya documentado)*.
+
+**✅ RESUELTO — rama `listo-para-operar` (23 Sep 2026).** Estados de cuenta: cada cliente lista sus facturas con saldo **y resta las notas de crédito sin aplicar** (igual que el saldo del tablero); las canceladas no cuentan. El PDF trae un renglón por documento (folio, fecha, vencimiento, importe, saldo, "VENCIDA") con fecha "al". La suma de la pestaña cuadra con CxC ($673,014.43 en base limpia).
 
 ### MEDIO
 
@@ -144,6 +150,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 31. **Merma y reempaque descuentan de todas las ubicaciones.** *(ya documentado, sigue abierto)*. `wasteLot` (3124-3127) y `createPackOut` (6763-6766) hacen `quantity − N` en todas las bodegas del lote; la merma tampoco guarda ubicación.
 
 32. **El concepto de las líneas Chase se guarda y ningún reporte lo usa.** `registerCashMovement` (7245-7278) y `tesoreria.tsx:234-240` guardan `concept`; `listCash` no lo lee y `getFinancials` tampoco. El catálogo V8 Master existe solo para almacenarse.
+
+**PARCIAL — rama `listo-para-operar` (23 Sep 2026).** La línea manual de Chase ya **no acepta** una salida con concepto de gasto (movía la caja sin tocar el P&L): manda a Gastos → "Pagado desde Chase" (o a Nómina), que hace las dos cosas en un paso. El concepto de las líneas que sí se capturan ahí sigue sin leerse en reportes.
 
 33. **Compras: controles muertos y datos inventados.** `compras.tsx`: filtro Buyer con `<option>` sin `value` (848), botón "Filters" sin acción (869-871), "Requested date" fijo en hoy (843), checkbox "Organic" (636), "Share vendor portal" (782), "Print order when placed"/nota al proveedor no se usan (786-793), `markup` capturado y nunca enviado (84, 721-731), "+ Add non-inventory item" abre el picker de inventario (756-762), Pallets `|| row.lines.length` (1538) y `|| 1` (1432) muestran pallets que no existen, "Buyer: Miguel" fijo (1389), "Payment status" ignora parcial y comisión (1586), "Attachments · No attached files" (1589), Audit log / Return to shipper (1529-1530) *(ya documentado)*. Settlement: "Rev. status: Unpaid" fijo (2638), lote agotado se pinta "OPEN" (2633-2635), hint `money(0)` (2339).
 
@@ -168,6 +176,8 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 41. **Vocabulario mezclado en la base.** `order_type` guarda "Delivery by vendor"/"Pickup"/"Will-call" (`compras.tsx:159, 515-517`) con default 'entrega' en `0007`; `CALIDAD_LABEL` y `DESTINO_*` en `utils.ts` tienen valores en inglés; `kindLabel` de tesorería en inglés (38-43).
 
 42. **Cancelar un adelanto no libera la línea de banco.** `cancelGrowerAdvance` cancela el movimiento con un update directo (3086-3091) sin pasar por `reverseCashMovementEffects` (410-413), así que una línea Chase ya conciliada se queda apuntando a un movimiento cancelado.
+
+**✅ RESUELTO — rama `listo-para-operar` (23 Sep 2026).** Cancelar el adelanto suelta su línea de banco (vuelve a "abierta"), y `matchBankLine` ya no acepta un movimiento cancelado. La pestaña Conciliar tampoco los ofrece.
 
 43. **Cuentas: "Edit" sin acción (364-366) y `createGlAccount` sin verificar número duplicado (6156-6189)** → error crudo de Postgres.
 
@@ -214,6 +224,13 @@ Nada tocó el corte: los 112 documentos de apertura ya traían su vencimiento re
 53. **~~La migración 0011 dio de alta una cuenta de banco inventada: "Operating · Wells Fargo · 4410".~~ ✅ YA ESTABA CORREGIDO — anotado por error el 22 Sep 2026.** La 0011 sí sembró ese renglón inventado, pero la **`0015_opening_cutover.sql` (líneas 43-48) ya lo había renombrado a "Operating · JP Morgan Chase"**, sin terminación y con saldo inicial en cero. Lo que corre en producción dice Chase. El error fue leer la 0011 sin seguir las migraciones posteriores; se deja aquí para que nadie lo vuelva a "encontrar". Sigue pendiente, eso sí, la **terminación real** de la cuenta si Miguel quiere que aparezca (hoy va en blanco, que es lo honesto).
 
 54. **Un pedido del cliente (CPO) en pesos se vuelve orden de venta en dólares con el mismo número.** *(encontrado el 22 Sep 2026.)* `customer_pos.currency` (migración 0004) es la única columna de moneda que existía; la pantalla de CPO ofrece "MXN" y el extractor de PDF puede llenarla, pero `convertCustomerPOToSO` la **descarta** y copia `unit_price` tal cual. Un pedido de MX$ 500 por caja se factura como $500 dólares. Fuera del bloque peso–dólar A (la venta de Plein es en dólares); la salida honesta mientras tanto es que la conversión **se detenga** cuando el CPO no está en USD, en vez de callar.
+
+**✅ RESUELTO (la salida honesta) — rama `listo-para-operar` (23 Sep 2026).** `convertCustomerPOToSO` se detiene si el pedido no está en USD y dice qué hacer (pasar el pedido a dólares con los precios convertidos). La venta en pesos sigue sin existir; cuando haga falta es un bloque aparte.
+
+55. **Cancelar un gasto "ya pagado" le metía a Chase dinero que nunca salió.** *(encontrado el 23 Sep 2026.)* Un gasto "ya pagado" nace con `paid = amount` y **sin** movimiento de caja; `cancelExpense` escribía un reverso de `+paid` en Chase de todos modos. **✅ RESUELTO — rama `listo-para-operar`:** el reverso es solo lo que de verdad salió por ese gasto (sus movimientos vivos + sus aplicaciones de pago).
+
+56. **Un gasto general pagado desde Chase se capturaba en dos pasos o quedaba cojo.** *(23 Sep 2026.)* "Ya pagado" entraba al P&L sin bajar Chase; la línea manual de Chase bajaba la caja sin entrar al P&L; lo correcto (gasto por pagar + pagarlo en Gastos → Pagos) eran dos capturas. **✅ RESUELTO — rama `listo-para-operar`:** tercera opción al crear el gasto, **"Pagado desde Chase"**, con fecha del banco, método y referencia: nace pagado y deja su movimiento ligado (`expense_id`) en Tesorería. Cancelar ese pago lo regresa a CxP; nunca antes del corte ni con fecha futura. En pesos, el TC capturado es el del banco (sin resultado cambiario).
+
 ---
 
 ## Áreas de mejora (ordenadas por valor para el negocio)

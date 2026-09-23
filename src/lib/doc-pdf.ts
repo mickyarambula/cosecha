@@ -8,6 +8,8 @@ export type DocPdfLine = {
   unit?: string;
   unit_price?: number;
   amount?: number;
+  /** Texto en lugar de la cantidad (el estado de cuenta pone ahí el vencimiento). */
+  qtyText?: string;
 };
 
 export type DocPdfParty = { name: string; lines?: string[] };
@@ -33,6 +35,8 @@ export type DocPdfInput = {
   showPaca?: boolean;
   /** Peso–dólar A: en MXN los montos se imprimen con "MX$" para que no se lean como dólares. */
   currency?: "USD" | "MXN";
+  /** Encabezados de columna distintos a los de una factura (estado de cuenta). */
+  headers?: { item?: string; description?: string; qty?: string; price?: string; amount?: string };
   company?: {
     legal_name?: string;
     tagline?: string | null;
@@ -378,12 +382,13 @@ function buildPdf(
   pdf.setFontSize(7);
   pdf.setTextColor(...MUTED);
   const headY = y;
-  pdf.text("ARTÍCULO", M, headY);
-  pdf.text("DESCRIPCIÓN", M + skuW, headY);
-  pdf.text("CANT.", M + skuW + descW + qtyW, headY, { align: "right" });
+  const h = input.headers ?? {};
+  pdf.text(h.item ?? "ARTÍCULO", M, headY);
+  pdf.text(h.description ?? "DESCRIPCIÓN", M + skuW, headY);
+  pdf.text(h.qty ?? "CANT.", M + skuW + descW + qtyW, headY, { align: "right" });
   if (hasPrice) {
-    pdf.text("PRECIO UNIT.", M + skuW + descW + qtyW + priceW, headY, { align: "right" });
-    pdf.text("TOTAL", PAGE_W - M, headY, { align: "right" });
+    pdf.text(h.price ?? "PRECIO UNIT.", M + skuW + descW + qtyW + priceW, headY, { align: "right" });
+    pdf.text(h.amount ?? "TOTAL", PAGE_W - M, headY, { align: "right" });
   }
   y += 6;
   pdf.setDrawColor(...RULE);
@@ -412,7 +417,7 @@ function buildPdf(
     pdf.setTextColor(...INK);
     pdf.setFontSize(9);
     pdf.text(descLines, M + skuW, y);
-    pdf.text(pdfQty(line.qty, line.unit), M + skuW + descW + qtyW, y, { align: "right" });
+    pdf.text(line.qtyText ?? pdfQty(line.qty, line.unit), M + skuW + descW + qtyW, y, { align: "right" });
     if (hasPrice) {
       pdf.text(
         line.unit_price != null ? pdfMoney(line.unit_price, input.currency) : "-",
