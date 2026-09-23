@@ -7050,6 +7050,8 @@ export const createExpense = createServerFn({ method: "POST" })
     // viniera estaría en pesos, así que se deja caer al dólar convertido.
     const data = { ...raw, amount: conv.usd, unit_cost: conv.currency === "MXN" ? undefined : raw.unit_cost };
     const sql = await getSql();
+    // Nómina (0052): la partida "Gasto Nómina" vive en Finanzas → Nómina.
+    await assertNotPayrollConcept(sql, data.category);
     const expense_number = await nextCode(sql, "expenses", "expense_number", "EXP-");
     const payable = data.payable !== false;
     const amount = data.amount;
@@ -7141,6 +7143,9 @@ export const updateExpense = createServerFn({ method: "POST" })
       [raw.expense_id],
     );
     if (!exp) throw new Error("Gasto no encontrado");
+    // Nómina (0052): cambiar un gasto a una partida de nómina lo contaría dos
+    // veces. Un gasto viejo que ya la tuviera se puede seguir editando.
+    if (raw.category.trim() !== String(exp.category)) await assertNotPayrollConcept(sql, raw.category);
     // Si la pantalla manda en pesos exactamente lo que ya estaba, al mismo TC,
     // se conservan los dólares guardados: reconvertir podría mover un centavo
     // y disparar los candados de "cambió de monto" sin que nadie cambiara nada.
@@ -12004,6 +12009,27 @@ export const getFinancials = createServerFn({ method: "GET" })
       `select category, account_number, amount::text from expenses
        where cancelled_at is null ${rango("issue_date")}`,
     );
+    // ── Nómina (migración 0052): el costo es el BRUTO de los periodos
+    // CERRADOS, por la fecha de fin del periodo (lo trabajado, no el día en
+    // que salió el dinero). No pasa por `expenses` a propósito: esa tabla
+    // exige proveedor y tiene camino a la liquidación del productor.
+    // Lo pagado ANTES del corte (19 Ago 2026) es del V8: ese dinero ya vive en
+    // CORTE-CHASE y en el ajuste de capital. Se captura para el registro, pero
+    // no entra al P&L ni a los pasivos — meterlo sería contar el corte dos veces.
+    const payrollRows = await sql.query(
+      `select l.concept, l.gross::text from payroll_lines l
+         join payroll_periods p on p.id = l.period_id
+        where p.status = 'closed' and ${PAYROLL_AFTER_CORTE} ${rango("p.period_end")}`,
+    );
+    const payrollGross = round2(payrollRows.reduce((s, r) => s + n(r.gross), 0));
+    // Pasivos de nómina: foto de HOY, como el resto del Balance. El neto de
+    // lo cerrado sin pagar (20300) y lo retenido a los empleados (20350).
+    const [payrollLiab] = await sql.query(
+      `select coalesce(sum(case when p.paid_at is null then l.net else 0 end),0)::text as unpaid,
+              coalesce(sum(l.deductions),0)::text as withheld
+         from payroll_lines l join payroll_periods p on p.id = l.period_id
+        where p.status = 'closed' and ${PAYROLL_AFTER_CORTE}`,
+    );
     // Bloque 0: hasta hoy el P&L repartía los gastos con una lista de
     // categorías escrita a fuego aquí abajo. Había CUATRO listas que no
     // coincidían: el catálogo real (`money_concepts`), el mapeo editable
@@ -12075,7 +12101,10 @@ export const getFinancials = createServerFn({ method: "GET" })
     const salesShipped = n(cogsRows[0]?.sales);
     const expByCat: Record<string, number> = {};
     for (const e of expenses) expByCat[e.category] = (expByCat[e.category] || 0) + n(e.amount);
-    const expTotal = expenses.reduce((s, e) => s + n(e.amount), 0);
+    if (payrollGross) expByCat["Nómina"] = (expByCat["Nómina"] || 0) + payrollGross;
+    // La nómina entra al total de gastos UNA vez, aquí; abajo se reparte por
+    // cuenta igual que un gasto, así que el neto la resta una sola vez.
+    const expTotal = expenses.reduce((s, e) => s + n(e.amount), 0) + payrollGross;
     // ── Peso–dólar B: el resultado cambiario sale de los PAGOS, no de un
     // gasto. Si viviera en `expenses` podría ligarse a una carga "a cargo del
     // productor" y descontársele en su liquidación — y el diferencial es de
@@ -12126,6 +12155,26 @@ export const getFinancials = createServerFn({ method: "GET" })
     for (const e of expenses) {
       const acct = accountForExpense(e.category, e.account_number);
       expByAccount[acct] = (expByAccount[acct] || 0) + n(e.amount);
+    }
+    // La cuenta de la nómina la decide el catálogo, nunca el código: el
+    // mapeo del concepto del renglón (Nomina Ventas…), luego el mapeo
+    // `payroll` (Cuentas → Automatizaciones), luego la partida "Gasto
+    // Nómina", luego la 52500 sembrada, y al final el cajón — visible, no
+    // perdido.
+    const accountForPayroll = (concept: string | null) => {
+      const tryUse = (acct: string | null | undefined) =>
+        acct && postable.has(acct) ? acct : null;
+      return (
+        tryUse(mapOf.get((concept || "").trim())) ??
+        tryUse(mapOf.get("payroll")) ??
+        tryUse(mapOf.get(`partida:${PAYROLL_PARTIDA}`)) ??
+        tryUse("52500") ??
+        EXPENSE_FALLBACK
+      );
+    };
+    for (const r of payrollRows) {
+      const acct = accountForPayroll(r.concept);
+      expByAccount[acct] = (expByAccount[acct] || 0) + n(r.gross);
     }
     const cashBal = cash.reduce((s, m) => s + n(m.amount), 0);
     const inventory = n(invVal[0]?.v);
@@ -12185,6 +12234,9 @@ export const getFinancials = createServerFn({ method: "GET" })
       if (number === "14000") return 0;
       if (number === "16000") return starting + cashBal;
       if (number === "20100") return ap;
+      // Nómina (0052): dos pasivos propios, nunca dentro de la 20100.
+      if (number === "20300") return n(payrollLiab?.unpaid);
+      if (number === "20350") return n(payrollLiab?.withheld);
       if (number === "21000") return n(transitRows[0]?.v);
       if (number === "20250") return starting;
       if (number === "30000") return starting;
@@ -12221,6 +12273,12 @@ export const getFinancials = createServerFn({ method: "GET" })
       /** Peso–dólar B: + ganancia, − pérdida, del periodo. */
       fx_result: fxResult,
       fx_account: fxAccount,
+      /** Nómina (0052): bruto de los periodos cerrados del periodo. Ya está dentro de `expenses`. */
+      payroll: payrollGross,
+      /** Neto de periodos cerrados que todavía no salen de Chase (cuenta 20300). Foto de hoy. */
+      payroll_unpaid: n(payrollLiab?.unpaid),
+      /** Deducciones retenidas a los empleados, por enterar (cuenta 20350). Foto de hoy. */
+      payroll_withheld: n(payrollLiab?.withheld),
       ar,
       ap,
       cash: cashBal,
@@ -13016,10 +13074,12 @@ export const matchBankLine = createServerFn({ method: "POST" })
     const [line] = await sql.query(`select amount::text from bank_lines where id = $1`, [
       data.line_id,
     ]);
-    const [mov] = await sql.query(`select amount::text, folio from cash_movements where id = $1`, [
+    const [mov] = await sql.query(`select amount::text, folio, cancelled_at from cash_movements where id = $1`, [
       data.cash_movement_id,
     ]);
     if (!line || !mov) throw new Error("Line or movement not found");
+    // Un movimiento cancelado no salió del banco: no hay línea que le cuadre.
+    if (mov.cancelled_at) throw new Error(`El movimiento ${mov.folio} está cancelado — no se concilia.`);
     if (Math.abs(n(line.amount) - n(mov.amount)) > 0.009)
       throw new Error(
         `Amount mismatch: bank ${n(line.amount).toFixed(2)} vs cash ${n(mov.amount).toFixed(2)}`,
@@ -13116,6 +13176,7 @@ export type LiveWipeCounts = {
   supplements: number;
   adjustments: number;
   customer_returns: number;
+  payroll_periods: number;
 };
 
 function wipeTotal(c: LiveWipeCounts) {
@@ -13137,7 +13198,8 @@ function wipeTotal(c: LiveWipeCounts) {
     c.certificates +
     c.supplements +
     c.adjustments +
-    c.customer_returns
+    c.customer_returns +
+    c.payroll_periods
   );
 }
 
@@ -13169,6 +13231,9 @@ async function countLiveActivity(sql: any): Promise<LiveWipeCounts> {
     supplements: await n(`select count(*)::text as c from grower_settlement_supplements`),
     adjustments: await n(`select count(*)::text as c from grower_adjustments`),
     customer_returns: await n(`select count(*)::text as c from customer_returns`),
+    // Nómina (0052): los periodos son actividad; los empleados son catálogo y
+    // se quedan, como proveedores y clientes.
+    payroll_periods: await n(`select count(*)::text as c from payroll_periods`),
   };
 }
 
@@ -13261,6 +13326,10 @@ async function wipeLiveActivity(sql: any) {
   await sql.query(`delete from grower_advances`);
   await sql.query(`update bank_lines set cash_movement_id = null`);
   await sql.query(`delete from bank_lines`);
+  // Nómina (0052): los renglones apuntan al movimiento de Chase que los pagó;
+  // se van antes que los movimientos. Los empleados NO se borran (catálogo).
+  await sql.query(`delete from payroll_lines`);
+  await sql.query(`delete from payroll_periods`);
   await sql.query(`delete from cash_movements where folio <> 'CORTE-CHASE'`);
   // Orden por FK: payables → detalle de liquidación → liquidaciones (que a su
   // vez apuntan a las OCs que se borran más abajo).
@@ -13551,4 +13620,711 @@ export const registerCashMovement = createServerFn({ method: "POST" })
       id: row.id,
       folio,
     };
+  });
+
+// ═══════════════════════════════════════════════════════════════════════
+// NÓMINA (MODELO-NEGOCIO § 7, migración 0052)
+//
+// Camino propio, aparte de `expenses`, a propósito: la tabla de gastos exige
+// proveedor (habría que inventar uno llamado "Nómina"), nace "por pagar"
+// (movería el ancla de CxP de $570,097.56 a $612,242.56 por dinero que ya
+// salió) y tiene camino a la liquidación del productor (`charged_to`,
+// `expense_po_links`). Nada de aquí llega a un productor. Sin excepción.
+//
+//   · `employees` es personal; `staff` es acceso al sistema. Son distintos.
+//   · Un periodo se captura en BORRADOR y se CIERRA. Cerrado entra al P&L
+//     (bruto, cuenta 52500 vía el mapeo `payroll`) por su fecha de fin.
+//   · Al cerrar (o después) se registra cómo se pagó:
+//       'chase'   → un movimiento en Tesorería por empleado, kind 'nomina',
+//                   con la fecha real del banco — nunca antes del corte, ese
+//                   dinero ya vive en CORTE-CHASE.
+//       'outside' → ya se pagó y Chase ya lo refleja (antes del corte, o
+//                   capturado a mano en Tesorería). No mueve la caja.
+//     Sin pago, el neto vive en la 20300 (Nómina por pagar).
+//   · Las deducciones retenidas se acumulan en la 20350 hasta enterarse.
+//   · kind 'nomina' NO se cancela desde Tesorería: el botón solo sale para
+//     cobro/pago y `cancelCashMovementById` exige el tipo. Se cancela desde
+//     Nómina, que además regresa el periodo a "por pagar".
+// ═══════════════════════════════════════════════════════════════════════
+
+const PAYROLL_PARTIDA = "Gasto Nómina";
+const PAYROLL_PAY_MODES = ["chase", "outside"] as const;
+/**
+ * Un periodo pagado ANTES del corte de Chase (marcado "ya pagada, Chase ya
+ * lo refleja" con fecha anterior a CORTE-CHASE) es del V8: se guarda para el
+ * registro, pero no entra al P&L ni a los pasivos. Cláusula SQL sobre el
+ * alias `p` de payroll_periods. Sin corte en la base (nunca en producción),
+ * nada queda fuera.
+ */
+// Ojo con los nulos: un periodo por pagar trae pay_mode y paid_at en null, y
+// `null = 'outside'` no es falso, es null — sin los coalesce el `not` lo
+// dejaría fuera del P&L.
+const PAYROLL_AFTER_CORTE = `not (coalesce(p.pay_mode, '') = 'outside' and coalesce(p.paid_at, date '9999-12-31') < coalesce((select mov_date from cash_movements where folio = 'CORTE-CHASE' limit 1), date '1900-01-01'))`;
+
+/**
+ * Los conceptos de la partida "Gasto Nómina" (Nomina Ventas / Compras /
+ * Admin) son de la pantalla de Nómina: un gasto con ese concepto sumaría la
+ * misma nómina dos veces a la 52500. En el registro manual de Chase sí se
+ * permiten (es "capturado a mano en Tesorería").
+ */
+async function assertNotPayrollConcept(sql, category: string) {
+  const [row] = await sql.query(
+    `select name from money_concepts where kind = 'gasto' and partida = $1 and name = $2`,
+    [PAYROLL_PARTIDA, category.trim()],
+  );
+  if (row)
+    throw new Error(
+      `"${row.name}" es una partida de nómina: captúrala en Finanzas → Nómina, no como gasto — como gasto se contaría dos veces.`,
+    );
+}
+
+/** Fecha del corte de Chase: antes de ella el dinero ya está en CORTE-CHASE. */
+async function chaseCorteDate(sql): Promise<string | null> {
+  const [row] = await sql.query(
+    `select mov_date::text from cash_movements where folio = 'CORTE-CHASE' limit 1`,
+  );
+  return row?.mov_date ?? null;
+}
+
+/** Solo las partidas de nómina del catálogo (Nomina Ventas / Compras / Admin). En blanco es válido. */
+async function payrollConceptOrNull(sql, concept: string | null | undefined) {
+  const name = (concept || "").trim();
+  if (!name) return null;
+  const [row] = await sql.query(
+    `select name from money_concepts where kind = 'gasto' and partida = $1 and name = $2`,
+    [PAYROLL_PARTIDA, name],
+  );
+  if (!row)
+    throw new Error(
+      `"${name}" no es una partida de nómina del catálogo (${PAYROLL_PARTIDA}). Agrégala en Ajustes → Conceptos o déjala en blanco.`,
+    );
+  return row.name as string;
+}
+
+async function departmentIdOrNull(sql, id: number | null | undefined) {
+  if (id == null) return null;
+  const [d] = await sql.query(`select id from departments where id = $1`, [id]);
+  if (!d) throw new Error("Departamento no encontrado");
+  return d.id as number;
+}
+
+export type EmployeeRow = {
+  id: number;
+  name: string;
+  department_id: number | null;
+  department_name: string | null;
+  position: string | null;
+  payroll_concept: string | null;
+  hired_at: string | null;
+  base_gross: number | null;
+  is_active: boolean;
+  notes: string | null;
+  created_by: string | null;
+};
+
+function mapEmployee(r): EmployeeRow {
+  return {
+    ...r,
+    base_gross: r.base_gross == null ? null : n(r.base_gross),
+    is_active: r.is_active !== false,
+  };
+}
+
+export const listEmployees = createServerFn({ method: "GET" })
+  .middleware([moduleMiddleware("finance")])
+  .handler(async (): Promise<EmployeeRow[]> => {
+    const sql = await getSql();
+    const rows = await sql.query(
+      `select e.id, e.name, e.department_id, d.name as department_name, e.position, e.payroll_concept,
+              e.hired_at::text, e.base_gross::text, e.is_active, e.notes, e.created_by
+         from employees e left join departments d on d.id = e.department_id
+        order by e.is_active desc, lower(e.name)`,
+    );
+    return rows.map(mapEmployee);
+  });
+
+const employeeFields = {
+  name: z.string().min(1),
+  department_id: z.number().nullable().optional(),
+  position: z.string().optional(),
+  payroll_concept: z.string().optional(),
+  hired_at: ISO_DATE.nullable().optional(),
+  /** Sueldo bruto por periodo, solo para precargar el renglón. En blanco es honesto. */
+  base_gross: z.number().nonnegative().nullable().optional(),
+  notes: z.string().optional(),
+};
+
+async function assertEmployeeNameFree(sql, name: string, exceptId: number | null) {
+  const [dup] = await sql.query(
+    `select id from employees where lower(name) = lower($1) and is_active and ($2::int is null or id <> $2)`,
+    [name, exceptId],
+  );
+  if (dup) throw new Error(`Ya hay un empleado activo llamado ${name}.`);
+}
+
+export const createEmployee = createServerFn({ method: "POST" })
+  .validator(z.object(employeeFields))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const name = data.name.trim();
+    if (!name) throw new Error("Captura el nombre del empleado.");
+    await assertEmployeeNameFree(sql, name, null);
+    const departmentId = await departmentIdOrNull(sql, data.department_id ?? null);
+    const concept = await payrollConceptOrNull(sql, data.payroll_concept);
+    const staffName = await staffNameFor(sql, context.userId);
+    const [row] = await sql.query(
+      `insert into employees (name, department_id, position, payroll_concept, hired_at, base_gross, notes, created_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
+      [
+        name,
+        departmentId,
+        data.position?.trim() || null,
+        concept,
+        data.hired_at ?? null,
+        data.base_gross == null ? null : round2(data.base_gross),
+        data.notes?.trim() || null,
+        staffName,
+      ],
+    );
+    return { id: row.id as number };
+  });
+
+/**
+ * Edición PARCIAL: solo cambia lo que viene en `data`. Un campo ausente se
+ * conserva; `null` explícito lo limpia. Así "dar de baja" no borra el puesto
+ * ni el sueldo de la ficha.
+ */
+export const updateEmployee = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.number(),
+      is_active: z.boolean().optional(),
+      name: z.string().min(1).optional(),
+      department_id: z.number().nullable().optional(),
+      position: z.string().nullable().optional(),
+      payroll_concept: z.string().nullable().optional(),
+      hired_at: ISO_DATE.nullable().optional(),
+      base_gross: z.number().nonnegative().nullable().optional(),
+      notes: z.string().nullable().optional(),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const [cur] = await sql.query(
+      `select id, name, department_id, position, payroll_concept, hired_at::text, base_gross::text, notes, is_active
+         from employees where id = $1`,
+      [data.id],
+    );
+    if (!cur) throw new Error("Empleado no encontrado");
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(data, k) && data[k] !== undefined;
+    const name = has("name") ? String(data.name).trim() : String(cur.name);
+    if (!name) throw new Error("Captura el nombre del empleado.");
+    const isActive = data.is_active ?? cur.is_active !== false;
+    if (isActive) await assertEmployeeNameFree(sql, name, data.id);
+    const departmentId = has("department_id")
+      ? await departmentIdOrNull(sql, data.department_id ?? null)
+      : (cur.department_id ?? null);
+    const concept = has("payroll_concept")
+      ? await payrollConceptOrNull(sql, data.payroll_concept)
+      : (cur.payroll_concept ?? null);
+    const position = has("position") ? data.position?.trim() || null : (cur.position ?? null);
+    const hiredAt = has("hired_at") ? (data.hired_at ?? null) : (cur.hired_at ?? null);
+    const baseGross = has("base_gross")
+      ? data.base_gross == null
+        ? null
+        : round2(data.base_gross)
+      : cur.base_gross == null
+        ? null
+        : n(cur.base_gross);
+    const notes = has("notes") ? data.notes?.trim() || null : (cur.notes ?? null);
+    await sql.query(
+      `update employees
+          set name = $1, department_id = $2, position = $3, payroll_concept = $4, hired_at = $5,
+              base_gross = $6, notes = $7, is_active = $8
+        where id = $9`,
+      [name, departmentId, position, concept, hiredAt, baseGross, notes, isActive, data.id],
+    );
+    return { ok: true };
+  });
+
+// ── Periodos ───────────────────────────────────────────────────────────
+
+export type PayrollLineRow = {
+  id: number;
+  employee_id: number;
+  employee_name: string;
+  concept: string | null;
+  gross: number;
+  deductions: number;
+  net: number;
+  notes: string | null;
+  cash_movement_id: number | null;
+  movement_folio: string | null;
+};
+
+export type PayrollPeriodRow = {
+  id: number;
+  period_number: string;
+  period_start: string;
+  period_end: string;
+  /** draft | closed | cancelled */
+  status: string;
+  paid_at: string | null;
+  /** chase | outside — null mientras no se pague */
+  pay_mode: string | null;
+  method: string | null;
+  reference: string | null;
+  notes: string | null;
+  created_by: string | null;
+  closed_at: string | null;
+  closed_by: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
+  cancel_reason: string | null;
+  employees: number;
+  total_gross: number;
+  total_deductions: number;
+  total_net: number;
+  /** Pagado antes del corte de Chase: del V8, no entra al P&L ni a los pasivos. */
+  before_corte: boolean;
+};
+
+const PAYROLL_PERIOD_SELECT = `
+  select p.id, p.period_number, p.period_start::text, p.period_end::text, p.status,
+         p.paid_at::text, p.pay_mode, p.method, p.reference, p.notes, p.created_by,
+         p.closed_at::text, p.closed_by, p.cancelled_at::text, p.cancelled_by, p.cancel_reason,
+         coalesce(not (${PAYROLL_AFTER_CORTE}), false) as before_corte,
+         (select count(*) from payroll_lines l where l.period_id = p.id)::text as employees,
+         coalesce((select sum(l.gross) from payroll_lines l where l.period_id = p.id), 0)::text as total_gross,
+         coalesce((select sum(l.deductions) from payroll_lines l where l.period_id = p.id), 0)::text as total_deductions,
+         coalesce((select sum(l.net) from payroll_lines l where l.period_id = p.id), 0)::text as total_net
+    from payroll_periods p`;
+
+function mapPayrollPeriod(r): PayrollPeriodRow {
+  return {
+    ...r,
+    employees: n(r.employees),
+    total_gross: n(r.total_gross),
+    total_deductions: n(r.total_deductions),
+    total_net: n(r.total_net),
+    before_corte: r.before_corte === true,
+  };
+}
+
+async function loadPayrollPeriod(sql, id: number): Promise<PayrollPeriodRow> {
+  const [row] = await sql.query(`${PAYROLL_PERIOD_SELECT} where p.id = $1`, [id]);
+  if (!row) throw new Error("Periodo de nómina no encontrado");
+  return mapPayrollPeriod(row);
+}
+
+async function loadPayrollLines(sql, periodId: number): Promise<PayrollLineRow[]> {
+  const rows = await sql.query(
+    `select l.id, l.employee_id, l.employee_name, l.concept, l.gross::text, l.deductions::text, l.net::text,
+            l.notes, l.cash_movement_id, m.folio as movement_folio
+       from payroll_lines l left join cash_movements m on m.id = l.cash_movement_id
+      where l.period_id = $1
+      order by lower(l.employee_name), l.id`,
+    [periodId],
+  );
+  return rows.map((r) => ({
+    ...r,
+    gross: n(r.gross),
+    deductions: n(r.deductions),
+    net: n(r.net),
+  }));
+}
+
+export const listPayrollPeriods = createServerFn({ method: "GET" })
+  .middleware([moduleMiddleware("finance")])
+  .handler(async (): Promise<PayrollPeriodRow[]> => {
+    const sql = await getSql();
+    const rows = await sql.query(`${PAYROLL_PERIOD_SELECT} order by p.period_end desc, p.id desc`);
+    return rows.map(mapPayrollPeriod);
+  });
+
+export const getPayrollPeriod = createServerFn({ method: "GET" })
+  .validator(z.object({ id: z.number() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }): Promise<PayrollPeriodRow & { lines: PayrollLineRow[] }> => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.id);
+    return { ...period, lines: await loadPayrollLines(sql, data.id) };
+  });
+
+function assertPeriodDates(start: string, end: string) {
+  if (start > end) throw new Error("El periodo termina antes de empezar: revisa las fechas.");
+}
+
+export const createPayrollPeriod = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      period_start: ISO_DATE,
+      period_end: ISO_DATE,
+      notes: z.string().optional(),
+      /** Precargar un renglón por empleado activo (default sí). El bruto sale de su ficha; en blanco queda en 0 para capturarlo. */
+      prefill: z.boolean().optional(),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    assertPeriodDates(data.period_start, data.period_end);
+    const staffName = await staffNameFor(sql, context.userId);
+    const period_number = await nextCode(sql, "payroll_periods", "period_number", "NOM-");
+    const [row] = await sql.query(
+      `insert into payroll_periods (period_number, period_start, period_end, status, notes, created_by)
+       values ($1,$2,$3,'draft',$4,$5) returning id`,
+      [period_number, data.period_start, data.period_end, data.notes?.trim() || null, staffName],
+    );
+    let employees = 0;
+    if (data.prefill !== false) {
+      const active = await sql.query(
+        `select id, name, payroll_concept, base_gross::text from employees where is_active order by lower(name)`,
+      );
+      for (const e of active) {
+        const gross = round2(n(e.base_gross));
+        await sql.query(
+          `insert into payroll_lines (period_id, employee_id, employee_name, concept, gross, deductions, net)
+           values ($1,$2,$3,$4,$5,0,$5)`,
+          [row.id, e.id, e.name, e.payroll_concept ?? null, gross],
+        );
+        employees += 1;
+      }
+    }
+    return { id: row.id as number, period_number, employees };
+  });
+
+export const updatePayrollPeriod = createServerFn({ method: "POST" })
+  .validator(
+    z.object({ id: z.number(), period_start: ISO_DATE, period_end: ISO_DATE, notes: z.string().optional() }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.id);
+    if (period.status !== "draft")
+      throw new Error(`${period.period_number} ya está ${period.status === "closed" ? "cerrado" : "cancelado"} — sus fechas no se cambian.`);
+    assertPeriodDates(data.period_start, data.period_end);
+    await sql.query(
+      `update payroll_periods set period_start = $1, period_end = $2, notes = $3 where id = $4`,
+      [data.period_start, data.period_end, data.notes?.trim() || null, data.id],
+    );
+    return { ok: true };
+  });
+
+export const savePayrollLines = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      period_id: z.number(),
+      lines: z.array(
+        z.object({
+          employee_id: z.number(),
+          gross: z.number().nonnegative(),
+          deductions: z.number().nonnegative().optional(),
+          notes: z.string().optional(),
+        }),
+      ),
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.period_id);
+    if (period.status !== "draft")
+      throw new Error(
+        period.status === "closed"
+          ? `${period.period_number} ya está cerrado — reábrelo para cambiar renglones.`
+          : `${period.period_number} está cancelado.`,
+      );
+    // Todo se valida ANTES de escribir: sin transacciones, un error a medias
+    // dejaría el periodo con la mitad de los renglones.
+    const seen = new Set<number>();
+    const prepared: Array<{ employee_id: number; name: string; concept: string | null; gross: number; deductions: number; notes: string | null }> = [];
+    for (const l of data.lines) {
+      if (seen.has(l.employee_id)) throw new Error("Un empleado aparece dos veces en el periodo.");
+      seen.add(l.employee_id);
+      const [e] = await sql.query(`select id, name, payroll_concept from employees where id = $1`, [
+        l.employee_id,
+      ]);
+      if (!e) throw new Error("Empleado no encontrado");
+      const gross = round2(l.gross);
+      const deductions = round2(l.deductions ?? 0);
+      if (deductions > gross + 0.009)
+        throw new Error(
+          `A ${e.name} se le retiene ${money2(deductions)} de un bruto de ${money2(gross)}: no se le puede descontar más de lo que gana.`,
+        );
+      prepared.push({
+        employee_id: e.id,
+        name: e.name,
+        concept: e.payroll_concept ?? null,
+        gross,
+        deductions,
+        notes: l.notes?.trim() || null,
+      });
+    }
+    await sql.query(`delete from payroll_lines where period_id = $1`, [data.period_id]);
+    for (const p of prepared)
+      await sql.query(
+        `insert into payroll_lines (period_id, employee_id, employee_name, concept, gross, deductions, net, notes)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [data.period_id, p.employee_id, p.name, p.concept, p.gross, p.deductions, round2(p.gross - p.deductions), p.notes],
+      );
+    const total_gross = round2(prepared.reduce((s, p) => s + p.gross, 0));
+    const total_net = round2(prepared.reduce((s, p) => s + p.gross - p.deductions, 0));
+    return { ok: true, employees: prepared.length, total_gross, total_net };
+  });
+
+const payrollPaymentFields = {
+  pay_date: ISO_DATE.optional(),
+  method: z.string().optional(),
+  reference: z.string().optional(),
+};
+
+/**
+ * Registra CÓMO se pagó un periodo cerrado. 'chase' escribe un movimiento por
+ * empleado con la fecha real del banco; 'outside' solo marca la fecha. En los
+ * dos casos el periodo sale de la 20300.
+ */
+/** Las reglas de fecha del pago, para validarlas ANTES de escribir nada. */
+async function assertPayrollPayDate(sql, mode: (typeof PAYROLL_PAY_MODES)[number], payDate: string) {
+  if (payDate > todayISO())
+    throw new Error(
+      mode === "chase"
+        ? "La fecha de pago es futura. Registra el pago cuando ya haya salido de Chase."
+        : "La fecha de pago es futura: un periodo no está pagado antes de pagarse.",
+    );
+  if (mode === "chase") {
+    const corte = await chaseCorteDate(sql);
+    if (corte && payDate < corte)
+      throw new Error(
+        `Ese pago salió el ${payDate}, antes del corte de Chase (${corte}): ese dinero ya está en el saldo de apertura. Márcalo como "ya pagada, Chase ya lo refleja".`,
+      );
+  }
+}
+
+async function applyPayrollPayment(
+  sql,
+  period: PayrollPeriodRow,
+  i: { mode: (typeof PAYROLL_PAY_MODES)[number]; pay_date?: string; method?: string; reference?: string },
+) {
+  const payDate = i.pay_date || todayISO();
+  await assertPayrollPayDate(sql, i.mode, payDate);
+  const lines = await loadPayrollLines(sql, period.id);
+  // Método y referencia son del banco: solo tienen sentido cuando Chase se mueve.
+  const method = i.mode === "chase" ? i.method?.trim() || null : null;
+  const reference = i.mode === "chase" ? i.reference?.trim() || null : null;
+  // El periodo se marca pagado ANTES de escribir los movimientos: sin
+  // transacciones, si el ciclo truena a medias el periodo queda "pagado" con
+  // parte de los movimientos, y "Cancelar pago" lo deja limpio para volver a
+  // intentar. Al revés (marcar al final) los movimientos quedarían huérfanos
+  // y un reintento cobraría a Chase dos veces.
+  await sql.query(
+    `update payroll_periods set paid_at = $1, pay_mode = $2, method = $3, reference = $4 where id = $5`,
+    [payDate, i.mode, method, reference, period.id],
+  );
+  let movements = 0;
+  if (i.mode === "chase") {
+    const note = `Nómina ${period.period_number} · ${period.period_start} a ${period.period_end}`;
+    for (const l of lines) {
+      // Un neto en cero (todo retenido) no mueve la caja: no hay qué pagar.
+      if (l.net <= 0.009) continue;
+      // Reintento después de un pago a medias: el renglón que ya tiene su
+      // movimiento vivo no se vuelve a cobrar.
+      if (l.cash_movement_id) {
+        const [prev] = await sql.query(`select cancelled_at from cash_movements where id = $1`, [l.cash_movement_id]);
+        if (prev && !prev.cancelled_at) continue;
+      }
+      const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
+      const [mov] = await sql.query(
+        `insert into cash_movements (folio, mov_date, kind, counterparty, amount, method, reference, notes, concept)
+         values ($1,$2,'nomina',$3,$4,$5,$6,$7,$8) returning id`,
+        [folio, payDate, l.employee_name, -l.net, method, reference, note, l.concept],
+      );
+      await sql.query(`update payroll_lines set cash_movement_id = $1 where id = $2`, [mov.id, l.id]);
+      movements += 1;
+    }
+  }
+  return { paid_at: payDate, movements };
+}
+
+/**
+ * Otros periodos vivos con fechas encimadas que traigan a los mismos
+ * empleados: un empleado no cobra dos veces los mismos días — salvo que sea
+ * un pago adicional (bono, aguinaldo), y eso se confirma a propósito.
+ */
+async function payrollOverlaps(sql, periodId: number, start: string, end: string) {
+  return (await sql.query(
+    `select distinct l.employee_name, p2.period_number, p2.period_start::text, p2.period_end::text
+       from payroll_lines l
+       join payroll_lines l2 on l2.employee_id = l.employee_id and l2.period_id <> l.period_id
+       join payroll_periods p2 on p2.id = l2.period_id
+      where l.period_id = $1 and p2.status <> 'cancelled' and p2.period_start <= $3 and p2.period_end >= $2
+      order by p2.period_number, l.employee_name`,
+    [periodId, start, end],
+  )) as Array<{ employee_name: string; period_number: string; period_start: string; period_end: string }>;
+}
+
+export const closePayrollPeriod = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.number(),
+      /** chase = ya salió de Chase (se registra) · outside = ya pagada, Chase ya lo refleja · pending = queda por pagar */
+      payment: z.enum(["chase", "outside", "pending"]),
+      /** Confirmación explícita de que es un pago adicional a otro periodo con las mismas fechas (bono, aguinaldo). */
+      allow_overlap: z.boolean().optional(),
+      ...payrollPaymentFields,
+    }),
+  )
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.id);
+    if (period.status !== "draft")
+      throw new Error(`${period.period_number} ya está ${period.status === "closed" ? "cerrado" : "cancelado"}.`);
+    const lines = await loadPayrollLines(sql, data.id);
+    if (!lines.length) throw new Error(`${period.period_number} no tiene empleados: agrega renglones antes de cerrarlo.`);
+    const sinBruto = lines.filter((l) => l.gross <= 0.009).map((l) => l.employee_name);
+    if (sinBruto.length)
+      throw new Error(
+        `Captura el bruto de ${sinBruto.slice(0, 3).join(", ")}${sinBruto.length > 3 ? ` y ${sinBruto.length - 3} más` : ""}, o quítalos del periodo. Un renglón en cero no es un sueldo.`,
+      );
+    if (!data.allow_overlap) {
+      const overlaps = await payrollOverlaps(sql, period.id, period.period_start, period.period_end);
+      if (overlaps.length) {
+        const first = overlaps[0];
+        const otros = overlaps.length - 1;
+        throw new Error(
+          `${first.employee_name} ya cobra en ${first.period_number} (${first.period_start} a ${first.period_end}) y las fechas se enciman${otros ? ` — y ${otros} caso${otros > 1 ? "s" : ""} más` : ""}. Un empleado no cobra dos veces los mismos días. Si es un pago adicional (bono, aguinaldo), márcalo así al cerrar.`,
+        );
+      }
+    }
+    // Validar el pago ANTES de cerrar, para no dejar un periodo cerrado con
+    // el pago a medias.
+    if (data.payment !== "pending") await assertPayrollPayDate(sql, data.payment, data.pay_date || todayISO());
+    const staffName = await staffNameFor(sql, context.userId);
+    await sql.query(
+      `update payroll_periods set status = 'closed', closed_at = now(), closed_by = $1 where id = $2`,
+      [staffName, data.id],
+    );
+    const paid =
+      data.payment === "pending"
+        ? null
+        : await applyPayrollPayment(sql, period, {
+            mode: data.payment,
+            pay_date: data.pay_date,
+            method: data.method,
+            reference: data.reference,
+          });
+    return {
+      period_number: period.period_number,
+      status: "closed",
+      paid_at: paid?.paid_at ?? null,
+      movements: paid?.movements ?? 0,
+      total_gross: round2(lines.reduce((s, l) => s + l.gross, 0)),
+      total_net: round2(lines.reduce((s, l) => s + l.net, 0)),
+    };
+  });
+
+export const payPayrollPeriod = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.number(), mode: z.enum(PAYROLL_PAY_MODES), ...payrollPaymentFields }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.id);
+    if (period.status !== "closed")
+      throw new Error(
+        period.status === "draft"
+          ? `${period.period_number} sigue en borrador: ciérralo primero.`
+          : `${period.period_number} está cancelado.`,
+      );
+    if (period.paid_at) throw new Error(`${period.period_number} ya está pagado (${period.paid_at}).`);
+    const paid = await applyPayrollPayment(sql, period, {
+      mode: data.mode,
+      pay_date: data.pay_date,
+      method: data.method,
+      reference: data.reference,
+    });
+    return { period_number: period.period_number, ...paid };
+  });
+
+export const cancelPayrollPayment = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.number(), reason: z.string().optional() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.id);
+    const lines = await loadPayrollLines(sql, data.id);
+    // También limpia un pago que quedó a medias (periodo sin marcar pero con
+    // movimientos ya escritos): por eso mira los renglones, no solo `paid_at`.
+    if (!period.paid_at && !lines.some((l) => l.cash_movement_id))
+      throw new Error(`${period.period_number} no tiene pago registrado.`);
+    const staffName = await staffNameFor(sql, context.userId);
+    const reason = data.reason?.trim() || null;
+    let movements = 0;
+    for (const l of lines) {
+      if (!l.cash_movement_id) continue;
+      const [mov] = await sql.query(`select id, cancelled_at from cash_movements where id = $1`, [
+        l.cash_movement_id,
+      ]);
+      if (mov && !mov.cancelled_at) {
+        await sql.query(
+          `update cash_movements set cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`,
+          [staffName, reason || `Pago de nómina ${period.period_number} cancelado`, mov.id],
+        );
+        await sql.query(
+          `update bank_lines set cash_movement_id = null, status = 'open' where cash_movement_id = $1`,
+          [mov.id],
+        );
+        movements += 1;
+      }
+      await sql.query(`update payroll_lines set cash_movement_id = null where id = $1`, [l.id]);
+    }
+    // Rastro en el periodo, que no tiene columnas de cancelación de pago: un
+    // pago "fuera de Chase" cancelado no deja movimiento que lo cuente.
+    const trail = `Pago cancelado el ${todayISO()} por ${staffName}${reason ? `: ${reason}` : ""}`;
+    await sql.query(
+      `update payroll_periods
+          set paid_at = null, pay_mode = null, method = null, reference = null,
+              notes = case when coalesce(notes,'') = '' then $2 else notes || E'\\n' || $2 end
+        where id = $1`,
+      [data.id, trail],
+    );
+    return { period_number: period.period_number, movements };
+  });
+
+export const reopenPayrollPeriod = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.number() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.id);
+    if (period.status !== "closed") throw new Error(`${period.period_number} no está cerrado.`);
+    if (period.paid_at)
+      throw new Error(`${period.period_number} ya está pagado: cancela primero el pago para reabrirlo.`);
+    await sql.query(
+      `update payroll_periods set status = 'draft', closed_at = null, closed_by = null where id = $1`,
+      [data.id],
+    );
+    return { ok: true };
+  });
+
+export const cancelPayrollPeriod = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.number(), reason: z.string().optional() }))
+  .middleware([moduleMiddleware("finance")])
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const period = await loadPayrollPeriod(sql, data.id);
+    if (period.status === "cancelled") throw new Error(`${period.period_number} ya está cancelado.`);
+    if (period.paid_at && period.pay_mode === "chase")
+      throw new Error(
+        `${period.period_number} ya salió de Chase: cancela primero su pago (regresa el dinero a la caja) y luego el periodo.`,
+      );
+    const staffName = await staffNameFor(sql, context.userId);
+    await sql.query(
+      `update payroll_periods set status = 'cancelled', cancelled_at = now(), cancelled_by = $1, cancel_reason = $2 where id = $3`,
+      [staffName, data.reason?.trim() || null, data.id],
+    );
+    return { period_number: period.period_number };
   });

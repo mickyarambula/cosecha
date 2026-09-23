@@ -18,7 +18,7 @@ Antes de tocar código lee, en este orden: `HANDOFF.md` → este archivo → `CL
 
 - TanStack Start + Router + React 19 + Tailwind v4 + Radix/shadcn
 - Server functions: `createServerFn` + zod + `authMiddleware`/`moduleMiddleware(módulo)` en [`src/lib/produce-server.ts`](src/lib/produce-server.ts)
-- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0048` (crece con cada bloque; revisa `ls migrations/` para el número real)
+- Postgres (Neon en publicado). Migraciones `migrations/0001`–`0052` (crece con cada bloque; revisa `ls migrations/` para el número real)
 - Auth: Better Auth, Google + correo. Staff por módulos
 - i18n: [`src/lib/i18n.ts`](src/lib/i18n.ts)
 - PDF: [`src/lib/doc-pdf.ts`](src/lib/doc-pdf.ts) — descarga archivo, no `window.print`

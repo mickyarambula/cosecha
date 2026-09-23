@@ -55,6 +55,8 @@ import {
   qty,
   todayISO,
 } from "@/lib/utils";
+// Nómina (0052): la partida "Gasto Nómina" se captura en Finanzas → Nómina; como gasto se contaría dos veces.
+const PARTIDAS_NOMINA = ["Gasto Nómina"];
 
 type Search = { tab?: "all" | "new" };
 
@@ -2518,6 +2520,7 @@ function ExpenseModal({
             kind="gasto"
             value={form.category}
             onChange={(category) => setForm({ ...form, category })}
+            excludePartidas={PARTIDAS_NOMINA}
           />
         </Field>
         <Field label="Requested date">

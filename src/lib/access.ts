@@ -56,6 +56,7 @@ const PATH_MODULE: { prefix: string; module: ModuleId }[] = [
   { prefix: "/cxp", module: "finance" },
   { prefix: "/tesoreria", module: "finance" },
   { prefix: "/cuentas", module: "finance" },
+  { prefix: "/nomina", module: "finance" },
 ];
 
 export function moduleForAppPath(pathname: string): ModuleId | "home" {

@@ -120,7 +120,7 @@ function Page() {
     // Claves que viven en `gl_mappings` pero NO son conceptos del catálogo:
     // nombres heredados en inglés de gastos ya capturados. Sin esto no había
     // pantalla donde moverlos.
-    const sistema = new Set(["ap", "ar", "revenue", "cogs", "bank_collections", "bank_billpay", "fx_result"]);
+    const sistema = new Set(["ap", "ar", "revenue", "cogs", "bank_collections", "bank_billpay", "fx_result", "payroll"]);
     const nombresConcepto = new Set((concepts.data ?? []).map((c) => c.name));
     const heredados = Object.keys(mapObj)
       .filter((k) => !k.startsWith("partida:") && !sistema.has(k) && !nombresConcepto.has(k))
@@ -208,6 +208,20 @@ function Page() {
             <Field label="Exchange result">
               <Select value={mapObj.fx_result || "58100"} onChange={(e) => setLocalMaps({ ...mapObj, fx_result: e.target.value })}>
                 {rows.filter((a) => a.kind === "expense").map((a) => (
+                  <option key={a.number} value={a.number}>
+                    {a.number} {a.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+          <div className="mt-4">
+            {/* Nómina (0052): el bruto de cada periodo cerrado va a esta cuenta.
+                Un concepto de nómina mapeado aparte (Nomina Ventas…) gana
+                sobre ella, igual que en los gastos. */}
+            <Field label="Payroll">
+              <Select value={mapObj.payroll || "52500"} onChange={(e) => setLocalMaps({ ...mapObj, payroll: e.target.value })}>
+                {optsGasto.map((a) => (
                   <option key={a.number} value={a.number}>
                     {a.number} {a.name}
                   </option>
