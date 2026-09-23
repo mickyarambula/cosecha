@@ -5,7 +5,7 @@ import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
 import { convertWeight } from "@/lib/units";
 import { dueFromTerms, num, SHIPMENT_STATUSES, skuCodeOf, todayISO, todayYYMM } from "@/lib/utils";
-import { asCurrency, fxError, isFx, snapOrConvertUnitCost, toUsd, unitCostToUsd, type Currency } from "@/lib/fx";
+import { asCurrency, fxError, isFx, parseFx, snapOrConvertUnitCost, splitFxPayment, toUsd, unitCostToUsd, type Currency } from "@/lib/fx";
 
 // Intentionally `Promise<any>`, not `Promise<Sql>` — every one of this file's
 // ~150 `sql.query(...)` calls would need an explicit row-shape generic before
@@ -121,6 +121,8 @@ export type PayableRow = {
   currency?: "USD" | "MXN" | string;
   amount_fx?: number | null;
   fx_rate?: number | null;
+  /** Peso–dólar B: los pesos que aún se deben. */
+  saldo_fx?: number | null;
   saldo: number;
   status: string;
   po_number?: string | null;
@@ -360,8 +362,11 @@ async function findPaymentFolios(sql, kind, id) {
 
 /** Reverses whatever a cash movement paid — direct invoice/bill/expense link, or payment_applications rows — and unmatches any reconciled bank line. */
 async function reverseCashMovementEffects(sql, mov) {
+  // Peso–dólar B: `amount_fx` son los pesos de cada aplicación; al deshacer
+  // se le quitan a la deuda junto con los dólares aplicados.
   const apps = await sql.query(
-    `select target_kind, target_id, amount::text from payment_applications where cash_movement_id = $1`,
+    `select target_kind, target_id, amount::text, coalesce(amount_fx,0)::text as amount_fx
+     from payment_applications where cash_movement_id = $1`,
     [mov.id],
   );
   if (apps.length) {
@@ -392,16 +397,19 @@ async function reverseCashMovementEffects(sql, mov) {
         );
         if (exp) {
           const paid = Math.max(n(exp.paid) - amt, 0);
-          await sql.query(`update expenses set paid=$1, status=$2 where id=$3`, [
-            paid,
-            moneyStatus(n(exp.amount), paid),
-            a.target_id,
-          ]);
+          await sql.query(
+            `update expenses set paid=$1, status=$2, paid_fx = greatest(coalesce(paid_fx,0) - $4, 0) where id=$3`,
+            [paid, moneyStatus(n(exp.amount), paid), a.target_id, n(a.amount_fx)],
+          );
         }
       }
     }
   } else {
-    const amt = Math.abs(n(mov.amount));
+    // Peso–dólar B: lo que se abonó al documento es lo que salió de Chase MÁS
+    // el resultado cambiario (+ ganancia: se abonó más de lo que salió). Sin
+    // pago en pesos `fx_result` es 0 y queda lo de siempre.
+    const amt = Math.abs(n(mov.amount)) + n(mov.fx_result);
+    const pesos = n(mov.amount_fx);
     if (mov.invoice_id) {
       const [inv] = await sql.query(`select total::text, paid::text from invoices where id = $1`, [
         mov.invoice_id,
@@ -422,11 +430,10 @@ async function reverseCashMovementEffects(sql, mov) {
       );
       if (bill) {
         const paid = Math.max(n(bill.paid) - amt, 0);
-        await sql.query(`update supplier_bills set paid=$1, status=$2 where id=$3`, [
-          paid,
-          moneyStatus(n(bill.total), paid),
-          mov.supplier_bill_id,
-        ]);
+        await sql.query(
+          `update supplier_bills set paid=$1, status=$2, paid_fx = greatest(coalesce(paid_fx,0) - $4, 0) where id=$3`,
+          [paid, moneyStatus(n(bill.total), paid), mov.supplier_bill_id, pesos],
+        );
       }
     }
     if (mov.expense_id) {
@@ -465,7 +472,8 @@ async function reverseCashMovementEffects(sql, mov) {
 
 async function cancelCashMovementById(sql, context, id, expectedKind, reason) {
   const [mov] = await sql.query(
-    `select id, folio, kind, invoice_id, supplier_bill_id, expense_id, grower_payable_id, amount::text, cancelled_at
+    `select id, folio, kind, invoice_id, supplier_bill_id, expense_id, grower_payable_id, amount::text, cancelled_at,
+            coalesce(amount_fx,0)::text as amount_fx, coalesce(fx_result,0)::text as fx_result
        from cash_movements where id = $1`,
     [id],
   );
@@ -7300,6 +7308,20 @@ export const cancelExpense = createServerFn({ method: "POST" })
         `La orden de este gasto ya se liquidó en ${bill} — cancela primero esa liquidación.`,
       );
     const paid = n(exp.paid);
+    // Peso–dólar B: si se pagó con pesos, lo que salió de Chase no es lo que
+    // se abonó (hay resultado cambiario de por medio). Un reverso por `paid`
+    // dejaría la caja corrida justo por ese diferencial. Se cancela primero el
+    // pago —eso sí deshace los dos lados— y luego el gasto.
+    const [pesosPay] = await sql.query(
+      `select m.folio from payment_applications pa join cash_movements m on m.id = pa.cash_movement_id
+       where pa.target_kind = 'expense' and pa.target_id = $1 and m.cancelled_at is null and pa.amount_fx is not null
+       limit 1`,
+      [data.expense_id],
+    );
+    if (pesosPay)
+      throw new Error(
+        `${exp.expense_number} se pagó en pesos (${pesosPay.folio}). Cancela primero ese pago en Gastos → Pagos y después el gasto.`,
+      );
     let reversal: string | null = null;
     // Si ya salió dinero de caja, no se borra: entra un movimiento inverso para
     // que la caja cuadre y quede el rastro de los dos lados.
@@ -7343,11 +7365,17 @@ export const registerPagoGasto = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [exp] = await sql.query(
-      `select e.id, e.expense_number, s.name as supplier_name, e.amount::text, e.paid::text
+      `select e.id, e.expense_number, s.name as supplier_name, e.amount::text, e.paid::text,
+              coalesce(e.currency,'USD') as currency
        from expenses e join suppliers s on s.id = e.supplier_id where e.id = $1`,
       [data.expense_id],
     );
     if (!exp) throw new Error("Expense not found");
+    // Peso–dólar B: este camino viejo no captura pesos ni TC del banco; un
+    // gasto pactado en pesos se paga desde Gastos → Pagar proveedor, que sí
+    // registra el resultado cambiario.
+    if (exp.currency === "MXN")
+      throw new Error(`${exp.expense_number} está pactado en pesos: págalo desde Gastos → Pagar proveedor, con los pesos y el tipo de cambio del banco.`);
     const remaining = n(exp.amount) - n(exp.paid);
     if (data.amount > remaining + 0.009)
       throw new Error(`Balance on ${exp.expense_number} is ${remaining.toFixed(2)}`);
@@ -9017,7 +9045,7 @@ export const listBills = createServerFn({ method: "GET" })
            s.phone as supplier_phone, s.email as supplier_email,
            b.status, b.issue_date::text, b.due_date::text, b.ordered_qty::text, b.received_qty::text,
            b.total::text, b.paid::text, b.notes, b.cancelled_at::text, b.cancelled_by, b.cancel_reason,
-           coalesce(b.currency,'USD') as currency, b.total_fx::text, b.fx_agreed::text
+           coalesce(b.currency,'USD') as currency, b.total_fx::text, b.fx_agreed::text, coalesce(b.paid_fx,0)::text as paid_fx
     from supplier_bills b
     join suppliers s on s.id = b.supplier_id
     left join purchase_orders po on po.id = b.purchase_order_id
@@ -9036,6 +9064,9 @@ export const listBills = createServerFn({ method: "GET" })
         paid,
         total_fx: b.total_fx == null ? null : n(b.total_fx),
         fx_agreed: b.fx_agreed == null ? null : n(b.fx_agreed),
+        paid_fx: n(b.paid_fx),
+        /** Peso–dólar B: los pesos que aún se deben (solo en MXN). */
+        saldo_fx: b.total_fx == null ? null : round2(Math.max(n(b.total_fx) - n(b.paid_fx), 0)),
         saldo: Math.max(total - paid, 0),
         match:
           Math.abs(ordered - received) < 0.01
@@ -9055,7 +9086,8 @@ export const listCash = createServerFn({ method: "GET" })
       ).query(`
     select m.id, m.folio, m.mov_date::text, m.kind, m.counterparty,
            i.invoice_number, b.bill_number, m.amount::text, m.method, m.reference, m.notes,
-           m.cancelled_at::text, m.cancelled_by, m.cancel_reason
+           m.cancelled_at::text, m.cancelled_by, m.cancel_reason,
+           m.amount_fx::text, m.fx_rate::text, coalesce(m.fx_result,0)::text as fx_result
     from cash_movements m
     left join invoices i on i.id = m.invoice_id
     left join supplier_bills b on b.id = m.supplier_bill_id
@@ -9064,6 +9096,10 @@ export const listCash = createServerFn({ method: "GET" })
     ).map((r) => ({
       ...r,
       amount: n(r.amount),
+      // Peso–dólar B: pesos que recibió el proveedor, TC del banco y resultado.
+      amount_fx: r.amount_fx == null ? null : n(r.amount_fx),
+      fx_rate: r.fx_rate == null ? null : n(r.fx_rate),
+      fx_result: n(r.fx_result),
     }));
     return {
       balance: movements.filter((m) => !m.cancelled_at).reduce((s, m) => s + m.amount, 0),
@@ -9121,7 +9157,12 @@ export const registerPago = createServerFn({ method: "POST" })
   .validator(
     z.object({
       bill_id: z.number(),
-      amount: z.number().positive(),
+      /** Dólares, para una factura en dólares. */
+      amount: z.number().positive().optional(),
+      /** Peso–dólar B: para una factura pactada en pesos, los PESOS que
+       *  recibió el proveedor y el TC al que el banco convirtió. */
+      amount_fx: z.number().positive().optional(),
+      fx_paid: z.number().positive().optional(),
       pay_date: z.string().optional(),
       method: z.string().optional(),
       reference: z.string().optional(),
@@ -9132,34 +9173,70 @@ export const registerPago = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [bill] = await sql.query(
-      `select b.id, b.bill_number, s.name as supplier_name, b.total::text, b.paid::text
+      `select b.id, b.bill_number, s.name as supplier_name, b.total::text, b.paid::text,
+              coalesce(b.currency,'USD') as currency, b.total_fx::text, b.fx_agreed::text, b.paid_fx::text
        from supplier_bills b join suppliers s on s.id = b.supplier_id where b.id = $1`,
       [data.bill_id],
     );
     if (!bill) throw new Error("Factura de proveedor no encontrada");
-    const remaining = n(bill.total) - n(bill.paid);
-    if (data.amount > remaining + 0.009)
-      throw new Error(`El saldo de ${bill.bill_number} es ${remaining.toFixed(2)}`);
-    const paid = n(bill.paid) + data.amount;
+    const remaining = round2(n(bill.total) - n(bill.paid));
+    // Peso–dólar B: una factura pactada en pesos se paga en PESOS. Lo que
+    // sale de Chase (al TC del banco) y lo que se abona a la deuda (al TC
+    // pactado) dejan de ser el mismo número; la diferencia es de Plein.
+    let applied: number;
+    let cash: number;
+    let fx_result = 0;
+    let amount_fx: number | null = null;
+    let fx_paid: number | null = null;
+    if (bill.currency === "MXN") {
+      if (data.amount_fx == null)
+        throw new Error(
+          `${bill.bill_number} está pactada en pesos: captura los pesos que recibió el proveedor y el tipo de cambio al que convirtió el banco.`,
+        );
+      const split = splitFxPayment({
+        pesos: data.amount_fx,
+        fx_agreed: bill.fx_agreed,
+        fx_paid: data.fx_paid,
+        pesos_pending: n(bill.total_fx) - n(bill.paid_fx),
+        usd_pending: remaining,
+        what: bill.bill_number,
+      });
+      applied = split.applied;
+      cash = split.cash;
+      fx_result = split.fx_result;
+      amount_fx = round2(data.amount_fx);
+      fx_paid = parseFx(data.fx_paid) as number;
+    } else {
+      if (data.amount_fx != null)
+        throw new Error(`${bill.bill_number} está en dólares: el pago se captura en dólares.`);
+      if (!(n(data.amount) > 0)) throw new Error("Captura el monto del pago.");
+      if (n(data.amount) > remaining + 0.009)
+        throw new Error(`El saldo de ${bill.bill_number} es ${remaining.toFixed(2)}`);
+      applied = n(data.amount);
+      cash = applied;
+    }
+    const paid = n(bill.paid) + applied;
     const status = moneyStatus(n(bill.total), paid);
-    await sql.query(`update supplier_bills set paid = $1, status = $2 where id = $3`, [
-      paid,
-      status,
-      bill.id,
-    ]);
+    await sql.query(
+      `update supplier_bills set paid = $1, status = $2, paid_fx = coalesce(paid_fx,0) + $4 where id = $3`,
+      [paid, status, bill.id, amount_fx ?? 0],
+    );
     const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
     await sql.query(
-      `insert into cash_movements (folio, mov_date, kind, counterparty, supplier_bill_id, amount, method, reference, notes)
-       values ($1,$2,'pago',$3,$4,$5,$6,$7,$8)`,
+      `insert into cash_movements (folio, mov_date, kind, counterparty, supplier_bill_id, amount, method, reference, notes, amount_fx, fx_rate, fx_result)
+       values ($1,$2,'pago',$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [
         folio,
         data.pay_date || todayISO(),
         bill.supplier_name,
         bill.id,
-        -data.amount,
+        -cash,
         data.method || null,
         data.reference?.trim() || null,
         data.notes || `Pago ${bill.bill_number}`,
+        amount_fx,
+        fx_paid,
+        fx_result,
       ],
     );
     return {
@@ -9167,6 +9244,9 @@ export const registerPago = createServerFn({ method: "POST" })
       paid,
       status,
       remaining: n(bill.total) - paid,
+      applied,
+      cash,
+      fx_result,
     };
   });
 // Remisiones a productores (comisión pura): el pasivo que nace al emitir la
@@ -10132,7 +10212,7 @@ export const listPayables = createServerFn({ method: "GET" })
     select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
            e.invoice_number, e.issue_date::text, e.due_date::text,
            e.amount::text, e.paid::text, e.status, e.notes, po.po_number, e.purchase_order_id as po_id,
-           coalesce(e.currency,'USD') as currency, e.amount_fx::text, e.fx_rate::text
+           coalesce(e.currency,'USD') as currency, e.amount_fx::text, e.fx_rate::text, coalesce(e.paid_fx,0)::text as paid_fx
     from expenses e
     join suppliers s on s.id = e.supplier_id
     left join purchase_orders po on po.id = e.purchase_order_id
@@ -10159,6 +10239,8 @@ export const listPayables = createServerFn({ method: "GET" })
         currency: e.currency,
         amount_fx: e.amount_fx == null ? null : n(e.amount_fx),
         fx_rate: e.fx_rate == null ? null : n(e.fx_rate),
+        /** Peso–dólar B: pesos que aún se deben (solo en MXN). */
+        saldo_fx: e.amount_fx == null ? null : round2(Math.max(n(e.amount_fx) - n(e.paid_fx), 0)),
         saldo: Math.max(amount - paid, 0),
         status: payableStatus(amount, paid),
         notes: e.notes,
@@ -10401,7 +10483,12 @@ export const registerVendorPayment = createServerFn({ method: "POST" })
   .validator(
     z.object({
       supplier_id: z.number(),
-      amount: z.number().positive(),
+      /** Dólares que salieron de Chase. Opcional: el servidor lo calcula;
+       *  si viene, tiene que cuadrar con ese cálculo. */
+      amount: z.number().positive().optional(),
+      /** Peso–dólar B: el TC al que el banco convirtió. Obligatorio si alguno
+       *  de los gastos está pactado en pesos. */
+      fx_paid: z.number().positive().optional(),
       method: z.string().default("ACH"),
       reference: z.string().optional(),
       pay_date: z.string().optional(),
@@ -10411,6 +10498,8 @@ export const registerVendorPayment = createServerFn({ method: "POST" })
           z.object({
             kind: z.enum(["expense", "po"]),
             id: z.number(),
+            /** En la moneda del GASTO: dólares si el gasto es en dólares,
+             *  pesos si el gasto está pactado en pesos. */
             amount: z.number().positive(),
           }),
         )
@@ -10429,18 +10518,27 @@ export const registerVendorPayment = createServerFn({ method: "POST" })
       throw new Error(
         "El pago de una compra de fruta se registra en CxP contra su factura de proveedor (FAC-). Desde Gastos solo se pagan gastos.",
       );
-    const applied = round2(data.applications.reduce((s, a) => s + a.amount, 0));
-    if (Math.abs(applied - data.amount) > 0.05)
-      throw new Error(
-        `El monto del pago (${money2(data.amount)}) debe ser igual a lo aplicado a gastos (${money2(applied)}).`,
-      );
+    // Peso–dólar B: cada gasto se liquida en SU moneda. Uno en dólares abona
+    // y saca de Chase lo mismo; uno pactado en pesos abona pesos/TC pactado y
+    // saca de Chase pesos/TC del banco. Todo lo validamos antes de escribir.
     const seen = new Set<number>();
-    const targets: { id: number; expense_number: string; amount: number; paid: number; apply: number }[] = [];
+    const targets: {
+      id: number;
+      expense_number: string;
+      amount: number;
+      paid: number;
+      apply: number;
+      cash: number;
+      pesos: number | null;
+      fx_result: number;
+    }[] = [];
     for (const app of data.applications) {
       if (seen.has(app.id)) throw new Error("El mismo gasto aparece dos veces en el pago.");
       seen.add(app.id);
       const [exp] = await sql.query(
-        `select id, expense_number, supplier_id, cancelled_at, amount::text, paid::text from expenses where id = $1`,
+        `select id, expense_number, supplier_id, cancelled_at, amount::text, paid::text,
+                coalesce(currency,'USD') as currency, amount_fx::text, fx_rate::text, coalesce(paid_fx,0)::text as paid_fx
+         from expenses where id = $1`,
         [app.id],
       );
       if (!exp) throw new Error("Gasto no encontrado");
@@ -10448,44 +10546,76 @@ export const registerVendorPayment = createServerFn({ method: "POST" })
         throw new Error(`El gasto ${exp.expense_number} no es de ${sup.name}.`);
       if (exp.cancelled_at) throw new Error(`El gasto ${exp.expense_number} está cancelado.`);
       const remaining = round2(n(exp.amount) - n(exp.paid));
-      if (app.amount > remaining + 0.009)
-        throw new Error(
-          `El saldo de ${exp.expense_number} es ${money2(remaining)}; no se le puede aplicar ${money2(app.amount)}.`,
-        );
-      targets.push({ id: exp.id, expense_number: exp.expense_number, amount: n(exp.amount), paid: n(exp.paid), apply: app.amount });
+      if (exp.currency === "MXN" && exp.amount_fx != null) {
+        const split = splitFxPayment({
+          pesos: app.amount,
+          fx_agreed: exp.fx_rate,
+          fx_paid: data.fx_paid,
+          pesos_pending: n(exp.amount_fx) - n(exp.paid_fx),
+          usd_pending: remaining,
+          what: exp.expense_number,
+        });
+        targets.push({
+          id: exp.id, expense_number: exp.expense_number, amount: n(exp.amount), paid: n(exp.paid),
+          apply: split.applied, cash: split.cash, pesos: round2(app.amount), fx_result: split.fx_result,
+        });
+      } else {
+        if (app.amount > remaining + 0.009)
+          throw new Error(
+            `El saldo de ${exp.expense_number} es ${money2(remaining)}; no se le puede aplicar ${money2(app.amount)}.`,
+          );
+        targets.push({
+          id: exp.id, expense_number: exp.expense_number, amount: n(exp.amount), paid: n(exp.paid),
+          apply: app.amount, cash: app.amount, pesos: null, fx_result: 0,
+        });
+      }
     }
+    const cashTotal = round2(targets.reduce((s, t) => s + t.cash, 0));
+    const fxTotal = round2(targets.reduce((s, t) => s + t.fx_result, 0));
+    const pesosTotal = targets.some((t) => t.pesos != null)
+      ? round2(targets.reduce((s, t) => s + (t.pesos ?? 0), 0))
+      : null;
+    if (data.amount != null && Math.abs(cashTotal - data.amount) > 0.05)
+      throw new Error(
+        `El monto del pago (${money2(data.amount)}) no cuadra con lo que sale de Chase por estos gastos (${money2(cashTotal)}).`,
+      );
     const folio = await nextCode(sql, "cash_movements", "folio", "MOV-");
     const date = data.pay_date || todayISO();
     const movId = (
       await sql.query(
-        `insert into cash_movements (folio, mov_date, kind, counterparty, amount, method, reference, notes)
-         values ($1,$2,'pago',$3,$4,$5,$6,$7) returning id`,
+        `insert into cash_movements (folio, mov_date, kind, counterparty, amount, method, reference, notes, amount_fx, fx_rate, fx_result)
+         values ($1,$2,'pago',$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
         [
           folio,
           date,
           sup.name,
-          -data.amount,
+          -cashTotal,
           data.method,
           data.reference?.trim() || null,
           data.notes || `Pago ${targets.map((t) => t.expense_number).join(", ")}`,
+          pesosTotal,
+          pesosTotal != null ? parseFx(data.fx_paid) : null,
+          fxTotal,
         ],
       )
     )[0].id;
     for (const t of targets) {
       const paid = t.paid + t.apply;
-      await sql.query(`update expenses set paid = $1, status = $2 where id = $3`, [
-        paid,
-        moneyStatus(t.amount, paid),
-        t.id,
-      ]);
       await sql.query(
-        `insert into payment_applications (cash_movement_id, kind, target_kind, target_id, amount) values ($1,'vendor','expense',$2,$3)`,
-        [movId, t.id, t.apply],
+        `update expenses set paid = $1, status = $2, paid_fx = coalesce(paid_fx,0) + $4 where id = $3`,
+        [paid, moneyStatus(t.amount, paid), t.id, t.pesos ?? 0],
+      );
+      await sql.query(
+        `insert into payment_applications (cash_movement_id, kind, target_kind, target_id, amount, amount_fx, fx_rate, fx_result)
+         values ($1,'vendor','expense',$2,$3,$4,$5,$6)`,
+        [movId, t.id, t.apply, t.pesos, t.pesos != null ? parseFx(data.fx_paid) : null, t.fx_result],
       );
     }
     return {
       folio,
       id: movId,
+      cash: cashTotal,
+      fx_result: fxTotal,
     };
   });
 export const registerCustomerPayment = createServerFn({ method: "POST" })
@@ -11946,6 +12076,16 @@ export const getFinancials = createServerFn({ method: "GET" })
     const expByCat: Record<string, number> = {};
     for (const e of expenses) expByCat[e.category] = (expByCat[e.category] || 0) + n(e.amount);
     const expTotal = expenses.reduce((s, e) => s + n(e.amount), 0);
+    // ── Peso–dólar B: el resultado cambiario sale de los PAGOS, no de un
+    // gasto. Si viviera en `expenses` podría ligarse a una carga "a cargo del
+    // productor" y descontársele en su liquidación — y el diferencial es de
+    // Plein. Se realiza el día del pago (`mov_date`); lo cancelado no cuenta.
+    // `fx_result` + es ganancia (se abonó más de lo que salió de Chase).
+    const [fxRow] = await sql.query(
+      `select coalesce(sum(fx_result),0)::text as v from cash_movements
+        where cancelled_at is null and folio <> 'CORTE-CHASE' ${rango("mov_date")}`,
+    );
+    const fxResult = round2(n(fxRow?.v));
     // ── Bloque 0: a qué cuenta va cada gasto ─────────────────────────────
     const EXPENSE_FALLBACK = "59999";
     const partidaOf = new Map<string, string>(
@@ -12014,8 +12154,18 @@ export const getFinancials = createServerFn({ method: "GET" })
     // muestra la cuenta 40000 — de paso, dentro del periodo desaparece la doble
     // base de venta del hallazgo 24. Sin periodo, la fórmula es la de siempre.
     const gp = (hayPeriodo ? sales : salesShipped || sales) + credits - cogsTotal;
-    const net = gp - (expTotal - expEnCosto);
+    // Pérdida cambiaria resta, ganancia suma.
+    const net = gp - (expTotal - expEnCosto) + fxResult;
+    // La cuenta del resultado cambiario la decide el catálogo (Cuentas →
+    // mapeo "fx_result"), igual que un gasto: si la mapeada no existe se sigue
+    // al escape siguiente, y nunca se evapora.
+    const fxAccount =
+      [mapOf.get("fx_result"), "58100", "58000", EXPENSE_FALLBACK].find((a) => a && postable.has(a)) ??
+      EXPENSE_FALLBACK;
     const currentOf = (number, starting) => {
+      // Como cuenta de gasto: una pérdida suma, una ganancia resta.
+      if (number === fxAccount && Math.abs(fxResult) > 0.001)
+        return starting + (expByAccount[number] || 0) - fxResult;
       if (number === "40000") return sales;
       if (number === "40002") return credits;
       // Costo de la fruta (lotes) MÁS lo que se le haya mapeado de gastos:
@@ -12067,7 +12217,10 @@ export const getFinancials = createServerFn({ method: "GET" })
        */
       balance_as_of: "hoy",
       /** Cuánto gasto no se pudo mapear y cayó al cajón 59999. */
-      unmapped_expense: expByAccount["59999"] || 0,
+      unmapped_expense: (expByAccount["59999"] || 0) + (fxAccount === "59999" ? -fxResult : 0),
+      /** Peso–dólar B: + ganancia, − pérdida, del periodo. */
+      fx_result: fxResult,
+      fx_account: fxAccount,
       ar,
       ap,
       cash: cashBal,
@@ -12087,20 +12240,27 @@ export const listVendorPayments = createServerFn({ method: "GET" })
   .handler(async () => {
     const sql = await getSql();
     const movs = await sql.query(`
-    select id, folio, mov_date::text, counterparty, amount::text, method, reference, notes, cancelled_at::text, cancelled_by, cancel_reason
+    select id, folio, mov_date::text, counterparty, amount::text, method, reference, notes, cancelled_at::text, cancelled_by, cancel_reason,
+           amount_fx::text, fx_rate::text, coalesce(fx_result,0)::text as fx_result
     from cash_movements where kind = 'pago' order by mov_date desc, id desc
   `);
     const apps = await sql.query(
-      `select cash_movement_id, target_kind, target_id, amount::text from payment_applications where kind = 'vendor'`,
+      `select cash_movement_id, target_kind, target_id, amount::text, amount_fx::text, coalesce(fx_result,0)::text as fx_result
+       from payment_applications where kind = 'vendor'`,
     );
     return movs.map((m) => ({
       ...m,
       amount: Math.abs(n(m.amount)),
+      amount_fx: m.amount_fx == null ? null : n(m.amount_fx),
+      fx_rate: m.fx_rate == null ? null : n(m.fx_rate),
+      fx_result: n(m.fx_result),
       applications: apps
         .filter((a) => a.cash_movement_id === m.id)
         .map((a) => ({
           ...a,
           amount: n(a.amount),
+          amount_fx: a.amount_fx == null ? null : n(a.amount_fx),
+          fx_result: n(a.fx_result),
         })),
     }));
   });
@@ -13058,10 +13218,15 @@ async function wipeLiveActivity(sql: any) {
   `);
   // El pago de fruta (`registerPago`) sube `supplier_bills.paid` sin pasar por
   // payment_applications: se devuelve desde el movimiento de caja que se borra.
+  // Peso–dólar B: lo ABONADO es lo que salió de Chase más el resultado
+  // cambiario; en un pago en dólares `fx_result` es 0 y queda lo de siempre.
   await sql.query(`
-    update supplier_bills b set paid = greatest(b.paid - v.pagado, 0)
+    update supplier_bills b set paid = greatest(b.paid - v.pagado, 0),
+           paid_fx = greatest(coalesce(b.paid_fx,0) - v.pesos, 0)
     from (
-      select cm.supplier_bill_id as id, coalesce(sum(abs(cm.amount)),0) as pagado
+      select cm.supplier_bill_id as id,
+             coalesce(sum(abs(cm.amount) + coalesce(cm.fx_result,0)),0) as pagado,
+             coalesce(sum(coalesce(cm.amount_fx,0)),0) as pesos
       from cash_movements cm
       where cm.supplier_bill_id is not null and cm.folio <> 'CORTE-CHASE'
         and cm.cancelled_at is null

@@ -18,6 +18,7 @@ import {
   registerCashMovement,
 } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
+import { fxLabel, moneyMxn } from "@/lib/fx";
 import { useT } from "@/lib/i18n";
 import { fecha, money, todayISO } from "@/lib/utils";
 
@@ -116,6 +117,18 @@ function Page() {
                   </td>
                   <td className={`px-4 py-3 text-right tabular-nums ${m.amount < 0 ? "text-danger" : "text-ok"}`}>
                     {money(m.amount)}
+                    {/* Peso–dólar B: el pago en pesos dice qué recibió el proveedor,
+                        a qué TC convirtió el banco y qué resultado dejó. */}
+                    {m.amount_fx != null ? (
+                      <div className="text-xs font-normal text-muted">
+                        {moneyMxn(m.amount_fx)} · {fxLabel(m.fx_rate)}
+                        {Math.abs(m.fx_result) > 0.009 ? (
+                          <span className={m.fx_result > 0 ? "text-ok" : "text-danger"}>
+                            {" "}· {m.fx_result > 0 ? "ganancia" : "pérdida"} cambiaria {money(Math.abs(m.fx_result))}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 text-right">
                     {!m.cancelled_at && m.folio !== "CORTE-CHASE" && (m.kind === "cobro" || m.kind === "pago") ? (

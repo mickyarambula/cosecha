@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { BarSplit, Drawer, Modal, TabActions } from "@/components/app-shell";
 import { AgingTable, groupAging } from "@/components/aging-table";
-import { isFx, originalLabel, parseFx } from "@/lib/fx";
+import { fxLabel, isFx, moneyMxn, originalLabel, parseFx } from "@/lib/fx";
 import { ConceptSelect } from "@/components/concepts";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { Badge } from "@/components/ui/badge";
@@ -237,7 +237,19 @@ function Page() {
                   <tr key={m.id} className="border-b border-border">
                     <td className="px-3 py-2">{fecha(m.mov_date)}</td>
                     <td className="px-3 py-2">{m.counterparty}</td>
-                    <td className="px-3 py-2 text-right">{money(m.amount)}</td>
+                    <td className="px-3 py-2 text-right">
+                      {money(m.amount)}
+                      {m.amount_fx != null ? (
+                        <div className="text-xs text-muted">
+                          {moneyMxn(m.amount_fx)} · {fxLabel(m.fx_rate)}
+                          {Math.abs(m.fx_result) > 0.009 ? (
+                            <span className={m.fx_result > 0 ? "text-ok" : "text-danger"}>
+                              {" "}· {m.fx_result > 0 ? "ganancia" : "pérdida"} {money(Math.abs(m.fx_result))}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </td>
                     <td className="px-3 py-2">{m.method || "—"}</td>
                     <td className="px-3 py-2 text-muted">{[m.reference, m.notes].filter(Boolean).join(" · ")}</td>
                     <td className="px-3 py-2 font-mono text-xs text-link">{m.folio.replace(/\D/g, "") || m.id}</td>
@@ -1203,8 +1215,27 @@ function VendorPayModal({
   const [date, setDate] = useState(todayISO());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  const applied = Object.values(checks).reduce((s, n) => s + n, 0);
+  // Peso–dólar B: un gasto pactado en pesos se paga en PESOS (su renglón se
+  // captura en pesos) y el banco los convierte a su TC del día.
+  const [fxPaid, setFxPaid] = useState("");
+  const rowOf = (k: string) => openRows.find((r) => `${r.kind}-${r.id}` === k);
+  const enPesos = (k: string) => rowOf(k)?.currency === "MXN";
+  const hayPesos = Object.keys(checks).some(enPesos);
+  const tcOk = isFx(fxPaid);
+  // Lo que sale de Chase: los renglones en dólares tal cual; los en pesos, al TC del banco.
+  const applied = Object.entries(checks).reduce(
+    (s, [k, v]) => s + (enPesos(k) ? (tcOk ? v / (parseFx(fxPaid) as number) : 0) : v),
+    0,
+  );
+  // Lo que se abona a la deuda, para enseñar el resultado cambiario en vivo.
+  const abonado = Object.entries(checks).reduce((s, [k, v]) => {
+    const r = rowOf(k);
+    if (!r) return s;
+    if (r.currency !== "MXN") return s + v;
+    const cierra = r.saldo_fx != null && v >= r.saldo_fx - 0.005;
+    return s + (cierra ? r.saldo : r.fx_rate ? Math.min(v / r.fx_rate, r.saldo) : 0);
+  }, 0);
+  const difCambiaria = hayPesos && tcOk ? abonado - applied : 0;
   const due = openRows.reduce((s, r) => s + r.saldo, 0);
   // Vencido = pasó su fecha compromiso. Lo que no tiene plazo capturado NO se
   // cuenta como vencido (hallazgo 51): faltaba el dato, no el pago.
@@ -1223,12 +1254,18 @@ function VendorPayModal({
       setErr(t("Select at least one invoice"));
       return;
     }
+    if (hayPesos && !tcOk) {
+      setErr("Hay gastos en pesos: captura el tipo de cambio al que convirtió el banco (pesos por dólar).");
+      return;
+    }
     setSaving(true);
     try {
       await registerVendorPayment({
         data: {
           supplier_id: Number(vendorId),
-          amount: applied,
+          // El servidor recalcula lo que sale de Chase; se manda para cuadrar.
+          amount: Math.round(applied * 100) / 100,
+          fx_paid: hayPesos ? parseFx(fxPaid) : undefined,
           method,
           pay_date: date,
           reference: reference.trim() || undefined,
@@ -1281,8 +1318,19 @@ function VendorPayModal({
         <div className="mt-4 grid gap-4 lg:grid-cols-[220px_1fr]">
           <div className="grid gap-3">
             <Field label="Payment amount">
-              <Input value={String(applied || "")} readOnly />
+              <Input value={applied ? money(applied) : ""} readOnly />
             </Field>
+            {hayPesos ? (
+              <div className="flex flex-col gap-1">
+                <span className="label-caps">{t("Exchange rate at payment")}</span>
+                <Input placeholder={t("Pesos per dollar")} value={fxPaid} onChange={(e) => setFxPaid(e.target.value)} />
+                <span className="text-xs text-muted">
+                  {tcOk
+                    ? `${t("Out of Chase")}: ${money(applied)} · ${difCambiaria >= 0 ? t("Exchange gain") : t("Exchange loss")} ${money(Math.abs(difCambiaria))}`
+                    : "El TC que aparece en tu estado de cuenta de Chase."}
+                </span>
+              </div>
+            ) : null}
             <Field label="Method">
               <Select value={method} onChange={(e) => setMethod(e.target.value)}>
                 {PAY_METHODS.map((m) => (
@@ -1326,7 +1374,8 @@ function VendorPayModal({
                           checked={on}
                           onChange={(e) => {
                             const next = { ...checks };
-                            if (e.target.checked) next[k] = r.saldo;
+                            // En pesos se propone lo que se debe en pesos.
+                            if (e.target.checked) next[k] = r.currency === "MXN" && r.saldo_fx != null ? r.saldo_fx : r.saldo;
                             else delete next[k];
                             setChecks(next);
                           }}
@@ -1343,11 +1392,14 @@ function VendorPayModal({
                       <td className="px-2 py-2">{r.status}</td>
                       <td className="px-2 py-2 text-right">
                         {on ? (
-                          <Input
-                            className="ml-auto w-24"
-                            value={String(checks[k])}
-                            onChange={(e) => setChecks({ ...checks, [k]: Number(e.target.value) || 0 })}
-                          />
+                          <div className="flex flex-col items-end gap-0.5">
+                            <Input
+                              className="ml-auto w-28"
+                              value={String(checks[k])}
+                              onChange={(e) => setChecks({ ...checks, [k]: Number(e.target.value) || 0 })}
+                            />
+                            {r.currency === "MXN" ? <span className="text-[11px] text-muted">pesos</span> : null}
+                          </div>
                         ) : (
                           money(0)
                         )}

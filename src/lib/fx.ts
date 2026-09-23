@@ -143,3 +143,42 @@ export function originalLabel(i: { currency?: string | null; amount_fx?: number 
   if (asCurrency(i.currency) !== "MXN" || i.amount_fx == null) return "";
   return `${moneyMxn(i.amount_fx)} · ${fxLabel(i.fx)}`;
 }
+
+/**
+ * PAGAR EN PESOS UNA DEUDA PACTADA EN PESOS (peso–dólar, parte B; migración 0051).
+ *
+ * La deuda quedó congelada al TC pactado (`fx_agreed`); al pagar, el banco
+ * convierte a SU TC del día (`fx_paid`). Salen de Chase `pesos / fx_paid`
+ * dólares y se abonan a la deuda `pesos / fx_agreed`. La diferencia es de
+ * Plein, nunca del productor:
+ *
+ *   fx_result = aplicado − caja      (+ ganancia: salieron menos dólares)
+ *
+ * El último pago —el que completa los pesos que se deben— abona EXACTAMENTE
+ * el saldo en dólares que quedaba, para que el documento cierre en cero y los
+ * centavos de redondeo vayan al resultado cambiario en vez de quedarse como
+ * un saldo de $0.03 para siempre. Cualquier otro pago se topa a ese saldo.
+ */
+export function splitFxPayment(i: {
+  pesos: number;
+  fx_agreed: number | string;
+  fx_paid: number | string | null | undefined;
+  /** Pesos que aún se deben (total_fx − paid_fx). */
+  pesos_pending: number;
+  /** Dólares que aún se deben en el documento (total − paid). */
+  usd_pending: number;
+  what: string;
+}): { applied: number; cash: number; fx_result: number; closes: boolean } {
+  if (!isFx(i.fx_paid)) throw new Error(fxError(`el pago de ${i.what}`, i.fx_paid));
+  if (!isFx(i.fx_agreed)) throw new Error(fxError(i.what, i.fx_agreed));
+  const pesos = r2(Number(i.pesos) || 0);
+  if (!(pesos > 0)) throw new Error("Captura los pesos que se pagaron.");
+  if (pesos > r2(i.pesos_pending) + 0.005)
+    throw new Error(`${i.what} debe ${moneyMxn(i.pesos_pending)}; no se le pueden pagar ${moneyMxn(pesos)}.`);
+  const closes = pesos >= r2(i.pesos_pending) - 0.005;
+  const applied = closes
+    ? r2(i.usd_pending)
+    : Math.min(r2(pesos / (parseFx(i.fx_agreed) as number)), r2(i.usd_pending));
+  const cash = r2(pesos / (parseFx(i.fx_paid) as number));
+  return { applied, cash, fx_result: r2(applied - cash), closes };
+}
