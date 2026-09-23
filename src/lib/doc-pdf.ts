@@ -31,6 +31,8 @@ export type DocPdfInput = {
   /** Aviso visible de documento incompleto — caja WARN, mismo criterio que el BOL. */
   warning?: string | null;
   showPaca?: boolean;
+  /** Peso–dólar A: en MXN los montos se imprimen con "MX$" para que no se lean como dólares. */
+  currency?: "USD" | "MXN";
   company?: {
     legal_name?: string;
     tagline?: string | null;
@@ -105,13 +107,15 @@ export async function getPdfEngine(): Promise<{
   return { JsPDF: jsPdfCtor, wordmark: wordmarkData ?? null };
 }
 
-function pdfMoney(value: unknown): string {
+function pdfMoney(value: unknown, currency?: string): string {
   const n = typeof value === "number" ? value : Number(value);
   const v = Number.isFinite(n) ? n : 0;
   const abs = Math.abs(v).toFixed(2);
   const [int, dec] = abs.split(".");
   const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${v < 0 ? "-$" : "$"}${grouped}.${dec}`;
+  // Peso–dólar A: pesos siempre con su etiqueta; sin ella se leen como dólares.
+  const sym = currency === "MXN" ? "MX$ " : "$";
+  return `${v < 0 ? "-" : ""}${sym}${grouped}.${dec}`;
 }
 
 function pdfQty(value: unknown, unit?: string): string {
@@ -176,8 +180,10 @@ export function fromPrintDoc(doc: {
   warning?: string | null;
   showPaca: boolean;
   company?: DocPdfInput["company"];
+  currency?: "USD" | "MXN";
 }): DocPdfInput {
   return {
+    currency: doc.currency,
     kindLabel: doc.kindLabel,
     number: doc.number,
     date: doc.date,
@@ -409,14 +415,14 @@ function buildPdf(
     pdf.text(pdfQty(line.qty, line.unit), M + skuW + descW + qtyW, y, { align: "right" });
     if (hasPrice) {
       pdf.text(
-        line.unit_price != null ? pdfMoney(line.unit_price) : "-",
+        line.unit_price != null ? pdfMoney(line.unit_price, input.currency) : "-",
         M + skuW + descW + qtyW + priceW,
         y,
         {
           align: "right",
         },
       );
-      pdf.text(line.amount != null ? pdfMoney(line.amount) : "-", PAGE_W - M, y, {
+      pdf.text(line.amount != null ? pdfMoney(line.amount, input.currency) : "-", PAGE_W - M, y, {
         align: "right",
       });
     }
@@ -435,7 +441,7 @@ function buildPdf(
       pdf.setFontSize(9);
       pdf.setTextColor(...MUTED);
       pdf.text("Subtotal", boxX, y);
-      pdf.text(pdfMoney(input.subtotal), PAGE_W - M, y, { align: "right" });
+      pdf.text(pdfMoney(input.subtotal, input.currency), PAGE_W - M, y, { align: "right" });
       y += 16;
     }
     pdf.setDrawColor(...GREEN);
@@ -445,7 +451,7 @@ function buildPdf(
     pdf.setFontSize(12);
     pdf.setTextColor(...INK);
     pdf.text("Total", boxX, y + 10);
-    pdf.text(pdfMoney(input.total ?? input.subtotal ?? 0), PAGE_W - M, y + 10, { align: "right" });
+    pdf.text(pdfMoney(input.total ?? input.subtotal ?? 0, input.currency), PAGE_W - M, y + 10, { align: "right" });
     y += 28;
   }
 

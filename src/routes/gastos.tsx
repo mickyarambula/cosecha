@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { BarSplit, Drawer, Modal, TabActions } from "@/components/app-shell";
 import { AgingTable, groupAging } from "@/components/aging-table";
+import { isFx, originalLabel, parseFx } from "@/lib/fx";
 import { ConceptSelect } from "@/components/concepts";
 import { FilterField, FilterRow } from "@/components/product-picker";
 import { Badge } from "@/components/ui/badge";
@@ -362,7 +363,12 @@ function Page() {
                   <td className="px-3 py-2">{e.supplier_name}</td>
                   <td className="px-3 py-2">{fecha(e.issue_date)}</td>
                   <td className="px-3 py-2">{fecha(e.due_date)}</td>
-                  <td className="px-3 py-2 text-right">{money(e.amount)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {money(e.amount)}
+                    {e.currency === "MXN" ? (
+                      <div className="text-xs text-muted">{originalLabel({ currency: e.currency, amount_fx: e.amount_fx, fx: e.fx_rate })}</div>
+                    ) : null}
+                  </td>
                   <td className="px-3 py-2 text-right">{money(e.saldo)}</td>
                   <td className="px-3 py-2">
                     <Badge tone={e.saldo > 0 ? "unpaid" : "ok"}>{e.status}</Badge>
@@ -474,7 +480,7 @@ function CreateExpenseDrawer({
   onClose,
   onSaved,
 }: {
-  suppliers: { id: number; name: string }[];
+  suppliers: { id: number; name: string; currency?: string | null }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -491,6 +497,10 @@ function CreateExpenseDrawer({
     supplier_id: "",
     invoice: "",
     due: "",
+    // Peso–dólar A: la moneda arranca en dólares (la de los libros) y cambia
+    // a pesos con el default del proveedor o a mano. El TC nunca se precarga.
+    currency: "USD",
+    fx_rate: "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -518,6 +528,8 @@ function CreateExpenseDrawer({
           // Hallazgo 51: la fecha compromiso. En blanco = sin plazo, que es lo
           // honesto mientras la factura del proveedor no llegue.
           due_date: form.due || undefined,
+          currency: form.currency === "MXN" ? "MXN" : "USD",
+          fx_rate: form.currency === "MXN" ? parseFx(form.fx_rate) : undefined,
         },
       });
       onSaved();
@@ -553,6 +565,35 @@ function CreateExpenseDrawer({
         <Field label="Amount">
           <Input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
         </Field>
+        <Field label="Currency">
+          <Select
+            value={form.currency}
+            onChange={(e) => {
+              const currency = e.target.value;
+              if (currency === form.currency) return;
+              // El monto escrito en una moneda no se reinterpreta en la otra.
+              setForm({ ...form, currency, amount: "" });
+            }}
+          >
+            <option value="USD">{t("Dollars")}</option>
+            <option value="MXN">{t("Pesos")}</option>
+          </Select>
+        </Field>
+        {form.currency === "MXN" ? (
+          <div className="flex flex-col gap-1">
+            <span className="label-caps">{t("Exchange rate")}</span>
+            <Input
+              placeholder={t("Pesos per dollar")}
+              value={form.fx_rate}
+              onChange={(e) => setForm({ ...form, fx_rate: e.target.value })}
+            />
+            <span className="text-xs text-muted">
+              {isFx(form.fx_rate) && Number(form.amount) > 0
+                ? `${t("In dollars")}: ${money(Number(form.amount) / (parseFx(form.fx_rate) as number))}`
+                : "Sin tipo de cambio el gasto en pesos no se guarda."}
+            </span>
+          </div>
+        ) : null}
       </div>
       <div className="mt-4">
         <p className="mb-2 text-sm font-medium">¿Ya se pagó este gasto?</p>
@@ -574,7 +615,17 @@ function CreateExpenseDrawer({
       {form.payable ? (
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Vendor">
-            <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
+            <Select
+              value={form.supplier_id}
+              onChange={(e) => {
+                const supplier_id = e.target.value;
+                const sup = suppliers.find((x) => String(x.id) === supplier_id);
+                // Default de moneda del proveedor, editable en el gasto. Si
+                // cambia la moneda, el monto ya escrito se vuelve a capturar.
+                const currency = sup?.currency ?? form.currency;
+                setForm({ ...form, supplier_id, currency, amount: currency === form.currency ? form.amount : "" });
+              }}
+            >
               <option value="">{t("Search vendors")}</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -602,7 +653,17 @@ function CreateExpenseDrawer({
       ) : (
         <div className="mt-4">
           <Field label="Vendor">
-            <Select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}>
+            <Select
+              value={form.supplier_id}
+              onChange={(e) => {
+                const supplier_id = e.target.value;
+                const sup = suppliers.find((x) => String(x.id) === supplier_id);
+                // Default de moneda del proveedor, editable en el gasto. Si
+                // cambia la moneda, el monto ya escrito se vuelve a capturar.
+                const currency = sup?.currency ?? form.currency;
+                setForm({ ...form, supplier_id, currency, amount: currency === form.currency ? form.amount : "" });
+              }}
+            >
               <option value="">{t("Search vendors")}</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -630,7 +691,7 @@ function ExpenseDetail({
   id: number;
   linksVersion: number;
   pos: { id: number; po_number: string }[];
-  suppliers: { id: number; name: string }[];
+  suppliers: { id: number; name: string; currency?: string | null }[];
   onClose: () => void;
   onConnect: () => void;
   onChanged: () => void;
@@ -653,6 +714,8 @@ function ExpenseDetail({
     charged_to: string;
     date: string;
     due: string;
+    currency: string;
+    fx_rate: string;
   } | null>(null);
 
   function startEdit() {
@@ -661,13 +724,17 @@ function ExpenseDetail({
     setForm({
       category: d.category,
       supplier_id: String(d.supplier_id),
-      amount: String(d.amount),
+      // Peso–dólar A: un gasto en pesos se edita en pesos (su original), no en
+      // el dólar derivado. Si no se toca, el servidor conserva el dólar guardado.
+      amount: String(d.currency === "MXN" && d.amount_fx != null ? d.amount_fx : d.amount),
       invoice: d.invoice_number || "",
       notes: d.notes || "",
       payable: !!d.payable,
       charged_to: d.charged_to || "plein",
       date: d.issue_date ? String(d.issue_date).slice(0, 10) : "",
       due: d.due_date ? String(d.due_date).slice(0, 10) : "",
+      currency: d.currency ?? "USD",
+      fx_rate: d.fx_rate != null ? String(d.fx_rate) : "",
     });
     setEditing(true);
   }
@@ -769,6 +836,8 @@ function ExpenseDetail({
           issue_date: form.date || undefined,
           // Hallazgo 51: `null` explícito lo deja "sin plazo" a propósito.
           due_date: form.due || null,
+          currency: form.currency === "MXN" ? "MXN" : "USD",
+          fx_rate: form.currency === "MXN" ? parseFx(form.fx_rate) : undefined,
         },
       });
       setEditing(false);
@@ -827,6 +896,9 @@ function ExpenseDetail({
             <div>
               <p className="label-caps">{t("Amount")}</p>
               <p>{money(d.amount)}</p>
+              {d.currency === "MXN" ? (
+                <p className="text-xs text-muted">{originalLabel({ currency: d.currency, amount_fx: d.amount_fx, fx: d.fx_rate })}</p>
+              ) : null}
             </div>
             <div>
               <p className="label-caps">{t("Distribution type")}</p>
@@ -934,9 +1006,29 @@ function ExpenseDetail({
                     ))}
                   </Select>
                 </Field>
-                <Field label="Monto">
+                <Field label={form.currency === "MXN" ? "Monto en pesos" : "Monto"}>
                   <Input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
                 </Field>
+                <Field label="Currency">
+                  <Select
+                    value={form.currency}
+                    onChange={(e) => {
+                      const currency = e.target.value;
+                      if (currency === form.currency) return;
+                      // El monto precargado está en la moneda anterior: se
+                      // limpia para volver a capturarlo, nunca se reinterpreta.
+                      setForm({ ...form, currency, amount: "", fx_rate: currency === "MXN" ? form.fx_rate : "" });
+                    }}
+                  >
+                    <option value="USD">{t("Dollars")}</option>
+                    <option value="MXN">{t("Pesos")}</option>
+                  </Select>
+                </Field>
+                {form.currency === "MXN" ? (
+                  <Field label="Exchange rate">
+                    <Input placeholder={t("Pesos per dollar")} value={form.fx_rate} onChange={(e) => setForm({ ...form, fx_rate: e.target.value })} />
+                  </Field>
+                ) : null}
                 <Field label="Fecha del gasto">
                   <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
                 </Field>
@@ -1093,7 +1185,7 @@ function VendorPayModal({
   initialTab = "manual",
 }: {
   rows: PayableRow[];
-  suppliers: { id: number; name: string }[];
+  suppliers: { id: number; name: string; currency?: string | null }[];
   onClose: () => void;
   onSaved: () => void;
   initialTab?: "manual" | "credit";
@@ -1242,7 +1334,12 @@ function VendorPayModal({
                       </td>
                       <td className="px-2 py-2">{r.number}</td>
                       <td className="px-2 py-2">{fecha(r.issue_date)}</td>
-                      <td className="px-2 py-2 text-right">{money(r.amount)}</td>
+                      <td className="px-2 py-2 text-right">
+                        {money(r.amount)}
+                        {r.currency === "MXN" ? (
+                          <div className="text-xs text-muted">{originalLabel({ currency: r.currency, amount_fx: r.amount_fx, fx: r.fx_rate })}</div>
+                        ) : null}
+                      </td>
                       <td className="px-2 py-2">{r.status}</td>
                       <td className="px-2 py-2 text-right">
                         {on ? (

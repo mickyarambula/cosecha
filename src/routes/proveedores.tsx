@@ -1,4 +1,5 @@
 import { ModuleNotice, useHasModule } from "@/components/access-gate";
+import { isFx, originalLabel, parseFx } from "@/lib/fx";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Modal } from "@/components/app-shell";
@@ -34,8 +35,8 @@ function Page() {
   const puedeFinanzas = useHasModule("finance");
   const [advOpen, setAdvOpen] = useState(false);
   const [cancelArm, setCancelArm] = useState<number | null>(null);
-  const [adv, setAdv] = useState({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "" });
-  const [form, setForm] = useState({ name: "", contact_name: "", phone: "", email: "", city: "", country: "USA", notes: "", tambien_cliente: false, payment_terms: "" });
+  const [adv, setAdv] = useState({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "", currency: "USD", fx_rate: "" });
+  const [form, setForm] = useState({ name: "", contact_name: "", phone: "", email: "", city: "", country: "USA", notes: "", tambien_cliente: false, payment_terms: "", currency: "" });
   const [edit, setEdit] = useState({
     name: "",
     contact_name: "",
@@ -50,6 +51,7 @@ function Page() {
     commission_type: "",
     commission_rate: "",
     payment_terms: "",
+    currency: "",
   });
   const [saving, setSaving] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
@@ -99,6 +101,7 @@ function Page() {
       commission_type: c.commission_type ?? "",
       commission_rate: c.commission_rate != null ? String(c.commission_rate) : "",
       payment_terms: c.payment_terms ?? "",
+      currency: c.currency ?? "",
     });
     setEditErr(null);
     setCancelErr(null);
@@ -109,7 +112,13 @@ function Page() {
     setSaving(true);
     setFormErr(null);
     try {
-      await createSupplier({ data: { ...form, contact_name: form.contact_name || undefined } });
+      await createSupplier({
+        data: {
+          ...form,
+          contact_name: form.contact_name || undefined,
+          currency: form.currency === "MXN" || form.currency === "USD" ? form.currency : undefined,
+        },
+      });
       setOpen(false);
       await reload();
     } catch (err) {
@@ -140,6 +149,7 @@ function Page() {
             : null,
           commission_rate: edit.commission_rate ? Number(edit.commission_rate) : null,
           payment_terms: edit.payment_terms.trim() || null,
+          currency: edit.currency === "MXN" || edit.currency === "USD" ? edit.currency : null,
         },
       });
       await reload();
@@ -160,13 +170,15 @@ function Page() {
           supplier_id: current.id,
           concept: adv.concept,
           amount: Number(adv.amount),
+          currency: adv.currency === "MXN" ? "MXN" : "USD",
+          fx_rate: adv.currency === "MXN" ? parseFx(adv.fx_rate) : undefined,
           advance_date: adv.date || undefined,
           purchase_order_id: adv.po_id ? Number(adv.po_id) : undefined,
           notes: adv.notes || undefined,
         },
       });
       setAdvOpen(false);
-      setAdv({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "" });
+      setAdv({ concept: "", amount: "", date: todayISO(), po_id: "", notes: "", currency: "USD", fx_rate: "" });
       await account.reload();
     } catch (err) {
       setAdvErr(errorMessage(err, "No se pudo registrar el adelanto."));
@@ -270,9 +282,17 @@ function Page() {
                       </span>
                     )}
                   </div>
-                  <Field label="Vendor code">
-                    <Input defaultValue={current.code} />
-                  </Field>
+                  <div className="flex flex-col gap-1">
+                    <span className="label-caps">{t("Payment currency")}</span>
+                    <Select value={edit.currency} onChange={(e) => setEdit({ ...edit, currency: e.target.value })}>
+                      <option value="">Sin default</option>
+                      <option value="USD">{t("Dollars")}</option>
+                      <option value="MXN">{t("Pesos")}</option>
+                    </Select>
+                    <span className="text-xs text-muted">
+                      Se propone en cada orden y gasto de este proveedor; ahí se puede cambiar.
+                    </span>
+                  </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-3">
                   <Field label="Comisión Plein (default)">
@@ -481,7 +501,7 @@ function Page() {
                           Estado de cuenta (PDF / enviar)
                         </a>
                       ) : null}
-                      <Button size="sm" onClick={() => { setAdvOpen(true); setAdvErr(null); }}>
+                      <Button size="sm" onClick={() => { setAdvOpen(true); setAdvErr(null); setAdv({ ...adv, currency: current.currency ?? "USD", fx_rate: "" }); }}>
                         + Nuevo adelanto
                       </Button>
                     </div>
@@ -522,7 +542,12 @@ function Page() {
                               {a.notes ? <span className="ml-2 text-xs text-muted">{a.notes}</span> : null}
                             </td>
                             <td className="px-2 py-2">{a.po_number || "—"}</td>
-                            <td className="px-2 py-2 text-right tabular-nums">{money(a.amount)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">
+                              {money(a.amount)}
+                              {a.currency === "MXN" ? (
+                                <div className="text-xs text-muted">{originalLabel({ currency: a.currency, amount_fx: a.amount_fx, fx: a.fx_rate })}</div>
+                              ) : null}
+                            </td>
                             <td className="px-2 py-2 text-right tabular-nums">{money(a.recovered)}</td>
                             <td className="px-2 py-2 text-right tabular-nums font-medium">{money(a.balance)}</td>
                             <td className="px-2 py-2 text-right">
@@ -611,9 +636,33 @@ function Page() {
             <Field label="Fecha">
               <Input type="date" value={adv.date} onChange={(e) => setAdv({ ...adv, date: e.target.value })} />
             </Field>
-            <Field label="Monto ($)">
+            <Field label={adv.currency === "MXN" ? "Monto en pesos" : "Monto ($)"}>
               <Input value={adv.amount} onChange={(e) => setAdv({ ...adv, amount: e.target.value })} />
             </Field>
+            <Field label="Currency">
+              <Select
+                value={adv.currency}
+                onChange={(e) => {
+                  const currency = e.target.value;
+                  if (currency === adv.currency) return;
+                  setAdv({ ...adv, currency, amount: "", fx_rate: "" });
+                }}
+              >
+                <option value="USD">{t("Dollars")}</option>
+                <option value="MXN">{t("Pesos")}</option>
+              </Select>
+            </Field>
+            {adv.currency === "MXN" ? (
+              <div className="flex flex-col gap-1">
+                <span className="label-caps">{t("Exchange rate")}</span>
+                <Input placeholder={t("Pesos per dollar")} value={adv.fx_rate} onChange={(e) => setAdv({ ...adv, fx_rate: e.target.value })} />
+                <span className="text-xs text-muted">
+                  {isFx(adv.fx_rate) && Number(adv.amount) > 0
+                    ? `Sale de Chase: ${money(Number(adv.amount) / (parseFx(adv.fx_rate) as number))}`
+                    : "El TC al que el banco convirtió los dólares. Sin él no se guarda."}
+                </span>
+              </div>
+            ) : null}
             <Field label="Concepto">
               <Input
                 placeholder="Flete / Pick and pack / Semilla / Efectivo…"
@@ -668,6 +717,13 @@ function Page() {
                 value={form.payment_terms}
                 onChange={(e) => setForm({ ...form, payment_terms: e.target.value })}
               />
+            </Field>
+            <Field label="Payment currency">
+              <Select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
+                <option value="">Sin default</option>
+                <option value="USD">{t("Dollars")}</option>
+                <option value="MXN">{t("Pesos")}</option>
+              </Select>
             </Field>
             {formErr ? <p className="rounded-md border border-danger/40 bg-danger/5 p-2 text-sm text-danger">{formErr}</p> : null}
             <div className="flex justify-end gap-2">

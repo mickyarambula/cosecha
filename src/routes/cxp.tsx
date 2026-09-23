@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal, Kpi } from "@/components/app-shell";
 import { AgingTable, groupAging } from "@/components/aging-table";
+import { originalLabel } from "@/lib/fx";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
@@ -159,6 +160,11 @@ function Page() {
                     <span className="text-warn">sin plazo capturado</span>
                   )}
                 </p>
+                {b.currency === "MXN" ? (
+                  <p className="text-xs text-muted">
+                    Pactada en pesos: {originalLabel({ currency: b.currency, amount_fx: b.total_fx, fx: b.fx_agreed })} — congelada a ese TC.
+                  </p>
+                ) : null}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Badge tone={matchTone(b.match)}>
