@@ -210,6 +210,10 @@ Los puntos que ya estaban en `AUDITORIA.md` (27 Ago) y siguen abiertos se marcan
 
 Nada tocó el corte: los 112 documentos de apertura ya traían su vencimiento real del V8 (53 de 62 bills a 21 días, 41 de 50 facturas igual) y son justo los que hacen que la antigüedad sirva desde el primer día. Anclas exactas antes y después.
 
+
+53. **La migración 0011 dio de alta una cuenta de banco inventada: "Operating · Wells Fargo · 4410".** *(encontrado el 22 Sep 2026 al mapear el bloque peso–dólar.)* Plein trabaja con **Chase**; ese banco, ese nombre y esos cuatro dígitos no salieron de ningún dato de Miguel — es el mismo patrón que el membrete con "1234 N Grand Ave" y las cuatro bodegas que no existen (`CLAUDE.md`, "Inventar datos de negocio"). Hoy `bank_accounts` la trae como única cuenta activa y la conciliación (`bank_lines`) apunta ahí. **Qué hacer:** que Miguel diga cómo se llama su cuenta real y con qué terminación, y se corrige el renglón (un `update`, no una tabla nueva). No se toca sin ese dato. Se vuelve más importante con la parte B de peso–dólar, donde cada cuenta de tesorería tendrá moneda.
+
+54. **Un pedido del cliente (CPO) en pesos se vuelve orden de venta en dólares con el mismo número.** *(encontrado el 22 Sep 2026.)* `customer_pos.currency` (migración 0004) es la única columna de moneda que existía; la pantalla de CPO ofrece "MXN" y el extractor de PDF puede llenarla, pero `convertCustomerPOToSO` la **descarta** y copia `unit_price` tal cual. Un pedido de MX$ 500 por caja se factura como $500 dólares. Fuera del bloque peso–dólar A (la venta de Plein es en dólares); la salida honesta mientras tanto es que la conversión **se detenga** cuando el CPO no está en USD, en vez de callar.
 ---
 
 ## Áreas de mejora (ordenadas por valor para el negocio)

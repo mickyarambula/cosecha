@@ -8,6 +8,7 @@ import { useT } from "@/lib/i18n";
 import type { PrintDoc, PrintParty } from "@/lib/produce-server";
 import { fechaDoc, money, qty } from "@/lib/utils";
 import { SendButton } from "@/components/send-doc";
+import { fxLabel, moneyMxn } from "@/lib/fx";
 import { Button } from "@/components/ui/button";
 
 function PartyBlock({ title, party }: { title: string; party: PrintParty }) {
@@ -29,6 +30,9 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfErr, setPdfErr] = useState("");
   const pdfInput = fromPrintDoc(doc);
+  // Peso–dólar A: una orden pactada en pesos se imprime en pesos, con su
+  // etiqueta, para que nunca se lea como dólares.
+  const fmt = doc.currency === "MXN" ? moneyMxn : money;
   const c = doc.company ?? {
     legal_name: COMPANY.legalName,
     short_name: COMPANY.shortName,
@@ -89,6 +93,7 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
               amount: l.amount,
             }))}
             total={doc.total}
+            currency={doc.currency}
             pdf={pdfInput}
           />
           <Button size="sm" disabled={pdfBusy} onClick={savePdf}>
@@ -116,6 +121,9 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
           <div className="text-right">
             <p className="font-display text-3xl font-semibold tracking-tight text-primary">{doc.kindLabel}</p>
             <p className="mt-1 font-mono text-sm font-medium">{doc.number}</p>
+            {doc.currency === "MXN" ? (
+              <p className="mt-1 text-xs text-muted">Pesos mexicanos · {fxLabel(doc.fx_rate)} pactado</p>
+            ) : null}
           </div>
         </header>
 
@@ -173,8 +181,8 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
                 <td className="py-2.5 pr-3 font-mono text-xs text-muted">{line.sku || "—"}</td>
                 <td className="py-2.5 pr-3">{line.description}</td>
                 <td className="py-2.5 pr-3 text-right tabular-nums">{qty(line.qty, line.unit)}</td>
-                <td className="py-2.5 pr-3 text-right tabular-nums">{money(line.unit_price)}</td>
-                <td className="py-2.5 text-right tabular-nums font-medium">{money(line.amount)}</td>
+                <td className="py-2.5 pr-3 text-right tabular-nums">{fmt(line.unit_price)}</td>
+                <td className="py-2.5 text-right tabular-nums font-medium">{fmt(line.amount)}</td>
               </tr>
             ))}
           </tbody>
@@ -184,11 +192,11 @@ export function PrintDocSheet({ doc }: { doc: PrintDoc }) {
           <div className="w-56 space-y-1.5 text-sm">
             <div className="flex justify-between text-muted">
               <span>Subtotal</span>
-              <span className="tabular-nums">{money(doc.subtotal)}</span>
+              <span className="tabular-nums">{fmt(doc.subtotal)}</span>
             </div>
             <div className="flex justify-between border-t border-primary pt-2 font-display text-lg font-semibold">
               <span>Total</span>
-              <span className="tabular-nums">{money(doc.total)}</span>
+              <span className="tabular-nums">{fmt(doc.total)}</span>
             </div>
           </div>
         </div>

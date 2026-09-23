@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { COMPANY } from "@/lib/company";
 import { useHasModule } from "@/components/access-gate";
+import { parseFx } from "@/lib/fx";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
 import {
@@ -141,6 +142,9 @@ function Page() {
     unit_cost: "",
     commission_type: "",
     commission_rate: "",
+    // Peso–dólar A: igual que en Compras — el costo va en esta moneda.
+    currency: "USD",
+    fx_rate: "",
   });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -290,6 +294,8 @@ function Page() {
           supplier_id: Number(buyForm.supplier_id),
           deal_type: buyForm.deal_type as "firme" | "consignacion" | "comision",
           unit_cost: isFirme ? Number(buyForm.unit_cost) : undefined,
+          currency: buyForm.currency === "MXN" ? "MXN" : "USD",
+          fx_rate: buyForm.currency === "MXN" ? parseFx(buyForm.fx_rate) : undefined,
           commission_type: withCommission
             ? (buyForm.commission_type as "per_unit" | "gross_pct" | "net_pct")
             : undefined,
@@ -762,6 +768,8 @@ function Page() {
                                 supplier_id: "",
                                 deal_type: "firme",
                                 unit_cost: "",
+                                currency: "USD",
+                                fx_rate: "",
                                 commission_type: "",
                                 commission_rate: "",
                               });
@@ -864,6 +872,10 @@ function Page() {
                   setBuyForm({
                     ...buyForm,
                     supplier_id,
+                    // Default de moneda del proveedor, editable en la orden. Si
+                    // cambia la moneda, el costo ya escrito se vuelve a capturar.
+                    currency: sup?.currency ?? buyForm.currency,
+                    unit_cost: (sup?.currency ?? buyForm.currency) === buyForm.currency ? buyForm.unit_cost : "",
                     commission_type: sup?.commission_type ?? "",
                     commission_rate:
                       sup?.commission_rate != null ? String(sup.commission_rate) : "",
@@ -891,8 +903,32 @@ function Page() {
                 <option value="comision">Comisión pura</option>
               </Select>
             </Field>
+            <Field label="Currency">
+              <Select
+                value={buyForm.currency}
+                onChange={(e) => {
+                  const currency = e.target.value;
+                  if (currency === buyForm.currency) return;
+                  // El costo escrito en una moneda no se reinterpreta en la otra.
+                  setBuyForm({ ...buyForm, currency, unit_cost: "", fx_rate: currency === "MXN" ? buyForm.fx_rate : "" });
+                }}
+              >
+                <option value="USD">{t("Dollars")}</option>
+                <option value="MXN">{t("Pesos")}</option>
+              </Select>
+            </Field>
+            {buyForm.currency === "MXN" ? (
+              <Field label="Exchange rate">
+                <Input
+                  required
+                  placeholder={t("Pesos per dollar")}
+                  value={buyForm.fx_rate}
+                  onChange={(e) => setBuyForm({ ...buyForm, fx_rate: e.target.value })}
+                />
+              </Field>
+            ) : null}
             {buyForm.deal_type === "firme" ? (
-              <Field label="Unit cost">
+              <Field label={buyForm.currency === "MXN" ? "Cost per unit in pesos" : "Unit cost"}>
                 <Input
                   required
                   value={buyForm.unit_cost}

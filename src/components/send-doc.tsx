@@ -7,6 +7,7 @@ import { COMPANY } from "@/lib/company";
 import { downloadDocPdfNow, preloadDocPdf, type DocPdfInput } from "@/lib/doc-pdf";
 import { useT } from "@/lib/i18n";
 import { recordSend } from "@/lib/produce-server";
+import { moneyMxn } from "@/lib/fx";
 import { money } from "@/lib/utils";
 
 export type SendDocItem = { tipo: string; id: number; label: string };
@@ -42,6 +43,8 @@ function buildBody(opts: {
   partyLabel: string;
   lines: SendLine[];
   total?: number;
+  /** Peso–dólar A: una OC pactada en pesos se manda en pesos, con su etiqueta. */
+  currency?: "USD" | "MXN";
   extra?: string;
 }) {
   const items = opts.lines
@@ -49,7 +52,7 @@ function buildBody(opts: {
     .map((l) => `• ${l.qty} ${l.unit || ""} ${l.name}${l.sku ? ` (${l.sku})` : ""}`.replace(/\s+/g, " ").trim())
     .join("\n");
   const more = opts.lines.length > 12 ? `\n• +${opts.lines.length - 12} más` : "";
-  const total = opts.total != null ? `\nTotal: ${money(opts.total)}` : "";
+  const total = opts.total != null ? `\nTotal: ${opts.currency === "MXN" ? moneyMxn(opts.total) : money(opts.total)}` : "";
   return [
     `${COMPANY.legalName}`,
     `${opts.title} ${opts.number}`,
@@ -84,6 +87,7 @@ export function SendButton({
   docs,
   lines = [],
   total,
+  currency,
   extraLinks,
   className,
   size = "sm",
@@ -92,6 +96,7 @@ export function SendButton({
   pdf,
 }: {
   title: string;
+  currency?: "USD" | "MXN";
   number: string;
   partyName: string;
   email?: string | null;
@@ -131,6 +136,7 @@ export function SendButton({
           docs={docs}
           lines={lines}
           total={total}
+          currency={currency}
           extraLinks={extraLinks}
           pdf={pdf}
           onClose={() => setOpen(false)}
@@ -149,6 +155,7 @@ export function SendDocuments({
   docs,
   lines,
   total,
+  currency,
   extraLinks = [],
   pdf,
   onClose,
@@ -161,6 +168,7 @@ export function SendDocuments({
   docs: SendDocItem[];
   lines: SendLine[];
   total?: number;
+  currency?: "USD" | "MXN";
   extraLinks?: SendExtraLink[];
   pdf?: DocPdfInput;
   onClose: () => void;
@@ -186,8 +194,9 @@ export function SendDocuments({
         partyLabel,
         lines,
         total,
+        currency,
       }),
-    [title, number, partyName, partyLabel, lines, total],
+    [title, number, partyName, partyLabel, lines, total, currency],
   );
   const [note, setNote] = useState(body);
   const canSend = selected.length > 0 || extraLinks.length > 0 || docs.length === 0;

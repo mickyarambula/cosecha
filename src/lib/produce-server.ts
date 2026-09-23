@@ -5,6 +5,7 @@ import { getSql as getSqlDb } from "@/lib/db";
 import { COMPANY } from "@/lib/company";
 import { convertWeight } from "@/lib/units";
 import { dueFromTerms, num, SHIPMENT_STATUSES, skuCodeOf, todayISO, todayYYMM } from "@/lib/utils";
+import { asCurrency, fxError, isFx, snapOrConvertUnitCost, toUsd, unitCostToUsd, type Currency } from "@/lib/fx";
 
 // Intentionally `Promise<any>`, not `Promise<Sql>` — every one of this file's
 // ~150 `sql.query(...)` calls would need an explicit row-shape generic before
@@ -63,6 +64,10 @@ export type PrintDoc = {
   warning?: string | null;
   showPaca: boolean;
   company: CompanyProfile;
+  /** Peso–dólar A: en MXN los precios y totales del documento van en pesos,
+   *  al TC pactado. Ausente o USD = dólares, como siempre. */
+  currency?: "USD" | "MXN";
+  fx_rate?: number | null;
 };
 
 export type LotRow = {
@@ -112,6 +117,10 @@ export type PayableRow = {
   due_date?: string | null;
   amount: number;
   paid: number;
+  /** Peso–dólar A: el original en pesos y su TC, cuando el gasto nació en pesos. */
+  currency?: "USD" | "MXN" | string;
+  amount_fx?: number | null;
+  fx_rate?: number | null;
   saldo: number;
   status: string;
   po_number?: string | null;
@@ -729,7 +738,7 @@ export const listSuppliers = createServerFn({ method: "GET" })
       ).query(`select id, code, name, contact_name, phone, email, city, country, notes, is_active,
            coalesce(es_proveedor, true) as es_proveedor,
            coalesce(es_cliente, false) as es_cliente,
-           linked_customer_id, commission_type, commission_rate::text, share_token, payment_terms
+           linked_customer_id, commission_type, commission_rate::text, share_token, payment_terms, currency
     from suppliers order by name`)
     ).map((s) => ({
       ...s,
@@ -788,6 +797,9 @@ export const createSupplier = createServerFn({ method: "POST" })
       /** Plazo de pago default, texto libre estilo "Net 21" o "COD". En blanco
        *  hasta que Miguel lo capture: el vencimiento no se inventa. */
       payment_terms: z.string().optional(),
+      /** Moneda de pago default (peso–dólar A). En blanco = sin default; la
+       *  orden nace en dólares, que es la moneda de los libros, y se cambia ahí. */
+      currency: z.enum(["USD", "MXN"]).nullable().optional(),
       commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).nullable().optional(),
       commission_rate: z.number().min(0).nullable().optional(),
     }),
@@ -798,8 +810,8 @@ export const createSupplier = createServerFn({ method: "POST" })
     const code = await nextCode(sql, "suppliers", "code", "PRO-");
     const id = (
       await sql.query(
-        `insert into suppliers (code, name, contact_name, phone, email, city, country, notes, es_proveedor, es_cliente, commission_type, commission_rate, payment_terms)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11,$12) returning id`,
+        `insert into suppliers (code, name, contact_name, phone, email, city, country, notes, es_proveedor, es_cliente, commission_type, commission_rate, payment_terms, currency)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11,$12,$13) returning id`,
         [
           code,
           data.name.trim(),
@@ -813,6 +825,7 @@ export const createSupplier = createServerFn({ method: "POST" })
           data.commission_type ?? null,
           data.commission_type != null ? (data.commission_rate ?? null) : null,
           data.payment_terms?.trim() || null,
+          data.currency ?? null,
         ],
       )
     )[0].id;
@@ -859,6 +872,8 @@ export const updateSupplier = createServerFn({ method: "POST" })
       is_active: z.boolean().optional(),
       /** Plazo de pago default; `null` explícito lo borra y lo deja en blanco. */
       payment_terms: z.string().nullable().optional(),
+      /** Moneda de pago default; `null` explícito la borra. */
+      currency: z.enum(["USD", "MXN"]).nullable().optional(),
       commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).nullable().optional(),
       commission_rate: z.number().min(0).nullable().optional(),
     }),
@@ -871,7 +886,8 @@ export const updateSupplier = createServerFn({ method: "POST" })
       `update suppliers set name=$1, contact_name=$2, phone=$3, email=$4, city=$5, country=$6, notes=$7, is_active=coalesce($8, is_active),
        commission_type = case when $10::boolean then $11 else commission_type end,
        commission_rate = case when $10::boolean then $12 else commission_rate end,
-       payment_terms = case when $13::boolean then $14 else payment_terms end
+       payment_terms = case when $13::boolean then $14 else payment_terms end,
+       currency = case when $15::boolean then $16 else currency end
      where id=$9`,
       [
         data.name.trim(),
@@ -888,6 +904,8 @@ export const updateSupplier = createServerFn({ method: "POST" })
         data.commission_type != null ? (data.commission_rate ?? null) : null,
         data.payment_terms !== undefined,
         data.payment_terms?.trim() || null,
+        data.currency !== undefined,
+        data.currency ?? null,
       ],
     );
     return { id: data.id };
@@ -2572,6 +2590,7 @@ function computeSettlementLots(
       pallets: l.pallets,
       unit: l.unit,
       unit_cost: l.unit_cost,
+      unit_cost_fx: l.unit_cost_fx ?? null,
       pas: pas && targetPct == null && netToGrower == null,
       calibre: l.calibre ?? null,
       sku_code: l.sku_code ?? null,
@@ -2780,10 +2799,12 @@ async function loadPoLots(sql, poId) {
             coalesce(l.destroyed_qty,0)::text as destroyed_qty, coalesce(l.plein_bought_qty,0)::text as plein_bought_qty,
             l.origin_country as origin, l.original_qty::text, l.current_qty::text,
             coalesce(l.waste_qty,0)::text as waste_qty, coalesce(l.rts_qty,0)::text as rts_qty, l.pallets::text,
-            l.unit, l.unit_cost::text, l.returned_from_lot_id
+            l.unit, l.unit_cost::text, l.returned_from_lot_id,
+            case when l.pack_out_id is null then pol.unit_cost_fx end::text as unit_cost_fx
      from lots l
      join products p on p.id = l.product_id
      left join pack_styles ps on ps.id = l.pack_style_id
+     left join purchase_order_lines pol on pol.id = l.purchase_order_line_id
      where l.purchase_order_id = $1
      order by l.id`,
     [poId],
@@ -2865,6 +2886,9 @@ async function loadPoLots(sql, poId) {
       pallets: n(l.pallets),
       unit: l.unit,
       unit_cost: n(l.unit_cost),
+      // Peso–dólar A: solo los lotes de una carga en pesos lo traen; un
+      // reempaque o una consignación no tienen original en pesos.
+      unit_cost_fx: l.unit_cost_fx == null ? null : n(l.unit_cost_fx),
       sold: s.qty,
       revenue: s.revenue,
       repacked_out_qty: repackedMap.get(l.id) ?? 0,
@@ -3199,7 +3223,8 @@ async function loadSettlement(
               coalesce(po.vendor_share_level,'po') as vendor_share_level,
               coalesce(po.signed_off,false) as signed_off,
               coalesce(po.deal_type,'firme') as deal_type,
-              po.commission_type, po.commission_rate::text, po.liquidated_at::text
+              po.commission_type, po.commission_rate::text, po.liquidated_at::text,
+              coalesce(po.currency,'USD') as currency, po.fx_rate::text
        from purchase_orders po join suppliers s on s.id = po.supplier_id
        where po.id = $1`,
     [purchase_order_id],
@@ -3380,6 +3405,8 @@ async function loadSettlement(
     deal_type: po.deal_type,
     commission_type: po.commission_type,
     commission_rate: po.commission_rate != null ? n(po.commission_rate) : null,
+    currency: po.currency as "USD" | "MXN",
+    fx_rate: po.fx_rate != null ? n(po.fx_rate) : null,
     breakdown,
     expense_rows: expenses.map((e) => ({
       id: e.id,
@@ -5832,14 +5859,21 @@ export const createGrowerAdvance = createServerFn({ method: "POST" })
     z.object({
       supplier_id: z.number(),
       concept: z.string().min(1),
+      /** En la moneda del adelanto; el servidor guarda dólares y el original aparte. */
       amount: z.number().positive(),
+      currency: z.enum(["USD", "MXN"]).optional(),
+      fx_rate: z.number().positive().optional(),
       advance_date: z.string().optional(),
       purchase_order_id: z.number().optional(),
       notes: z.string().optional(),
     }),
   )
   .middleware([moduleMiddleware("finance")])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: raw }) => {
+    // Peso–dólar A: los dólares que salen de Chase son el monto; el original
+    // en pesos y el TC al que salieron quedan en el adelanto.
+    const conv = toUsd({ amount: raw.amount, currency: raw.currency, fx: raw.fx_rate, what: "el adelanto" });
+    const data = { ...raw, amount: conv.usd };
     const sql = await getSql();
     const [sup] = await sql.query(`select name from suppliers where id = $1`, [data.supplier_id]);
     if (!sup) throw new Error("Productor no encontrado");
@@ -5868,8 +5902,8 @@ export const createGrowerAdvance = createServerFn({ method: "POST" })
     )[0].id;
     const id = (
       await sql.query(
-        `insert into grower_advances (advance_number, supplier_id, purchase_order_id, advance_date, concept, amount, cash_movement_id, notes)
-       values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
+        `insert into grower_advances (advance_number, supplier_id, purchase_order_id, advance_date, concept, amount, cash_movement_id, notes, currency, amount_fx, fx_rate)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
         [
           advance_number,
           data.supplier_id,
@@ -5879,6 +5913,9 @@ export const createGrowerAdvance = createServerFn({ method: "POST" })
           data.amount,
           movId,
           data.notes || null,
+          conv.currency,
+          conv.amount_fx,
+          conv.fx,
         ],
       )
     )[0].id;
@@ -5894,7 +5931,8 @@ async function loadGrowerAccount(sql, supplier_id: number) {
     await sql.query(
       `select a.id, a.advance_number, a.advance_date::text, a.concept, a.amount::text, a.recovered::text, a.notes,
             a.purchase_order_id, po.po_number, a.cancelled_at::text, a.cancelled_by, a.cancel_reason,
-            a.supplement_id, sup.supplement_number, sup.share_token as supplement_token, a.cash_movement_id
+            a.supplement_id, sup.supplement_number, sup.share_token as supplement_token, a.cash_movement_id,
+            coalesce(a.currency,'USD') as currency, a.amount_fx::text, a.fx_rate::text
      from grower_advances a
      left join purchase_orders po on po.id = a.purchase_order_id
      left join grower_settlement_supplements sup on sup.id = a.supplement_id
@@ -6261,7 +6299,8 @@ export const getVendorPortal = createServerFn({ method: "GET" })
     const sql = await getSql();
     const [po] = await sql.query(
       `select po.id, po.po_number, s.name as supplier_name, po.expected_date::text, po.vendor_invoice, po.bol, po.shipping_ref,
-              coalesce(po.vendor_share_level,'po') as vendor_share_level
+              coalesce(po.vendor_share_level,'po') as vendor_share_level,
+              coalesce(po.currency,'USD') as currency, po.fx_rate::text
        from purchase_orders po join suppliers s on s.id = po.supplier_id where po.share_token = $1`,
       [data.token],
     );
@@ -6327,6 +6366,10 @@ export const getVendorPortal = createServerFn({ method: "GET" })
       bol: po.bol,
       shipping_ref: po.shipping_ref,
       level: po.vendor_share_level,
+      // Peso–dólar A: el productor cobra en pesos y reconoce su carga por el
+      // TC pactado; en dólares no hay nada que decir.
+      currency: po.currency,
+      fx_rate: po.fx_rate != null ? n(po.fx_rate) : null,
       sales: sales.map((s) => ({
         order_date: s.order_date,
         item: s.item,
@@ -6409,6 +6452,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
            coalesce(po.vendor_share_level,'po') as vendor_share_level, coalesce(po.signed_off,false) as signed_off,
            coalesce(po.deal_type, 'firme') as deal_type,
            po.commission_type, po.commission_rate::text,
+           coalesce(po.currency,'USD') as currency, po.fx_rate::text,
            po.cancelled_at::text, po.cancelled_by, po.cancel_reason
     from purchase_orders po join suppliers s on s.id = po.supplier_id
     left join sales_orders so on so.id = po.sales_order_id
@@ -6417,7 +6461,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
     const lines = await sql.query(`
     select l.id, l.purchase_order_id, l.product_id, p.name as product_name, l.pack_style_id,
            l.quantity_ordered::text, l.quantity_received::text, l.quantity_rejected::text,
-           l.unit, l.unit_cost::text,
+           l.unit, l.unit_cost::text, l.unit_cost_fx::text,
            ps.sku_code, ps.empaque, ps.calibre, ps.net_weight::text, coalesce(ps.weight_unit,'lb') as weight_unit,
            l.pallets::text, l.units_per_pallet::text, l.origin_country,
            p.storage_temp_min::text, p.storage_temp_max::text, p.storage_temp_unit
@@ -6446,7 +6490,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
            x.amount_applied::text as amount, e.amount::text as expense_amount,
            e.invoice_number, e.status, e.notes, e.payable,
            coalesce(e.alloc_by,'pallet') as alloc_by, coalesce(e.charged_to,'plein') as charged_to,
-           e.supplier_id
+           e.supplier_id, coalesce(e.currency,'USD') as currency, e.amount_fx::text, e.fx_rate::text
     from expenses e
     join expense_po_links x on x.expense_id = e.id
     where e.cancelled_at is null
@@ -6460,6 +6504,7 @@ export const listPurchaseOrders = createServerFn({ method: "GET" })
           quantity_received: n(l.quantity_received),
           quantity_rejected: n(l.quantity_rejected),
           unit_cost: n(l.unit_cost),
+          unit_cost_fx: l.unit_cost_fx == null ? null : n(l.unit_cost_fx),
           pallets: n(l.pallets),
           units_per_pallet: n(l.units_per_pallet),
           net_weight: l.net_weight == null ? null : n(l.net_weight),
@@ -6507,6 +6552,11 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
     z.object({
       supplier_id: z.number(),
       deal_type: z.enum(["firme", "consignacion", "comision"]),
+      /** Peso–dólar A: la moneda del documento. El costo de cada línea viene
+       *  en ESTA moneda; el servidor guarda dólares y aparte el original. */
+      currency: z.enum(["USD", "MXN"]).optional(),
+      /** Pesos por dólar, el TC pactado de la carga. Obligatorio en MXN. */
+      fx_rate: z.number().positive().optional(),
       commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).optional(),
       commission_rate: z.number().min(0).optional(),
       expected_date: z.string().optional(),
@@ -6544,14 +6594,26 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
     }
     if (data.commission_type != null && !(n(data.commission_rate) > 0))
       throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
+    // Peso–dólar A: en pesos, el TC pactado es obligatorio y se valida ANTES
+    // de escribir nada. En dólares el TC no aplica y no se guarda.
+    const currency = asCurrency(data.currency);
+    const fx_rate = currency === "MXN" ? data.fx_rate : null;
+    if (currency === "MXN" && !isFx(fx_rate)) throw new Error(fxError("la orden de compra", fx_rate));
+    // Cada línea se convierte a dólares; el original en pesos queda aparte.
+    const costed = data.lines.map((line) => ({
+      ...line,
+      ...(line.unit_cost != null
+        ? unitCostToUsd({ unit_cost: line.unit_cost, currency, fx: fx_rate, what: "la orden de compra" })
+        : { usd: null, unit_cost_fx: null }),
+    }));
     const sql = await getSql();
     const po_number = await nextCode(sql, "purchase_orders", "po_number", "OC-");
     // La comisión solo aplica a tratos donde Plein liquida al productor.
     const withCommission = data.deal_type !== "firme" && data.commission_type != null;
     const id = (
       await sql.query(
-        `insert into purchase_orders (po_number, supplier_id, deal_type, status, expected_date, notes, sales_order_id, order_type, bol, vendor_invoice, shipping_ref, commission_type, commission_rate)
-       values ($1,$2,$3,'confirmed',$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
+        `insert into purchase_orders (po_number, supplier_id, deal_type, status, expected_date, notes, sales_order_id, order_type, bol, vendor_invoice, shipping_ref, commission_type, commission_rate, currency, fx_rate)
+       values ($1,$2,$3,'confirmed',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
         [
           po_number,
           data.supplier_id,
@@ -6565,23 +6627,26 @@ export const createPurchaseOrder = createServerFn({ method: "POST" })
           data.shipping_ref || null,
           withCommission ? data.commission_type : null,
           withCommission ? data.commission_rate : null,
+          currency,
+          fx_rate,
         ],
       )
     )[0].id;
-    for (const line of data.lines)
+    for (const line of costed)
       await sql.query(
-        `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, pallets, units_per_pallet, origin_country)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, pallets, units_per_pallet, origin_country, unit_cost_fx)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
           id,
           line.product_id,
           line.pack_style_id ?? null,
           line.quantity_ordered,
           line.unit,
-          line.unit_cost ?? null,
+          line.usd,
           line.pallets ?? null,
           line.units_per_pallet ?? null,
           line.origin_country || null,
+          line.unit_cost_fx,
         ],
       );
     return {
@@ -6609,6 +6674,11 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
       purchase_order_id: z.number(),
       supplier_id: z.number(),
       deal_type: z.enum(["firme", "consignacion", "comision"]),
+      /** Peso–dólar A: igual que al crear. El costo de cada línea llega en
+       *  esta moneda. Con factura de proveedor viva, ni la moneda ni el TC se
+       *  mueven (son lo que congeló esa factura). */
+      currency: z.enum(["USD", "MXN"]).optional(),
+      fx_rate: z.number().positive().optional(),
       commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).optional(),
       commission_rate: z.number().min(0).optional(),
       expected_date: z.string().optional(),
@@ -6638,11 +6708,17 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const [po] = await sql.query(
-      `select id, po_number, supplier_id, status, coalesce(deal_type,'firme') as deal_type, commission_type, commission_rate::text
+      `select id, po_number, supplier_id, status, coalesce(deal_type,'firme') as deal_type, commission_type, commission_rate::text,
+              coalesce(currency,'USD') as currency, fx_rate::text
        from purchase_orders where id = $1`,
       [data.purchase_order_id],
     );
     if (!po) throw new Error("Orden de compra no encontrada");
+    // Peso–dólar A: la moneda y el TC que van a regir esta edición. En pesos
+    // el TC es obligatorio; en dólares no aplica.
+    const currency = asCurrency(data.currency ?? po.currency);
+    const fx_rate = currency === "MXN" ? (data.fx_rate ?? (po.fx_rate != null ? n(po.fx_rate) : null)) : null;
+    if (currency === "MXN" && !isFx(fx_rate)) throw new Error(fxError(po.po_number, fx_rate));
     // Era el único mutador de OC sin esta guarda (`receiveMerchandise`,
     // `createBillFromPO` y `cancelPurchaseOrder` sí la tienen). Cancelar pone
     // los contadores en cero, así que una orden cancelada que SÍ tuvo recepción
@@ -6657,6 +6733,11 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
     // proveedor y fechas; la comisión no (es la del documento rendido).
     const liq = await liquidatedInfo(sql, po.id);
     if (liq) {
+      // Peso–dólar A: el documento emitido se calculó con esta moneda y TC.
+      if (currency !== po.currency || (currency === "MXN" && Math.abs(n(fx_rate) - n(po.fx_rate)) > 1e-9))
+        throw new Error(
+          `${liq.po_number} ya tiene emitida ${liq.settlement_number}: la moneda y el tipo de cambio de la carga quedaron fijos en ese documento.`,
+        );
       const sameType = (data.commission_type ?? null) === (po.commission_type ?? null);
       const sameRate =
         (data.commission_type ?? null) == null ||
@@ -6673,10 +6754,45 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
     );
     const existingLines = await sql.query(
       `select id, product_id, pack_style_id, quantity_ordered::text, quantity_received::text,
-              quantity_rejected::text, unit_cost::text
+              quantity_rejected::text, unit_cost::text, unit_cost_fx::text
        from purchase_order_lines where purchase_order_id = $1`,
       [data.purchase_order_id],
     );
+    // Peso–dólar A: cada costo entrante se lleva a dólares AQUÍ, una sola vez,
+    // y de aquí en adelante `usd` es lo que se compara, se guarda y se propaga
+    // al lote. Si la pantalla manda en pesos exactamente lo que ya estaba, se
+    // conservan los dólares guardados (sin ida y vuelta que mueva decimales).
+    const prevFx = po.fx_rate != null ? n(po.fx_rate) : null;
+    // Cinturón: si la moneda cambió y una línea manda EL MISMO número que ya
+    // tenía guardado (en dólares o en pesos), ese costo no se recapturó — se
+    // reinterpretaría bajo la unidad nueva. Se pide volver a capturarlo.
+    if (currency !== po.currency)
+      for (const line of data.lines) {
+        const cur = line.id != null ? existingLines.find((l) => l.id === line.id) : undefined;
+        if (!cur || line.unit_cost == null) continue;
+        const sent = Number(line.unit_cost);
+        const mismo =
+          Math.abs(sent - n(cur.unit_cost)) < 1e-9 ||
+          (cur.unit_cost_fx != null && Math.abs(sent - n(cur.unit_cost_fx)) < 1e-9);
+        if (mismo)
+          throw new Error(
+            `${po.po_number} cambió de ${po.currency === "MXN" ? "pesos" : "dólares"} a ${currency === "MXN" ? "pesos" : "dólares"}: vuelve a capturar el costo de cada línea en ${currency === "MXN" ? "pesos" : "dólares"} — el número anterior estaba en la otra moneda.`,
+          );
+      }
+    const costed = data.lines.map((line) => {
+      const cur = line.id != null ? existingLines.find((l) => l.id === line.id) : undefined;
+      if (line.unit_cost == null) return { ...line, usd: null as number | null, unit_cost_fx: null as number | null };
+      const c = snapOrConvertUnitCost({
+        sent: line.unit_cost,
+        prevUsd: cur && po.currency === currency ? cur.unit_cost : null,
+        prevOriginal: cur && po.currency === currency ? cur.unit_cost_fx : null,
+        prevFx,
+        currency,
+        fx: fx_rate,
+        what: po.po_number,
+      });
+      return { ...line, usd: c.usd, unit_cost_fx: c.unit_cost_fx };
+    });
     // "Tocada" incluye lo rechazado: una carga donde SOLO hubo rechazo tiene
     // quantity_received en cero, y sin esto la edición entraba al
     // `delete from purchase_order_lines` y tronaba contra reception_lines.
@@ -6688,6 +6804,11 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
         throw new Error(
           "Esta orden ya tiene factura de proveedor — no se puede cambiar el proveedor.",
         );
+      // Peso–dólar A: la factura nació congelada a esta moneda y este TC.
+      if (currency !== po.currency || (currency === "MXN" && Math.abs(n(fx_rate) - n(prevFx)) > 1e-9))
+        throw new Error(
+          `${po.po_number} ya tiene la factura de proveedor ${bill.bill_number}, congelada a ${po.currency === "MXN" ? `pesos con TC ${n(prevFx)}` : "dólares"}. Para cambiar la moneda o el tipo de cambio: cancela la factura en Finanzas → CxP (si ya tiene pago, cancela primero el pago), corrige aquí y vuelve a generarla.`,
+        );
       if (data.deal_type !== po.deal_type)
         throw new Error(
           "Esta orden ya tiene factura de proveedor — no se puede cambiar la modalidad.",
@@ -6696,7 +6817,7 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
         throw new Error(
           "Esta orden ya tiene factura de proveedor — no se pueden agregar ni quitar líneas.",
         );
-      for (const line of data.lines) {
+      for (const line of costed) {
         const cur = existingLines.find((l) => l.id === line.id);
         if (!cur)
           throw new Error(
@@ -6710,7 +6831,7 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
         // pantalla y no cambiaba nada abajo — un no-op silencioso. Ahora se
         // bloquea nombrando la salida, para que la factura al proveedor y el
         // costo del lote nunca digan cosas distintas.
-        if (line.unit_cost != null && Math.abs(n(cur.unit_cost) - line.unit_cost) > 0.0001)
+        if (line.usd != null && Math.abs(n(cur.unit_cost) - line.usd) > 0.0001)
           throw new Error(
             `${po.po_number} ya tiene la factura de proveedor ${bill.bill_number} por ${money2(n(bill.total))}, que nació de ese costo. Para corregirlo: cancela la factura en Finanzas → CxP (si ya tiene pago, cancela primero el pago), corrige el costo aquí y vuelve a generar la factura.`,
           );
@@ -6751,9 +6872,9 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
       }
     }
     if (data.deal_type === "firme") {
-      if (data.lines.some((l) => !(n(l.unit_cost) > 0)))
+      if (costed.some((l) => !(n(l.usd) > 0)))
         throw new Error("Trato en firme: captura el costo de cada línea — es un precio cerrado.");
-    } else if (data.lines.some((l) => l.unit_cost != null)) {
+    } else if (costed.some((l) => l.unit_cost != null)) {
       throw new Error(
         "En consignación o comisión no se captura costo — se define al liquidar, después de vender.",
       );
@@ -6762,7 +6883,7 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
       throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
     const withCommission = data.deal_type !== "firme" && data.commission_type != null;
     await sql.query(
-      `update purchase_orders set supplier_id=$1, deal_type=$2, expected_date=$3, notes=$4, order_type=$5, bol=$6, vendor_invoice=$7, shipping_ref=$8, commission_type=$9, commission_rate=$10 where id=$11`,
+      `update purchase_orders set supplier_id=$1, deal_type=$2, expected_date=$3, notes=$4, order_type=$5, bol=$6, vendor_invoice=$7, shipping_ref=$8, commission_type=$9, commission_rate=$10, currency=$12, fx_rate=$13 where id=$11`,
       [
         data.supplier_id,
         data.deal_type,
@@ -6775,24 +6896,27 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
         withCommission ? data.commission_type : null,
         withCommission ? data.commission_rate : null,
         po.id,
+        currency,
+        fx_rate,
       ],
     );
     if (!bill && !received) {
       await sql.query(`delete from purchase_order_lines where purchase_order_id = $1`, [po.id]);
-      for (const line of data.lines)
+      for (const line of costed)
         await sql.query(
-          `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, pallets, units_per_pallet, origin_country)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, pallets, units_per_pallet, origin_country, unit_cost_fx)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [
             po.id,
             line.product_id,
             line.pack_style_id ?? null,
             line.quantity_ordered,
             line.unit,
-            line.unit_cost ?? null,
+            line.usd,
             line.pallets ?? null,
             line.units_per_pallet ?? null,
             line.origin_country || null,
+            line.unit_cost_fx,
           ],
         );
     } else if (!bill) {
@@ -6811,17 +6935,17 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
       // Los lotes hijos de un reempaque se excluyen (su costo es la mezcla de
       // sus orígenes) y se recalculan aparte, en cascada.
       if (!liqLots && po.deal_type === "firme") {
-        for (const line of data.lines)
-          if (line.unit_cost != null)
+        for (const line of costed)
+          if (line.usd != null)
             await sql.query(
               `update lots set unit_cost = $1
                where purchase_order_line_id = $2 and purchase_order_id = $3 and pack_out_id is null`,
-              [line.unit_cost, line.id, po.id],
+              [line.usd, line.id, po.id],
             );
         await recomputeRepackCosts(sql, po.id);
       }
       if (!liqLots)
-        for (const line of data.lines)
+        for (const line of costed)
           await sql.query(
             `update lots set origin_country = $1, pallets = case
                when $2::numeric is null then pallets
@@ -6831,18 +6955,19 @@ export const updatePurchaseOrder = createServerFn({ method: "POST" })
              where purchase_order_line_id = $3 and purchase_order_id = $4`,
             [line.origin_country || null, line.pallets ?? null, line.id, po.id],
           );
-      for (const line of data.lines)
+      for (const line of costed)
         await sql.query(
-          `update purchase_order_lines set quantity_ordered=$1, unit_cost=$2, pallets=$3, units_per_pallet=$4, origin_country=$5
+          `update purchase_order_lines set quantity_ordered=$1, unit_cost=$2, pallets=$3, units_per_pallet=$4, origin_country=$5, unit_cost_fx=$8
          where id=$6 and purchase_order_id=$7`,
           [
             line.quantity_ordered,
-            line.unit_cost ?? null,
+            line.usd,
             line.pallets ?? null,
             line.units_per_pallet ?? null,
             line.origin_country || null,
             line.id,
             po.id,
+            line.unit_cost_fx,
           ],
         );
     }
@@ -6862,7 +6987,8 @@ export const listExpenses = createServerFn({ method: "GET" })
            e.purchase_order_id, po.po_number, e.quantity::text, e.unit_cost::text,
            e.amount::text, e.invoice_number, e.payable, e.status, e.issue_date::text,
            e.paid::text, e.notes, coalesce(e.charged_to,'plein') as charged_to,
-           coalesce(e.alloc_by,'pallet') as alloc_by, e.cancelled_at::text, e.cancel_reason
+           coalesce(e.alloc_by,'pallet') as alloc_by, e.cancelled_at::text, e.cancel_reason,
+           coalesce(e.currency,'USD') as currency, e.amount_fx::text, e.fx_rate::text
     from expenses e
     join suppliers s on s.id = e.supplier_id
     left join purchase_orders po on po.id = e.purchase_order_id
@@ -6902,10 +7028,19 @@ export const createExpense = createServerFn({ method: "POST" })
       due_date: ISO_DATE.optional(),
       alloc_by: z.enum(["pallet", "unit"]).optional(),
       charged_to: z.enum(["grower", "plein"]).optional(),
+      /** Peso–dólar A: `amount` viene en esta moneda. En pesos, TC obligatorio. */
+      currency: z.enum(["USD", "MXN"]).optional(),
+      fx_rate: z.number().positive().optional(),
     }),
   )
   .middleware([moduleMiddleware("finance")])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: raw }) => {
+    // Peso–dólar A: de aquí en adelante `data.amount` son dólares; el original
+    // en pesos y su TC viajan aparte hasta la fila.
+    const conv = toUsd({ amount: raw.amount, currency: raw.currency, fx: raw.fx_rate, what: "el gasto" });
+    // `unit_cost` se rellena con el monto cuando no viene; en pesos el que
+    // viniera estaría en pesos, así que se deja caer al dólar convertido.
+    const data = { ...raw, amount: conv.usd, unit_cost: conv.currency === "MXN" ? undefined : raw.unit_cost };
     const sql = await getSql();
     const expense_number = await nextCode(sql, "expenses", "expense_number", "EXP-");
     const payable = data.payable !== false;
@@ -6914,8 +7049,8 @@ export const createExpense = createServerFn({ method: "POST" })
     const status = payable ? "open" : "paid";
     const id = (
       await sql.query(
-        `insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to, due_date)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+        `insert into expenses (expense_number, category, supplier_id, purchase_order_id, quantity, unit_cost, amount, invoice_number, payable, status, issue_date, paid, notes, alloc_by, charged_to, due_date, currency, amount_fx, fx_rate)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) returning id`,
         [
           expense_number,
           data.category,
@@ -6933,6 +7068,9 @@ export const createExpense = createServerFn({ method: "POST" })
           data.alloc_by || "pallet",
           data.charged_to || "plein",
           data.due_date || null,
+          conv.currency,
+          conv.amount_fx,
+          conv.fx,
         ],
       )
     )[0].id;
@@ -6977,18 +7115,38 @@ export const updateExpense = createServerFn({ method: "POST" })
       due_date: ISO_DATE.nullable().optional(),
       alloc_by: z.enum(["pallet", "unit"]).optional(),
       charged_to: z.enum(["grower", "plein"]).optional(),
+      /** Peso–dólar A: `amount` viene en esta moneda. */
+      currency: z.enum(["USD", "MXN"]).optional(),
+      fx_rate: z.number().positive().optional(),
     }),
   )
   .middleware([moduleMiddleware("finance")])
-  .handler(async ({ data }) => {
+  .handler(async ({ data: raw }) => {
+    // Peso–dólar A: `data.amount` son dólares de aquí en adelante (los candados
+    // de "ya rendido" y el reparto entre cargas comparan dólares con dólares).
     const sql = await getSql();
     const [exp] = await sql.query(
       `select id, expense_number, category, amount::text, paid::text, purchase_order_id, status, cancelled_at,
-              coalesce(charged_to,'plein') as charged_to, created_at::text
+              coalesce(charged_to,'plein') as charged_to, created_at::text,
+              coalesce(currency,'USD') as currency, amount_fx::text, fx_rate::text
      from expenses where id = $1`,
-      [data.expense_id],
+      [raw.expense_id],
     );
     if (!exp) throw new Error("Gasto no encontrado");
+    // Si la pantalla manda en pesos exactamente lo que ya estaba, al mismo TC,
+    // se conservan los dólares guardados: reconvertir podría mover un centavo
+    // y disparar los candados de "cambió de monto" sin que nadie cambiara nada.
+    const mismoOriginal =
+      asCurrency(raw.currency) === "MXN" &&
+      exp.currency === "MXN" &&
+      exp.amount_fx != null &&
+      isFx(raw.fx_rate) &&
+      Math.abs(n(exp.fx_rate) - Number(raw.fx_rate)) < 1e-9 &&
+      Math.abs(n(exp.amount_fx) - raw.amount) < 0.005;
+    const conv = mismoOriginal
+      ? { usd: n(exp.amount), amount_fx: n(exp.amount_fx), fx: n(exp.fx_rate), currency: "MXN" as Currency }
+      : toUsd({ amount: raw.amount, currency: raw.currency, fx: raw.fx_rate, what: "el gasto" });
+    const data = { ...raw, amount: conv.usd };
     if (exp.cancelled_at) throw new Error("Este gasto está cancelado — no se puede editar.");
     // Hallazgo 14: este camino escribe el reparto como "todo a una carga". Si
     // el gasto ya está repartido entre varias, mover monto u orden desde aquí
@@ -7067,6 +7225,7 @@ export const updateExpense = createServerFn({ method: "POST" })
        alloc_by = coalesce($8, alloc_by), charged_to = $9,
        issue_date = coalesce($10::date, issue_date),
        due_date = case when $14::boolean then $15::date else due_date end,
+       currency = $16, amount_fx = $17, fx_rate = $18,
        paid = $11, status = $12 where id = $13`,
       [
         data.category,
@@ -7084,6 +7243,9 @@ export const updateExpense = createServerFn({ method: "POST" })
         data.expense_id,
         data.due_date !== undefined,
         data.due_date ?? null,
+        conv.currency,
+        conv.amount_fx,
+        conv.fx,
       ],
     );
     if (nextPo !== oldPo && oldPo != null) {
@@ -7944,7 +8106,10 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
       sales_order_id: z.number(),
       supplier_id: z.number(),
       deal_type: z.enum(["firme", "consignacion", "comision"]).default("firme"),
+      /** En la moneda de la orden (peso–dólar A). */
       unit_cost: z.number().positive().optional(),
+      currency: z.enum(["USD", "MXN"]).optional(),
+      fx_rate: z.number().positive().optional(),
       commission_type: z.enum(["per_unit", "gross_pct", "net_pct"]).optional(),
       commission_rate: z.number().min(0).optional(),
       notes: z.string().optional(),
@@ -7962,6 +8127,14 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
     }
     if (data.commission_type != null && !(n(data.commission_rate) > 0))
       throw new Error("Captura la tarifa de la comisión (monto por caja o %).");
+    // Peso–dólar A: mismo tratamiento que createPurchaseOrder.
+    const currency = asCurrency(data.currency);
+    const fx_rate = currency === "MXN" ? data.fx_rate : null;
+    if (currency === "MXN" && !isFx(fx_rate)) throw new Error(fxError("la orden de compra", fx_rate));
+    const cost =
+      data.deal_type === "firme" && data.unit_cost != null
+        ? unitCostToUsd({ unit_cost: data.unit_cost, currency, fx: fx_rate, what: "la orden de compra" })
+        : { usd: null, unit_cost_fx: null };
     const sql = await getSql();
     const [so] = await sql.query(`select id, so_number, status from sales_orders where id = $1`, [
       data.sales_order_id,
@@ -8003,8 +8176,8 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
     const withCommission = data.deal_type !== "firme" && data.commission_type != null;
     const id = (
       await sql.query(
-        `insert into purchase_orders (po_number, supplier_id, deal_type, status, notes, sales_order_id, commission_type, commission_rate)
-       values ($1,$2,$3,'confirmed',$4,$5,$6,$7) returning id`,
+        `insert into purchase_orders (po_number, supplier_id, deal_type, status, notes, sales_order_id, commission_type, commission_rate, currency, fx_rate)
+       values ($1,$2,$3,'confirmed',$4,$5,$6,$7,$8,$9) returning id`,
         [
           po_number,
           data.supplier_id,
@@ -8013,6 +8186,8 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
           so.id,
           withCommission ? data.commission_type : null,
           withCommission ? data.commission_rate : null,
+          currency,
+          fx_rate,
         ],
       )
     )[0].id;
@@ -8026,15 +8201,16 @@ export const createPurchaseFromSO = createServerFn({ method: "POST" })
         packId = pack?.id ?? null;
       }
       await sql.query(
-        `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost)
-         values ($1,$2,$3,$4,$5,$6)`,
+        `insert into purchase_order_lines (purchase_order_id, product_id, pack_style_id, quantity_ordered, unit, unit_cost, unit_cost_fx)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
         [
           id,
           line.product_id,
           packId,
           line.remaining,
           line.unit,
-          data.deal_type === "firme" ? data.unit_cost : null,
+          cost.usd,
+          cost.unit_cost_fx,
         ],
       );
     }
@@ -8239,7 +8415,9 @@ export const createBillFromPO = createServerFn({ method: "POST" })
     );
     if (existing) throw new Error(`Esta compra ya tiene factura ${existing.bill_number}`);
     const [po] = await sql.query(
-      `select id, po_number, supplier_id, status, coalesce(deal_type,'firme') as deal_type from purchase_orders where id = $1`,
+      `select id, po_number, supplier_id, status, coalesce(deal_type,'firme') as deal_type,
+              coalesce(currency,'USD') as currency, fx_rate::text
+       from purchase_orders where id = $1`,
       [data.purchase_order_id],
     );
     if (!po) throw new Error("Orden de compra no encontrada");
@@ -8249,7 +8427,7 @@ export const createBillFromPO = createServerFn({ method: "POST" })
         "Este trato es a comisión pura: Plein no compra la fruta — no se genera factura de proveedor por su valor.",
       );
     const lines = await sql.query(
-      `select quantity_ordered::text, quantity_received::text, quantity_rejected::text, unit_cost::text
+      `select quantity_ordered::text, quantity_received::text, quantity_rejected::text, unit_cost::text, unit_cost_fx::text
        from purchase_order_lines where purchase_order_id = $1`,
       [data.purchase_order_id],
     );
@@ -8269,8 +8447,29 @@ export const createBillFromPO = createServerFn({ method: "POST" })
     // productor congelado en la LIQ, nunca del cálculo vivo. Las cuentas
     // complementarias traen su propia FAC- al emitirse.
     let total: number;
+    // Peso–dólar A: en firme y en pesos, la deuda con el productor son los
+    // PESOS pactados (recibido × precio en pesos), congelados al TC de la
+    // carga. El total en dólares sale de ahí, una sola vez, y no se revalúa.
+    // En dólares (y en consignación, cuyo neto ya viene en dólares) nada cambia.
+    let bill_currency: Currency = "USD";
+    let total_fx: number | null = null;
+    let fx_agreed: number | null = null;
     if (po.deal_type === "firme") {
-      total = lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0);
+      if (po.currency === "MXN") {
+        if (!isFx(po.fx_rate)) throw new Error(fxError(po.po_number, po.fx_rate));
+        // Los pesos que se deben son exactos (recibido × precio pactado). El
+        // total en dólares se arma con el MISMO dólar por caja que entró al
+        // lote (r4), para que CxP (20100) e inventario (13000) digan el mismo
+        // número por esta carga — convertir el total aparte los separaba por
+        // centavos. El TC congelado queda en fx_agreed.
+        const pesos = lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost_fx), 0);
+        total = round2(lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0));
+        total_fx = round2(pesos);
+        fx_agreed = n(po.fx_rate);
+        bill_currency = "MXN";
+      } else {
+        total = lines.reduce((s, l) => s + n(l.quantity_received) * n(l.unit_cost), 0);
+      }
     } else {
       const liq = await liquidatedInfo(sql, po.id);
       if (!liq)
@@ -8297,8 +8496,8 @@ export const createBillFromPO = createServerFn({ method: "POST" })
     return {
       id: (
         await sql.query(
-          `insert into supplier_bills (bill_number, purchase_order_id, supplier_id, status, issue_date, due_date, ordered_qty, received_qty, total, paid, notes)
-       values ($1,$2,$3,'open',$4,$5,$6,$7,$8,0,$9) returning id`,
+          `insert into supplier_bills (bill_number, purchase_order_id, supplier_id, status, issue_date, due_date, ordered_qty, received_qty, total, paid, notes, currency, total_fx, fx_agreed)
+       values ($1,$2,$3,'open',$4,$5,$6,$7,$8,0,$9,$10,$11,$12) returning id`,
           [
             bill_number,
             po.id,
@@ -8309,6 +8508,9 @@ export const createBillFromPO = createServerFn({ method: "POST" })
             received,
             total,
             `Factura de ${po.po_number}`,
+            bill_currency,
+            total_fx,
+            fx_agreed,
           ],
         )
       )[0].id,
@@ -8814,7 +9016,8 @@ export const listBills = createServerFn({ method: "GET" })
     select b.id, b.bill_number, b.purchase_order_id, po.po_number, b.supplier_id, s.name as supplier_name,
            s.phone as supplier_phone, s.email as supplier_email,
            b.status, b.issue_date::text, b.due_date::text, b.ordered_qty::text, b.received_qty::text,
-           b.total::text, b.paid::text, b.notes, b.cancelled_at::text, b.cancelled_by, b.cancel_reason
+           b.total::text, b.paid::text, b.notes, b.cancelled_at::text, b.cancelled_by, b.cancel_reason,
+           coalesce(b.currency,'USD') as currency, b.total_fx::text, b.fx_agreed::text
     from supplier_bills b
     join suppliers s on s.id = b.supplier_id
     left join purchase_orders po on po.id = b.purchase_order_id
@@ -8831,6 +9034,8 @@ export const listBills = createServerFn({ method: "GET" })
         received_qty: received,
         total,
         paid,
+        total_fx: b.total_fx == null ? null : n(b.total_fx),
+        fx_agreed: b.fx_agreed == null ? null : n(b.fx_agreed),
         saldo: Math.max(total - paid, 0),
         match:
           Math.abs(ordered - received) < 0.01
@@ -9790,37 +9995,51 @@ export const getPrintDoc = createServerFn({ method: "GET" })
     if (data.tipo === "oc") {
       const [po] = await sql.query(
         `select po.id, po.po_number, po.order_date::text, po.expected_date::text, po.notes,
-                s.name as supplier_name, s.contact_name, s.phone, s.email, s.city, s.country
+                s.name as supplier_name, s.contact_name, s.phone, s.email, s.city, s.country,
+                coalesce(po.currency,'USD') as currency, po.fx_rate::text
          from purchase_orders po join suppliers s on s.id = po.supplier_id
          where po.share_token = $1`,
         [data.token],
       );
       if (!po) throw new Error("Orden de compra no encontrada");
-      const lines = (
+      // Peso–dólar A: la orden se imprime en la moneda en que se pactó. En
+      // pesos, el precio es el original (`unit_cost_fx`), no el dólar derivado
+      // vuelto a multiplicar — eso sí sería inventar centavos.
+      const lines0 = (
         await sql.query(
           `select p.name as product_name, coalesce(ps.sku_code, p.sku) as sku,
                   ps.empaque, ps.calibre,
-                  l.quantity_ordered::text, l.unit, l.unit_cost::text
+                  l.quantity_ordered::text, l.unit, l.unit_cost::text, l.unit_cost_fx::text
          from purchase_order_lines l
          join products p on p.id = l.product_id
          left join pack_styles ps on ps.id = l.pack_style_id
          where l.purchase_order_id = $1 order by l.id`,
           [po.id],
         )
-      ).map((l) => ({
-        sku: l.sku || "",
-        // Hallazgo 10: al productor le llegaba "Papaya, Papaya, Papaya" sin
-        // decir cuál calibre es cuál.
-        description: packDescription(l.product_name, l.empaque, l.calibre),
-        qty: n(l.quantity_ordered),
-        unit: l.unit,
-        unit_price: n(l.unit_cost),
-        amount: n(l.quantity_ordered) * n(l.unit_cost),
-      }));
+      );
+      // Una consignación pactada en pesos no tiene precio en pesos (el costo
+      // nace de las ventas, en dólares): se imprime en dólares como siempre.
+      // Solo se imprime en pesos lo que de verdad se pactó en pesos.
+      const enPesos = po.currency === "MXN" && lines0.some((l) => l.unit_cost_fx != null);
+      const lines = lines0.map((l) => {
+        const unit_price = enPesos && l.unit_cost_fx != null ? n(l.unit_cost_fx) : n(l.unit_cost);
+        return {
+          sku: l.sku || "",
+          // Hallazgo 10: al productor le llegaba "Papaya, Papaya, Papaya" sin
+          // decir cuál calibre es cuál.
+          description: packDescription(l.product_name, l.empaque, l.calibre),
+          qty: n(l.quantity_ordered),
+          unit: l.unit,
+          unit_price,
+          amount: n(l.quantity_ordered) * unit_price,
+        };
+      });
       const subtotal = lines.reduce((s, l) => s + l.amount, 0);
       return {
         id: po.id,
         tipo: "oc",
+        currency: enPesos ? ("MXN" as const) : ("USD" as const),
+        fx_rate: enPesos && po.fx_rate != null ? n(po.fx_rate) : null,
         kindLabel: "Orden de compra",
         number: po.po_number,
         date: po.order_date,
@@ -9912,7 +10131,8 @@ export const listPayables = createServerFn({ method: "GET" })
     const expenses = await sql.query(`
     select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name,
            e.invoice_number, e.issue_date::text, e.due_date::text,
-           e.amount::text, e.paid::text, e.status, e.notes, po.po_number, e.purchase_order_id as po_id
+           e.amount::text, e.paid::text, e.status, e.notes, po.po_number, e.purchase_order_id as po_id,
+           coalesce(e.currency,'USD') as currency, e.amount_fx::text, e.fx_rate::text
     from expenses e
     join suppliers s on s.id = e.supplier_id
     left join purchase_orders po on po.id = e.purchase_order_id
@@ -9936,6 +10156,9 @@ export const listPayables = createServerFn({ method: "GET" })
         due_date: e.due_date,
         amount,
         paid,
+        currency: e.currency,
+        amount_fx: e.amount_fx == null ? null : n(e.amount_fx),
+        fx_rate: e.fx_rate == null ? null : n(e.fx_rate),
         saldo: Math.max(amount - paid, 0),
         status: payableStatus(amount, paid),
         notes: e.notes,
@@ -9954,7 +10177,8 @@ export const listExpenseLinks = createServerFn({ method: "GET" })
       `select e.id, e.expense_number, e.category, e.supplier_id, s.name as supplier_name, e.invoice_number,
               e.issue_date::text, e.amount::text, e.payable, e.notes, e.paid::text, e.status,
               e.purchase_order_id, coalesce(e.alloc_by,'pallet') as alloc_by,
-              coalesce(e.charged_to,'plein') as charged_to, e.cancelled_at::text, e.cancel_reason
+              coalesce(e.charged_to,'plein') as charged_to, e.cancelled_at::text, e.cancel_reason,
+              coalesce(e.currency,'USD') as currency, e.amount_fx::text, e.fx_rate::text, e.due_date::text
        from expenses e join suppliers s on s.id = e.supplier_id where e.id = $1`,
       [data.expense_id],
     );
@@ -9966,6 +10190,7 @@ export const listExpenseLinks = createServerFn({ method: "GET" })
       `select x.purchase_order_id, po.po_number, s.name as supplier_name, po.order_date::text,
               po.vendor_invoice, x.amount_applied::text, po.liquidated_at::text,
               coalesce(po.deal_type,'firme') as deal_type,
+              coalesce(po.currency,'USD') as po_currency, po.fx_rate::text as po_fx_rate,
               coalesce((select sum(l.original_qty) from lots l
                         where l.purchase_order_id = po.id and l.pack_out_id is null),0)::text as received_qty
        from expense_po_links x

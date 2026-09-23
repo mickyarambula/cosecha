@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { COMPANY } from "@/lib/company";
 import { useT } from "@/lib/i18n";
 import { poShort } from "@/lib/nav";
+import { fxLabel, moneyMxn } from "@/lib/fx";
 import { getVendorPortal } from "@/lib/produce-server";
 import { useAsync } from "@/lib/use-async";
 import { fecha, money, pct } from "@/lib/utils";
@@ -37,6 +38,9 @@ function Page() {
           <h1 className="text-xl font-semibold">
             {COMPANY.legalName} {t("Summary")} · {t("Customer PO #")} {poShort(d.po_number)}
           </h1>
+          {d.currency === "MXN" ? (
+            <p className="text-xs text-muted">Carga pactada en pesos · {fxLabel(d.fx_rate)}</p>
+          ) : null}
         </div>
         <Link to="/compras" className="text-sm text-link">
           {t("Back to purchase orders")}
@@ -132,7 +136,10 @@ function Page() {
                     {l.pack_name ? ` — ${l.pack_name}` : ""}
                   </td>
                   <td className="px-2 py-2 text-link">{l.lot_number}</td>
-                  <td className="px-2 py-2">{l.pas ? "PAS" : money(l.cost_unit)}</td>
+                  <td className="px-2 py-2">
+                    {l.pas ? "PAS" : money(l.cost_unit)}
+                    {!l.pas && l.unit_cost_fx != null ? <div className="text-xs text-muted">{moneyMxn(l.unit_cost_fx)}</div> : null}
+                  </td>
                   <td className="px-2 py-2">{l.sold ? money(l.revenue / l.sold) : "—"}</td>
                   <td className="px-2 py-2">{money(l.revenue)}</td>
                   <td className="px-2 py-2">{l.sold}</td>

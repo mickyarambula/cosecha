@@ -129,6 +129,12 @@ Esto ya está en la auditoría como hallazgo **25** (marcado ⚠️ PARCIAL). No
 >
 > **Si no compra dólares por adelantado**, la pieza de inventario de divisa queda vacía y no estorba. Constrúyela así.
 
+> ### Respuesta de Miguel — 22 Sep 2026
+>
+> **¿Cómo le paga en pesos a un productor?** *De momento, (a): transferencia desde Chase y el banco convierte los dólares.* Las otras dos —cuenta en pesos en México, o comprar pesos en casa de cambio— **pueden darse**, así que la parte B tiene que aceptarlas sin rehacer nada: el diferencial se mide contra el TC al que salieron los dólares, venga del banco o de la casa de cambio, y una cuenta en pesos entra como cuenta de tesorería con su moneda.
+>
+> **Parte A construida el 22 Sep 2026** (rama `peso-dolar-registro`, migración 0050): moneda y TC por documento en compras, factura de proveedor congelada al TC pactado, gastos y adelantos en pesos, moneda de pago default por proveedor. Las columnas que suman siguen en dólares; las anclas no se mueven.
+
 ---
 
 ### 2. Indirectos prorrateados por carga

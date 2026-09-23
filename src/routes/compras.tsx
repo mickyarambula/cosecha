@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, Copy, MoreHorizontal, Printer, Trash2 } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { useHasModule } from "@/components/access-gate";
+import { fxLabel, isFx, moneyMxn, parseFx } from "@/lib/fx";
 import { MetaCard, Modal } from "@/components/app-shell";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { ConceptSelect } from "@/components/concepts";
@@ -172,6 +173,9 @@ function Page() {
       alloc_by: "pallet" | "unit";
       charged_to: "grower" | "plein";
       issue_date?: string;
+      due_date?: string;
+      currency?: "USD" | "MXN";
+      fx_rate?: number;
     }[]
   >([]);
   const [expMsg, setExpMsg] = useState<string | null>(null);
@@ -195,6 +199,10 @@ function Page() {
     shipping_ref: "",
     noteVendor: true,
     print: false,
+    // Peso–dólar A: la moneda arranca en dólares (la de los libros) y cambia
+    // a pesos con el default del proveedor o a mano. El TC nunca se precarga.
+    currency: "USD",
+    fx_rate: "",
   });
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [expDraft, setExpDraft] = useState({
@@ -213,6 +221,10 @@ function Page() {
     payable: true,
     by: "pallet",
     charged_to: "plein",
+    // Peso–dólar A: se propone la moneda y el TC pactado de la carga (un solo
+    // TC por carga); se pueden cambiar por gasto.
+    currency: "USD",
+    fx_rate: "",
   });
   const [rec, setRec] = useState({
     received_date: todayISO(),
@@ -248,6 +260,14 @@ function Page() {
   const units = lines.reduce((s, l) => s + Number(l.qty || 0), 0);
   const pallets = lines.reduce((s, l) => s + Number(l.pallets || 0), 0);
   const merch = lines.reduce((s, l) => s + Number(l.qty || 0) * Number(l.cost || 0), 0);
+  // Gastos borrador en dólares; `null` si alguno en pesos no tiene TC todavía
+  // (el de la orden cuenta como suyo).
+  const draftExpensesUsd = draftExpenses.reduce<number | null>((acc, g) => {
+    if (acc == null) return null;
+    if (g.currency !== "MXN") return acc + g.amount;
+    const fx = parseFx(g.fx_rate ?? draft.fx_rate);
+    return isFx(fx) ? acc + g.amount / (fx as number) : null;
+  }, 0);
 
   function addSku(sku: SkuOption) {
     const qty = "48";
@@ -280,6 +300,18 @@ function Page() {
   async function placeOrder() {
     if (!draft.supplier_id || !draft.deal_type || !lines.length) return;
     const isFirme = draft.deal_type === "firme";
+    const enPesos = draft.currency === "MXN";
+    if (enPesos && !isFx(draft.fx_rate)) {
+      setMsg("La orden está en pesos: captura el tipo de cambio pactado (pesos por dólar, entre 5 y 50).");
+      return;
+    }
+    // Un gasto borrador en pesos toma el TC de la carga si no trae el suyo; si
+    // ni así hay TC, se avisa AQUÍ, antes de crear la orden, no después.
+    const sinTc = draftExpenses.filter((g) => g.currency === "MXN" && !isFx(g.fx_rate ?? (enPesos ? draft.fx_rate : undefined)));
+    if (sinTc.length) {
+      setMsg(`${sinTc.map((g) => g.category).join(", ")}: gasto en pesos sin tipo de cambio. Captúralo en el gasto o pon la orden en pesos con su TC.`);
+      return;
+    }
     if (isFirme && lines.some((l) => !(Number(l.cost) > 0))) {
       setMsg("Trato en firme: captura el costo de cada línea.");
       return;
@@ -302,11 +334,14 @@ function Page() {
           bol: draft.bol || undefined,
           vendor_invoice: draft.vendor_invoice || undefined,
           shipping_ref: draft.shipping_ref || undefined,
+          currency: enPesos ? "MXN" : "USD",
+          fx_rate: enPesos ? parseFx(draft.fx_rate) : undefined,
           lines: lines.map((l) => ({
             product_id: l.product_id,
             pack_style_id: l.pack_style_id,
             quantity_ordered: Number(l.qty),
             unit: l.unit,
+            // En la moneda de la orden: el servidor lo lleva a dólares.
             unit_cost: isFirme && l.cost ? Number(l.cost) : undefined,
             pallets: l.pallets ? Number(l.pallets) : undefined,
             units_per_pallet: l.unitsPerPallet ? Number(l.unitsPerPallet) : undefined,
@@ -325,7 +360,13 @@ function Page() {
       const fallidos: string[] = [];
       for (const g of pendientes) {
         try {
-          await createExpense({ data: { ...g, purchase_order_id: r.id } });
+          await createExpense({
+            data: {
+              ...g,
+              purchase_order_id: r.id,
+              fx_rate: g.currency === "MXN" ? (g.fx_rate ?? parseFx(draft.fx_rate)) : undefined,
+            },
+          });
         } catch {
           fallidos.push(g.category);
         }
@@ -359,6 +400,10 @@ function Page() {
       return;
     }
     setExpMsg(null);
+    if (expDraft.currency === "MXN" && !isFx(expDraft.fx_rate)) {
+      setExpMsg("El gasto está en pesos: captura el tipo de cambio (pesos por dólar, entre 5 y 50).");
+      return;
+    }
     if (expenseFor === "draft") {
       // Todavía no existe la OC: se queda esperando y nace con ella.
       setDraftExpenses((p) => [
@@ -374,6 +419,8 @@ function Page() {
           charged_to: expDraft.charged_to as "grower" | "plein",
           issue_date: expDraft.date || undefined,
           due_date: expDraft.due || undefined,
+          currency: expDraft.currency === "MXN" ? ("MXN" as const) : ("USD" as const),
+          fx_rate: expDraft.currency === "MXN" ? parseFx(expDraft.fx_rate) : undefined,
         },
       ]);
       setExpenseFor(null);
@@ -394,12 +441,14 @@ function Page() {
           charged_to: expDraft.charged_to as "grower" | "plein",
           issue_date: expDraft.date || undefined,
           due_date: expDraft.due || undefined,
+          currency: expDraft.currency === "MXN" ? "MXN" : "USD",
+          fx_rate: expDraft.currency === "MXN" ? parseFx(expDraft.fx_rate) : undefined,
         },
       });
       setExpenseFor(null);
       await orders.reload();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : t("Could not create expense"));
+      setExpMsg(err instanceof Error ? err.message : t("Could not create expense"));
     } finally {
       setSaving(false);
     }
@@ -584,12 +633,18 @@ function Page() {
               onChange={(e) => {
                 const supplier_id = e.target.value;
                 const sup = (suppliers.data ?? []).find((s) => String(s.id) === supplier_id);
+                const currency = sup?.currency ?? draft.currency;
+                // Si el default del proveedor cambia la moneda, los costos ya
+                // escritos estaban en la otra: se limpian, no se reinterpretan.
+                if (currency !== draft.currency) setLines((p) => p.map((l) => ({ ...l, cost: "" })));
                 setDraft({
                   ...draft,
                   supplier_id,
                   // Default del proveedor, editable por carga.
                   commission_type: sup?.commission_type ?? "",
                   commission_rate: sup?.commission_rate != null ? String(sup.commission_rate) : "",
+                  currency,
+                  fx_rate: currency === "MXN" ? draft.fx_rate : "",
                 });
               }}
             >
@@ -615,6 +670,36 @@ function Page() {
               <option value="consignacion">Consignación (PAS)</option>
               <option value="comision">Comisión pura</option>
             </Select>
+          </MetaCard>
+          <MetaCard label="Currency">
+            <Select
+              value={draft.currency}
+              onChange={(e) => {
+                const currency = e.target.value;
+                if (currency === draft.currency) return;
+                // Un costo escrito en una moneda no se reinterpreta en la otra:
+                // se limpia y se vuelve a capturar en la moneda nueva.
+                setLines((p) => p.map((l) => ({ ...l, cost: "" })));
+                setDraft({ ...draft, currency, fx_rate: currency === "MXN" ? draft.fx_rate : "" });
+              }}
+            >
+              <option value="USD">{t("Dollars")}</option>
+              <option value="MXN">{t("Pesos")}</option>
+            </Select>
+            {draft.currency === "MXN" ? (
+              <div className="mt-2">
+                <Input
+                  placeholder={t("Pesos per dollar")}
+                  value={draft.fx_rate}
+                  onChange={(e) => setDraft({ ...draft, fx_rate: e.target.value })}
+                />
+                <p className="mt-1 text-[11px] text-muted">
+                  {isFx(draft.fx_rate)
+                    ? `${t("Agreed exchange rate for this load")}: ${fxLabel(draft.fx_rate)}`
+                    : "TC pactado de la carga, pesos por dólar. Sin él no se guarda."}
+                </p>
+              </div>
+            ) : null}
           </MetaCard>
           {draft.deal_type && draft.deal_type !== "firme" ? (
             <MetaCard label="Plein commission">
@@ -661,19 +746,24 @@ function Page() {
                 <button
                   type="button"
                   className="text-xs text-link"
-                  onClick={() => setExpenseFor("draft")}
+                  onClick={() => {
+                  setExpDraft({ ...expDraft, currency: draft.currency, fx_rate: draft.fx_rate });
+                  setExpenseFor("draft");
+                }}
                 >
                   {t("Add new")}
                 </button>
               ) : null
             }
           >
-            {money(draftExpenses.reduce((s, g) => s + g.amount, 0))}
+            {/* Cada gasto borrador va en SU moneda: se suman en dólares solo
+                cuando todos tienen con qué convertirse. */}
+            {draftExpensesUsd == null ? "— (falta un TC)" : money(draftExpensesUsd)}
             {draftExpenses.length ? (
               <div className="mt-1 flex flex-col gap-0.5 text-[11px] font-normal text-subtle">
                 {draftExpenses.map((g, i) => (
                   <span key={`${g.category}-${i}`} className="flex items-center gap-2">
-                    {g.category} {money(g.amount)}
+                    {g.category} {g.currency === "MXN" ? moneyMxn(g.amount) : money(g.amount)}
                     <button
                       type="button"
                       className="cursor-pointer text-danger"
@@ -689,7 +779,14 @@ function Page() {
           </MetaCard>
           <MetaCard label="Order total">
             <div className="flex items-end justify-between">
-              <span>{money(merch)}</span>
+              <span>
+                {draft.currency === "MXN" ? moneyMxn(merch) : money(merch)}
+                {draft.currency === "MXN" ? (
+                  <span className="block text-[11px] font-normal text-subtle">
+                    {isFx(draft.fx_rate) ? `= ${money(merch / (parseFx(draft.fx_rate) as number))}` : "en dólares: falta el TC"}
+                  </span>
+                ) : null}
+              </span>
               <span className="text-[11px] font-normal text-subtle">
                 {t("Items")}: {lines.length}
                 <br />
@@ -854,7 +951,7 @@ function Page() {
                       <td className="px-3 py-3">
                         <Input
                           className="w-24"
-                          placeholder="$"
+                          placeholder={draft.currency === "MXN" ? "MX$" : "$"}
                           value={l.cost}
                           disabled={draft.deal_type !== "firme"}
                           onChange={(e) =>
@@ -863,6 +960,11 @@ function Page() {
                             )
                           }
                         />
+                        {draft.currency === "MXN" && draft.deal_type === "firme" && Number(l.cost) > 0 ? (
+                          <div className="mt-1 text-[11px] text-muted">
+                            {isFx(draft.fx_rate) ? `= ${money(Number(l.cost) / (parseFx(draft.fx_rate) as number), 4)}` : "pesos · falta el TC"}
+                          </div>
+                        ) : null}
                         {draft.deal_type !== "firme" ? (
                           <div className="mt-1 text-[11px] text-danger">
                             {draft.deal_type === "comision" ? "Comisión — sin costo" : "PAS"}
@@ -954,7 +1056,8 @@ function Page() {
               </div>
               <div className="flex items-center gap-4">
                 <span>
-                  {t("Expenses")}: $0.00 · {t("Order total")}: <strong>{money(merch)}</strong>
+                  {t("Expenses")}: {money(draftExpensesUsd ?? 0)} · {t("Order total")}:{" "}
+                  <strong>{draft.currency === "MXN" ? moneyMxn(merch) : money(merch)}</strong>
                 </span>
                 <Button
                   disabled={saving || !draft.supplier_id || !draft.deal_type || !lines.length}
@@ -1137,7 +1240,14 @@ function Page() {
                               });
                               setMsg(null);
                             }}
-                            onExpense={() => setExpenseFor(row.id)}
+                            onExpense={() => {
+                              setExpDraft({
+                                ...expDraft,
+                                currency: row.currency ?? "USD",
+                                fx_rate: row.fx_rate != null ? String(row.fx_rate) : "",
+                              });
+                              setExpenseFor(row.id);
+                            }}
                             onShare={() => {
                               setShareLevel(
                                 (row.vendor_share_level as "po" | "basic" | "detailed") || "po",
@@ -1460,6 +1570,15 @@ function Page() {
                 {po?.po_number} · {prov?.name}
                 {prov?.payment_terms ? ` · plazo guardado: ${prov.payment_terms}` : ""}
               </p>
+              {po?.currency === "MXN" && po.deal_type === "firme" ? (
+                <p className="mt-1 text-sm">
+                  La factura nace en pesos:{" "}
+                  <strong className="tabular-nums">
+                    {moneyMxn(po.lines.reduce((s, l) => s + l.quantity_received * (l.unit_cost_fx ?? 0), 0))}
+                  </strong>{" "}
+                  al {fxLabel(po.fx_rate)} pactado, congelada a ese TC.
+                </p>
+              ) : null}
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <Field label="Invoice date">
                   <Input
@@ -1718,6 +1837,11 @@ function PoDetail({
                     {l.unit_cost > 0 ? (
                       <div>
                         {money(l.unit_cost)}
+                        {row.currency === "MXN" && l.unit_cost_fx != null ? (
+                          <div className="text-xs text-muted">
+                            {moneyMxn(l.unit_cost_fx)} · {fxLabel(row.fx_rate)}
+                          </div>
+                        ) : null}
                         <div className="text-xs text-muted">
                           {t("Total")}{" "}
                           {money(
@@ -1934,6 +2058,8 @@ function EditOrderModal({
     vendor_invoice: row.vendor_invoice || "",
     shipping_ref: row.shipping_ref || "",
     notes: row.notes || "",
+    currency: row.currency ?? "USD",
+    fx_rate: row.fx_rate != null ? String(row.fx_rate) : "",
   });
   const [lines, setLines] = useState(
     row.lines.map((l) => ({
@@ -1948,7 +2074,8 @@ function EditOrderModal({
       qty: String(l.quantity_ordered),
       pallets: l.pallets ? String(l.pallets) : "",
       unitsPerPallet: l.units_per_pallet ? String(l.units_per_pallet) : "",
-      cost: l.unit_cost ? String(l.unit_cost) : "",
+      // Peso–dólar A: una orden en pesos se edita en pesos (su original).
+      cost: l.unit_cost ? String(row.currency === "MXN" && l.unit_cost_fx != null ? l.unit_cost_fx : l.unit_cost) : "",
       received: l.quantity_received,
     })),
   );
@@ -2001,6 +2128,8 @@ function EditOrderModal({
           vendor_invoice: form.vendor_invoice || undefined,
           shipping_ref: form.shipping_ref || undefined,
           notes: form.notes || undefined,
+          currency: form.currency === "MXN" ? "MXN" : "USD",
+          fx_rate: form.currency === "MXN" ? parseFx(form.fx_rate) : undefined,
           lines: lines.map((l) => ({
             id: l.id,
             product_id: l.product_id,
@@ -2077,6 +2206,34 @@ function EditOrderModal({
             <option value="consignacion">Consignación (PAS)</option>
             <option value="comision">Comisión pura</option>
           </Select>
+        </Field>
+        <Field label="Currency">
+          <div className="flex gap-2">
+            <Select
+              disabled={locked}
+              value={form.currency}
+              onChange={(e) => {
+                const currency = e.target.value;
+                if (currency === form.currency) return;
+                // Los costos estaban escritos en la moneda anterior: se limpian
+                // para volver a capturarlos en la nueva, nunca se reinterpretan.
+                setLines((p) => p.map((l) => ({ ...l, cost: "" })));
+                setForm({ ...form, currency, fx_rate: currency === "MXN" ? form.fx_rate : "" });
+              }}
+            >
+              <option value="USD">{t("Dollars")}</option>
+              <option value="MXN">{t("Pesos")}</option>
+            </Select>
+            {form.currency === "MXN" ? (
+              <Input
+                disabled={locked}
+                className="w-28"
+                placeholder={t("Pesos per dollar")}
+                value={form.fx_rate}
+                onChange={(e) => setForm({ ...form, fx_rate: e.target.value })}
+              />
+            ) : null}
+          </div>
         </Field>
         {!isFirme ? (
           <Field label="Plein commission">
@@ -2221,7 +2378,7 @@ function EditOrderModal({
                   <Input
                     disabled={locked || !isFirme}
                     className="w-24"
-                    placeholder="$"
+                    placeholder={form.currency === "MXN" ? "MX$" : "$"}
                     value={l.cost}
                     onChange={(e) =>
                       setLines((p) =>
@@ -2229,6 +2386,11 @@ function EditOrderModal({
                       )
                     }
                   />
+                  {form.currency === "MXN" && isFirme && Number(l.cost) > 0 ? (
+                    <div className="mt-1 text-[11px] text-muted">
+                      {isFx(form.fx_rate) ? `= ${money(Number(l.cost) / (parseFx(form.fx_rate) as number), 4)}` : "pesos · falta el TC"}
+                    </div>
+                  ) : null}
                 </td>
                 {canEditStructure ? (
                   <td className="px-3 py-3">
@@ -2267,7 +2429,12 @@ function EditOrderModal({
                     {e.category}
                     <div className="text-xs text-subtle">{e.expense_number}</div>
                   </td>
-                  <td className="px-3 py-2 tabular-nums">{money(e.amount)}</td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {money(e.amount)}
+                    {/* Es la PARTE aplicada a esta carga; el original en pesos es del
+                        gasto completo, así que aquí solo se dice a qué TC entró. */}
+                    {e.currency === "MXN" ? <div className="text-xs text-muted">{fxLabel(e.fx_rate)}</div> : null}
+                  </td>
                   <td className="px-3 py-2 text-xs">
                     {e.charged_to === "grower" ? "Productor" : "Plein"}
                   </td>
@@ -2332,6 +2499,8 @@ function ExpenseModal({
     charged_to: string;
     date: string;
     due: string;
+    currency: string;
+    fx_rate: string;
   };
   setForm: (v: typeof form) => void;
   onClose: () => void;
@@ -2358,12 +2527,41 @@ function ExpenseModal({
             onChange={(e) => setForm({ ...form, date: e.target.value })}
           />
         </Field>
-        <Field label="Amount">
+        <Field label={form.currency === "MXN" ? "Amount in pesos" : "Amount"}>
           <Input
             value={form.amount}
             onChange={(e) => setForm({ ...form, amount: e.target.value })}
           />
         </Field>
+        <Field label="Currency">
+          <Select
+            value={form.currency}
+            onChange={(e) => {
+              const currency = e.target.value;
+              if (currency === form.currency) return;
+              // El monto escrito en una moneda no se reinterpreta en la otra.
+              setForm({ ...form, currency, amount: "" });
+            }}
+          >
+            <option value="USD">{t("Dollars")}</option>
+            <option value="MXN">{t("Pesos")}</option>
+          </Select>
+        </Field>
+        {form.currency === "MXN" ? (
+          <div className="flex flex-col gap-1">
+            <span className="label-caps">{t("Exchange rate")}</span>
+            <Input
+              placeholder={t("Pesos per dollar")}
+              value={form.fx_rate}
+              onChange={(e) => setForm({ ...form, fx_rate: e.target.value })}
+            />
+            <span className="text-[11px] text-muted">
+              {isFx(form.fx_rate) && Number(form.amount) > 0
+                ? `${t("In dollars")}: ${money(Number(form.amount) / (parseFx(form.fx_rate) as number))}`
+                : "Se propone el TC pactado de la carga; sin TC no se guarda."}
+            </span>
+          </div>
+        ) : null}
         <Field label="Vendor">
           <Select
             value={form.supplier_id}
