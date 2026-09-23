@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader, Panel, Modal, Kpi } from "@/components/app-shell";
 import { AgingTable, groupAging } from "@/components/aging-table";
-import { originalLabel } from "@/lib/fx";
+import { fxLabel, isFx, moneyMxn, originalLabel, parseFx } from "@/lib/fx";
 import { CancelDialog, CancelledNote } from "@/components/cancel-dialog";
 import { SendButton } from "@/components/send-doc";
 import { Badge, orderLabel, orderTone } from "@/components/ui/badge";
@@ -13,6 +13,7 @@ import {
   cancelSupplierBill,
   listBills,
   listGrowerPayables,
+  listPayables,
   registerPago,
   registerPagoProductor,
 } from "@/lib/produce-server";
@@ -44,7 +45,20 @@ function Page() {
   const { tab } = Route.useSearch();
   const bills = useAsync(() => listBills(), []);
   const payables = useAsync(() => listGrowerPayables(), []);
-  const [pago, setPago] = useState<{ id: number; number: string; saldo: number } | null>(null);
+  // Peso–dólar B: los gastos en pesos también son deuda en pesos.
+  const gastos = useAsync(() => listPayables(), []);
+  // TC de referencia para la exposición: una cuenta que haces tú, no se guarda.
+  const [fxRef, setFxRef] = useState("");
+  const [pago, setPago] = useState<{
+    id: number;
+    number: string;
+    saldo: number;
+    // Peso–dólar B: una factura pactada en pesos se paga en pesos.
+    currency?: string;
+    saldo_fx?: number | null;
+    fx_agreed?: number | null;
+  } | null>(null);
+  const [fxPaid, setFxPaid] = useState("");
   const [pagoRem, setPagoRem] = useState<{ id: number; number: string; saldo: number } | null>(null);
   const [amount, setAmount] = useState("");
   const [payDate, setPayDate] = useState(todayISO());
@@ -72,11 +86,26 @@ function Page() {
     setSaving(true);
     setMsg(null);
     try {
+      const enPesos = pago.currency === "MXN";
       const r = await registerPago({
-        data: { bill_id: pago.id, amount: Number(amount), pay_date: payDate, method: payMethod, reference: payRef.trim() || undefined },
+        data: enPesos
+          ? {
+              bill_id: pago.id,
+              amount_fx: Number(amount),
+              fx_paid: parseFx(fxPaid),
+              pay_date: payDate,
+              method: payMethod,
+              reference: payRef.trim() || undefined,
+            }
+          : { bill_id: pago.id, amount: Number(amount), pay_date: payDate, method: payMethod, reference: payRef.trim() || undefined },
       });
       setPago(null);
-      setMsg(`Pago ${r.folio} · restante ${money(r.remaining)}`);
+      setMsg(
+        `Pago ${r.folio} · restante ${money(r.remaining)}` +
+          (Math.abs(r.fx_result) > 0.009
+            ? ` · ${r.fx_result > 0 ? "ganancia" : "pérdida"} cambiaria ${money(Math.abs(r.fx_result))}`
+            : ""),
+      );
       await bills.reload();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "No se pudo registrar el pago");
@@ -131,6 +160,47 @@ function Page() {
         <Kpi label="Open" value={String(kpis.abiertas)} tone={kpis.abiertas ? "warn" : "ok"} />
         <Kpi label="Receive mismatch" value={String(kpis.descuadre)} tone={kpis.descuadre ? "warn" : "ok"} />
       </div>
+      {(() => {
+        // Peso–dólar B: cuánto debes EN PESOS hoy, cuánto vale al TC pactado,
+        // y —si tecleas un TC— cuánto saldría de Chase a ese TC. Aquí no se
+        // pronostica nada: el TC de referencia lo pones tú y no se guarda.
+        const enPesos = [
+          ...rows.filter((b) => b.currency === "MXN" && (b.saldo_fx ?? 0) > 0.009 && b.status !== "cancelled")
+            .map((b) => ({ pesos: b.saldo_fx as number, usd: b.saldo })),
+          ...(gastos.data ?? []).filter((g) => g.currency === "MXN" && (g.saldo_fx ?? 0) > 0.009)
+            .map((g) => ({ pesos: g.saldo_fx as number, usd: g.saldo })),
+        ];
+        if (!enPesos.length) return null;
+        const pesos = enPesos.reduce((s, x) => s + x.pesos, 0);
+        const usd = enPesos.reduce((s, x) => s + x.usd, 0);
+        const tc = parseFx(fxRef);
+        const aTc = isFx(fxRef) ? pesos / (tc as number) : null;
+        return (
+          <Panel className="mb-5 p-4">
+            <p className="label-caps">{t("Pesos exposure")}</p>
+            <div className="mt-2 flex flex-wrap items-end gap-6 text-sm tabular-nums">
+              <div>
+                <p className="text-2xl font-semibold">{moneyMxn(pesos)}</p>
+                <p className="text-muted">
+                  que debes en pesos · {money(usd)} al TC pactado ({enPesos.length} documentos)
+                </p>
+              </div>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-muted">Si pagaras a este TC</span>
+                <Input className="w-28" placeholder="17.50" value={fxRef} onChange={(e) => setFxRef(e.target.value)} />
+              </label>
+              {aTc != null ? (
+                <div>
+                  <p>Saldrían de Chase <strong>{money(aTc)}</strong></p>
+                  <p className={usd - aTc >= 0 ? "text-ok" : "text-danger"}>
+                    {usd - aTc >= 0 ? "ganarías" : "perderías"} {money(Math.abs(usd - aTc))} contra lo pactado
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </Panel>
+        );
+      })()}
       {msg ? <p className="mb-3 text-sm text-ok">{msg}</p> : null}
       {bills.loading ? <p className="text-sm text-muted">{t("Loading…")}</p> : null}
       {bills.error ? <p className="text-sm text-danger">{bills.error}</p> : null}
@@ -220,8 +290,18 @@ function Page() {
                 <Button
                   size="sm"
                   onClick={() => {
-                    setPago({ id: b.id, number: b.bill_number, saldo: b.saldo });
-                    setAmount(String(b.saldo));
+                    setPago({
+                      id: b.id,
+                      number: b.bill_number,
+                      saldo: b.saldo,
+                      currency: b.currency,
+                      saldo_fx: b.saldo_fx,
+                      fx_agreed: b.fx_agreed,
+                    });
+                    // En pesos se propone lo que se debe en pesos; el TC del
+                    // banco nunca se precarga — sale del estado de cuenta.
+                    setAmount(String(b.currency === "MXN" && b.saldo_fx != null ? b.saldo_fx : b.saldo));
+                    setFxPaid("");
                   }}
                 >
                   Record payment
@@ -331,10 +411,53 @@ function Page() {
       {pago ? (
         <Modal title={`Pagar ${pago.number}`} onClose={() => setPago(null)}>
           <form className="grid gap-3" onSubmit={pagar}>
-            <p className="text-sm text-muted">Saldo {money(pago.saldo)}</p>
-            <Field label="Amount">
-              <Input required type="number" min="0.01" step="0.01" max={pago.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
-            </Field>
+            {pago.currency === "MXN" ? (
+              (() => {
+                const pesos = Number(amount) || 0;
+                const tc = parseFx(fxPaid);
+                const ok = isFx(fxPaid) && pesos > 0;
+                const cierra = pago.saldo_fx != null && pesos >= pago.saldo_fx - 0.005;
+                const aplicado = cierra ? pago.saldo : pago.fx_agreed ? Math.min(pesos / pago.fx_agreed, pago.saldo) : 0;
+                const caja = ok ? pesos / (tc as number) : 0;
+                const dif = aplicado - caja;
+                return (
+                  <>
+                    <p className="text-sm text-muted">
+                      Pactada en pesos al {fxLabel(pago.fx_agreed)}. Debes {moneyMxn(pago.saldo_fx)} ({money(pago.saldo)}).
+                    </p>
+                    <Field label="Pesos paid">
+                      <Input required inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                    </Field>
+                    <Field label="Exchange rate at payment">
+                      <Input required placeholder={t("Pesos per dollar")} value={fxPaid} onChange={(e) => setFxPaid(e.target.value)} />
+                    </Field>
+                    <div className="rounded-md border border-border bg-surface-2 p-3 text-sm tabular-nums">
+                      {ok ? (
+                        <>
+                          <div className="flex justify-between"><span>{t("Applied to the bill")}</span><span>{money(aplicado)}</span></div>
+                          <div className="flex justify-between"><span>{t("Out of Chase")}</span><span>{money(caja)}</span></div>
+                          <div className={`mt-1 flex justify-between border-t border-border pt-1 font-medium ${dif >= 0 ? "text-ok" : "text-danger"}`}>
+                            <span>{dif >= 0 ? t("Exchange gain") : t("Exchange loss")}</span>
+                            <span>{money(Math.abs(dif))}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-muted">
+                          Captura los pesos y el tipo de cambio que aparece en tu estado de cuenta de Chase.
+                        </span>
+                      )}
+                    </div>
+                  </>
+                );
+              })()
+            ) : (
+              <>
+                <p className="text-sm text-muted">Saldo {money(pago.saldo)}</p>
+                <Field label="Amount">
+                  <Input required type="number" min="0.01" step="0.01" max={pago.saldo} value={amount} onChange={(e) => setAmount(e.target.value)} />
+                </Field>
+              </>
+            )}
             <Field label="Payment date">
               <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
             </Field>
