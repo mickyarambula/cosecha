@@ -509,6 +509,11 @@ function CreateExpenseDrawer({
     date: todayISO(),
     amount: "",
     payable: true,
+    // "Pagado desde Chase": el gasto y su movimiento en Tesorería en un paso.
+    fromChase: false,
+    pay_date: todayISO(),
+    method: "ACH" as string,
+    reference: "",
     supplier_id: "",
     invoice: "",
     due: "",
@@ -538,6 +543,10 @@ function CreateExpenseDrawer({
           amount: Number(form.amount),
           invoice_number: form.invoice || undefined,
           payable: form.payable,
+          paid_from: form.fromChase ? "chase" : undefined,
+          pay_date: form.fromChase ? form.pay_date || undefined : undefined,
+          method: form.fromChase ? form.method || undefined : undefined,
+          reference: form.fromChase ? form.reference || undefined : undefined,
           // Hallazgo 19: antes este campo se capturaba y se tiraba.
           issue_date: form.date || undefined,
           // Hallazgo 51: la fecha compromiso. En blanco = sin plazo, que es lo
@@ -613,20 +622,51 @@ function CreateExpenseDrawer({
       <div className="mt-4">
         <p className="mb-2 text-sm font-medium">¿Ya se pagó este gasto?</p>
         <label className="flex items-start gap-2 text-sm">
-          <input type="radio" className="mt-1" checked={form.payable} onChange={() => setForm({ ...form, payable: true })} />
+          <input type="radio" className="mt-1" checked={form.payable && !form.fromChase} onChange={() => setForm({ ...form, payable: true, fromChase: false })} />
           <span>
             <strong>Por pagar</strong>
             <span className="block text-xs text-muted">Todavía se le debe al proveedor — aparece en Cuentas por pagar.</span>
           </span>
         </label>
         <label className="mt-2 flex items-start gap-2 text-sm">
-          <input type="radio" className="mt-1" checked={!form.payable} onChange={() => setForm({ ...form, payable: false })} />
+          <input type="radio" className="mt-1" checked={form.fromChase} onChange={() => setForm({ ...form, payable: true, fromChase: true })} />
           <span>
-            <strong>Ya pagado</strong>
-            <span className="block text-xs text-muted">Se pagó en el momento (efectivo/tarjeta) — no genera CxP.</span>
+            <strong>Pagado desde Chase</strong>
+            <span className="block text-xs text-muted">
+              Renta, cobros del banco, viáticos, asesoría… Se registra el gasto y su salida en Tesorería en un solo paso, con la fecha del banco. Entra al P&L y baja Chase.
+            </span>
+          </span>
+        </label>
+        <label className="mt-2 flex items-start gap-2 text-sm">
+          <input type="radio" className="mt-1" checked={!form.payable} onChange={() => setForm({ ...form, payable: false, fromChase: false })} />
+          <span>
+            <strong>Ya pagado, sin mover Chase</strong>
+            <span className="block text-xs text-muted">Se pagó en efectivo o con tarjeta, o su salida de Chase ya está capturada. Entra al P&L; la caja no se mueve.</span>
           </span>
         </label>
       </div>
+      {form.fromChase ? (
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <Field label="Pay date">
+            <Input type="date" value={form.pay_date} onChange={(e) => setForm({ ...form, pay_date: e.target.value })} />
+          </Field>
+          <Field label="Method">
+            <Select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })}>
+              {PAY_METHODS.map((m) => (
+                <option key={m} value={m}>
+                  {t(m)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Reference">
+            <Input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="Folio Chase" />
+          </Field>
+          {form.currency === "MXN" ? (
+            <p className="text-xs text-muted sm:col-span-3">En pesos, el tipo de cambio de arriba es el que usó el banco al pagar.</p>
+          ) : null}
+        </div>
+      ) : null}
       {form.payable ? (
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Vendor">
@@ -652,6 +692,8 @@ function CreateExpenseDrawer({
           <Field label="Invoice #">
             <Input value={form.invoice} onChange={(e) => setForm({ ...form, invoice: e.target.value })} />
           </Field>
+          {form.fromChase ? null : (
+            <>
           <div className="flex flex-col gap-1">
             <span className="label-caps">{t("Due date")}</span>
             <Input type="date" value={form.due} onChange={(e) => setForm({ ...form, due: e.target.value })} />
@@ -664,6 +706,8 @@ function CreateExpenseDrawer({
               <option value="20100">20100 {t("Accounts Payable")}</option>
             </Select>
           </Field>
+            </>
+          )}
         </div>
       ) : (
         <div className="mt-4">

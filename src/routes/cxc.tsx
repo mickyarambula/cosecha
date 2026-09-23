@@ -130,31 +130,42 @@ function Page() {
   }
 
   if (tab === "statements") {
-    const byCust = new Map<string, { email: string; phone: string; terms: string; overdue: number; balance: number; invoices: typeof rows }>();
-    for (const r of rows) {
+    // Hallazgo 26: el estado de cuenta salía con el puro total. Ahora trae
+    // cada factura abierta (fecha, vencimiento, importe, saldo) y resta las
+    // notas de crédito que no se han aplicado — igual que el saldo del
+    // tablero. Se arma sobre TODAS las facturas del cliente, no sobre el
+    // filtro de la pantalla. Las canceladas no cuentan.
+    type StmtRow = { number: string; issue: string; due: string | null; total: number; saldo: number; credit: boolean; overdue: boolean };
+    const byCust = new Map<string, { email: string; phone: string; terms: string; overdue: number; balance: number; ids: number[]; lines: StmtRow[] }>();
+    for (const r of inv.data ?? []) {
+      if (r.status === "cancelled") continue;
+      const credit = r.invoice_type === "credit";
+      const pendiente = credit ? Math.min(r.total - r.paid, 0) : r.saldo;
+      if (Math.abs(pendiente) <= 0.009) continue;
       const cur = byCust.get(r.customer_name) ?? {
         email: r.customer_email || "",
         phone: r.customer_phone || "",
         terms: r.payment_terms || "Cash",
         overdue: 0,
         balance: 0,
-        invoices: [],
+        ids: [] as number[],
+        lines: [] as StmtRow[],
       };
-      cur.balance += r.saldo;
-      if (r.overdue) cur.overdue += r.saldo;
+      cur.balance += pendiente;
+      if (!credit && r.overdue) cur.overdue += pendiente;
       if (r.customer_email) cur.email = r.customer_email;
       if (r.customer_phone) cur.phone = r.customer_phone;
-      cur.invoices.push(r);
+      cur.ids.push(r.id);
+      cur.lines.push({ number: r.invoice_number, issue: r.issue_date, due: r.due_date, total: r.total, saldo: pendiente, credit, overdue: !credit && !!r.overdue });
       byCust.set(r.customer_name, cur);
     }
     const list = [...byCust.entries()].filter(([, v]) => Math.abs(v.balance) > 0.009);
+    const hoy = todayISO();
     return (
       <div>
-        <FilterRow>
-          <FilterField label="As of">
-            <Input type="date" defaultValue={todayISO()} />
-          </FilterField>
-        </FilterRow>
+        <p className="px-4 pt-4 text-sm text-muted sm:px-6">
+          Saldo al {fecha(hoy)}: facturas con saldo y notas de crédito sin aplicar. El PDF lleva el detalle de cada una.
+        </p>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-y border-border bg-surface-2 text-[11px] uppercase text-muted">
@@ -162,33 +173,61 @@ function Page() {
                 <th className="px-3 py-2">{t("Customer")}</th>
                 <th className="px-3 py-2">{t("Statement delivery")}</th>
                 <th className="px-3 py-2">{t("Terms")}</th>
+                <th className="px-3 py-2 text-right">{t("Invoices")}</th>
                 <th className="px-3 py-2 text-right">{t("Overdue")}</th>
                 <th className="px-3 py-2 text-right">{t("Balance")}</th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>
             <tbody>
-              {list.map(([name, v]) => (
-                <tr key={name} className="border-b border-border">
-                  <td className="px-3 py-2">{name}</td>
-                  <td className="px-3 py-2 text-muted">{t("Email")}: {v.email || "—"}</td>
-                  <td className="px-3 py-2">{v.terms}</td>
-                  <td className="px-3 py-2 text-right text-warn">{money(v.overdue)}</td>
-                  <td className="px-3 py-2 text-right">{money(v.balance)}</td>
-                  <td className="px-3 py-2">
-                    <SendButton
-                      title={t("Statement")}
-                      number={name}
-                      partyName={name}
-                      email={v.email}
-                      phone={v.phone}
-                      docs={v.invoices.map((inv) => ({ tipo: "factura", id: inv.id, label: inv.invoice_number }))}
-                      total={v.balance}
-                      size="sm"
-                    />
-                  </td>
-                </tr>
-              ))}
+              {list.map(([name, v]) => {
+                const ordered = [...v.lines].sort((a, b) => (a.issue < b.issue ? -1 : a.issue > b.issue ? 1 : 0));
+                return (
+                  <tr key={name} className="border-b border-border">
+                    <td className="px-3 py-2">{name}</td>
+                    <td className="px-3 py-2 text-muted">{t("Email")}: {v.email || "—"}</td>
+                    <td className="px-3 py-2">{v.terms}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{v.lines.length}</td>
+                    <td className="px-3 py-2 text-right text-warn tabular-nums">{money(v.overdue)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{money(v.balance)}</td>
+                    <td className="px-3 py-2">
+                      <SendButton
+                        title={t("Statement")}
+                        number={`al ${fecha(hoy)}`}
+                        partyName={name}
+                        email={v.email}
+                        phone={v.phone}
+                        docs={[]}
+                        lines={ordered.map((l) => ({
+                          qty: 1,
+                          name: `${l.credit ? "Nota de crédito" : "Factura"} ${l.number} · ${fecha(l.issue)}${l.due && !l.credit ? ` · vence ${fecha(l.due)}` : ""} · saldo ${money(l.saldo)}`,
+                        }))}
+                        total={v.balance}
+                        size="sm"
+                        pdf={{
+                          kindLabel: "Estado de cuenta",
+                          number: `al ${fecha(hoy)}`,
+                          date: hoy,
+                          terms: v.terms,
+                          partyTitle: "Cliente",
+                          party: { name, lines: [v.email, v.phone].filter(Boolean) },
+                          headers: { item: "DOCUMENTO", description: "DETALLE", qty: "VENCE", price: "IMPORTE", amount: "SALDO" },
+                          lines: ordered.map((l) => ({
+                            sku: l.number,
+                            description: `${l.credit ? "Nota de crédito" : "Factura"} del ${fecha(l.issue)}${l.overdue ? " · VENCIDA" : ""}`,
+                            qty: 1,
+                            qtyText: l.credit ? "-" : l.due ? fecha(l.due) : "Sin plazo",
+                            unit_price: l.total,
+                            amount: l.saldo,
+                          })),
+                          total: v.balance,
+                          showPaca: true,
+                        }}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
