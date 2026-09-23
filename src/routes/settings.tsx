@@ -705,6 +705,7 @@ function WipeTests() {
         [t("Destruction certificates"), counts.certificates],
         [t("Complementary settlements"), counts.supplements],
         [t("Grower adjustments"), counts.adjustments],
+        [t("Payroll periods"), counts.payroll_periods],
       ]
     : [];
 

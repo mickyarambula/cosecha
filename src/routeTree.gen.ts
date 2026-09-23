@@ -24,6 +24,7 @@ import { Route as GastosRouteImport } from './routes/gastos'
 import { Route as InventarioRouteImport } from './routes/inventario'
 import { Route as ListasRouteImport } from './routes/listas'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as NominaRouteImport } from './routes/nomina'
 import { Route as ProductosRouteImport } from './routes/productos'
 import { Route as ProveedoresRouteImport } from './routes/proveedores'
 import { Route as ReportesRouteImport } from './routes/reportes'
@@ -114,6 +115,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NominaRoute = NominaRouteImport.update({
+  id: '/nomina',
+  path: '/nomina',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProductosRoute = ProductosRouteImport.update({
   id: '/productos',
   path: '/productos',
@@ -202,6 +208,7 @@ export interface FileRoutesByFullPath {
   '/inventario': typeof InventarioRoute
   '/listas': typeof ListasRoute
   '/login': typeof LoginRoute
+  '/nomina': typeof NominaRoute
   '/productos': typeof ProductosRoute
   '/proveedores': typeof ProveedoresRoute
   '/reportes': typeof ReportesRoute
@@ -233,6 +240,7 @@ export interface FileRoutesByTo {
   '/inventario': typeof InventarioRoute
   '/listas': typeof ListasRoute
   '/login': typeof LoginRoute
+  '/nomina': typeof NominaRoute
   '/productos': typeof ProductosRoute
   '/proveedores': typeof ProveedoresRoute
   '/reportes': typeof ReportesRoute
@@ -265,6 +273,7 @@ export interface FileRoutesById {
   '/inventario': typeof InventarioRoute
   '/listas': typeof ListasRoute
   '/login': typeof LoginRoute
+  '/nomina': typeof NominaRoute
   '/productos': typeof ProductosRoute
   '/proveedores': typeof ProveedoresRoute
   '/reportes': typeof ReportesRoute
@@ -298,6 +307,7 @@ export interface FileRouteTypes {
     | '/inventario'
     | '/listas'
     | '/login'
+    | '/nomina'
     | '/productos'
     | '/proveedores'
     | '/reportes'
@@ -329,6 +339,7 @@ export interface FileRouteTypes {
     | '/inventario'
     | '/listas'
     | '/login'
+    | '/nomina'
     | '/productos'
     | '/proveedores'
     | '/reportes'
@@ -360,6 +371,7 @@ export interface FileRouteTypes {
     | '/inventario'
     | '/listas'
     | '/login'
+    | '/nomina'
     | '/productos'
     | '/proveedores'
     | '/reportes'
@@ -392,6 +404,7 @@ export interface RootRouteChildren {
   InventarioRoute: typeof InventarioRoute
   ListasRoute: typeof ListasRoute
   LoginRoute: typeof LoginRoute
+  NominaRoute: typeof NominaRoute
   ProductosRoute: typeof ProductosRoute
   ProveedoresRoute: typeof ProveedoresRoute
   ReportesRoute: typeof ReportesRoute
@@ -515,6 +528,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/nomina': {
+      id: '/nomina'
+      path: '/nomina'
+      fullPath: '/nomina'
+      preLoaderRoute: typeof NominaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/productos': {
       id: '/productos'
       path: '/productos'
@@ -632,6 +652,7 @@ const rootRouteChildren: RootRouteChildren = {
   InventarioRoute: InventarioRoute,
   ListasRoute: ListasRoute,
   LoginRoute: LoginRoute,
+  NominaRoute: NominaRoute,
   ProductosRoute: ProductosRoute,
   ProveedoresRoute: ProveedoresRoute,
   ReportesRoute: ReportesRoute,

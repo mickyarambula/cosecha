@@ -29,6 +29,9 @@ import {
 import { useAsync } from "@/lib/use-async";
 import { agingBucket, agingByDue, errorMessage, fecha, money, PAY_METHODS, qty, todayISO } from "@/lib/utils";
 
+// Nómina (0052): la partida "Gasto Nómina" se captura en Finanzas → Nómina; como gasto se contaría dos veces.
+const PARTIDAS_NOMINA = ["Gasto Nómina"];
+
 type Search = { tab?: string; expense?: number };
 export const Route = createFileRoute("/gastos")({
   validateSearch: (s: Record<string, unknown>): Search => ({
@@ -569,7 +572,7 @@ function CreateExpenseDrawer({
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Type *">
-          <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} />
+          <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} excludePartidas={PARTIDAS_NOMINA} />
         </Field>
         <Field label="Fecha del gasto">
           <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />

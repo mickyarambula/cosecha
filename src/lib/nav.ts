@@ -158,6 +158,15 @@ export const MODULES: ModuleDef[] = [
           { label: "Reconcile", tab: "reconcile" },
         ],
       },
+      {
+        to: "/nomina",
+        label: "Payroll",
+        starred: true,
+        tabs: [
+          { label: "Periods", tab: "periods" },
+          { label: "Employees", tab: "employees" },
+        ],
+      },
     ],
   },
   {

@@ -14,27 +14,32 @@ export function ConceptSelect({
   kind,
   value,
   onChange,
+  excludePartidas = [],
 }: {
   kind: "ingreso" | "gasto";
   value: string;
   onChange: (name: string) => void;
+  /** Partidas que este selector no ofrece (la nómina se captura en Finanzas → Nómina, no como gasto). */
+  excludePartidas?: string[];
 }) {
   const t = useT();
   const concepts = useAsync(() => listConcepts({ data: { kind, activeOnly: true } }), [kind]);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
-  const [partida, setPartida] = useState(PARTIDAS[kind][0]);
+  const partidas = PARTIDAS[kind].filter((p) => !excludePartidas.includes(p));
+  const [partida, setPartida] = useState(partidas[0]);
   const [saving, setSaving] = useState(false);
 
   const groups = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const r of concepts.data ?? []) {
+      if (excludePartidas.includes(r.partida)) continue;
       const list = map.get(r.partida) ?? [];
       list.push(r.name);
       map.set(r.partida, list);
     }
     return [...map.entries()];
-  }, [concepts.data]);
+  }, [concepts.data, excludePartidas]);
 
   async function saveNew() {
     if (!name.trim()) return;
@@ -78,7 +83,7 @@ export function ConceptSelect({
         <div className="grid gap-2 rounded-md border border-border bg-surface-2 p-2 sm:grid-cols-[1fr_1fr_auto]">
           <Field label={t("Class")}>
             <Select value={partida} onChange={(e) => setPartida(e.target.value)}>
-              {PARTIDAS[kind].map((p) => (
+              {partidas.map((p) => (
                 <option key={p}>{p}</option>
               ))}
             </Select>

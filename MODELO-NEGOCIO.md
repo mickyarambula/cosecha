@@ -151,7 +151,7 @@ El dinero **ya está** en el P&L como gasto operativo. Lo que no existe es la re
 - Si el indirecto entra por el camino de gastos compartidos marcado "a cargo del productor", **el productor paga la nómina de Plein**: en la carga 1358 con comisión del 10 % sobre neto, su neto cae 904.93 y la comisión ~90.49. Si la liquidación ya se emitió, solo se corrige por complementaria.
 - **Doble conteo en el P&L**: el indirecto ya está sumado como gasto. Si el prorrateo crea filas de gasto nuevas, la utilidad neta baja dos veces — 904.93 × 2.
 
-**Depende de:** el bloque 0, del **periodo**, y de la nómina (si se quiere prorratear). **Tamaño: mediano.**
+**Depende de:** el bloque 0, del **periodo**, y de la nómina (si se quiere prorratear) — **la nómina ya existe** (22 Sep 2026): los periodos cerrados, por fecha de fin, son la bolsa de donde leer. **Tamaño: mediano.**
 
 **Preguntas abiertas:** ninguna de diseño — resueltas abajo. Falta el dato de qué partidas concretas del V8 entran a cada bolsa. *(dato de Miguel)*
 
@@ -323,7 +323,7 @@ Lo más cercano que existe son los **adelantos al productor**, que sirven a medi
 
 No hay tabla de empleados. La que existe (`staff`) es de **acceso al sistema**, no de personal: no tiene puesto, sueldo ni fecha de alta. El catálogo de **departamentos** sí existe y sirve como área.
 
-**Qué falta.** Empleados (separado de los usuarios del sistema), periodo de nómina con su folio, las filas del periodo, y una cuenta contable de sueldos — que hoy no existe.
+**Qué falta.** Empleados (separado de los usuarios del sistema), periodo de nómina con su folio y las filas del periodo. *(Corrección 22 Sep 2026: la cuenta de sueldos **sí existe** desde el bloque 0 — 52500 "Nómina", migración 0048; este párrafo decía que no.)*
 
 **Qué rompe si se hace mal.** Tres cosas concretas:
 - La tabla de gastos **exige proveedor**. Capturar los 13 registros obliga a **inventar un proveedor "Nómina"** — prohibido por `CLAUDE.md`.
@@ -344,6 +344,12 @@ No hay tabla de empleados. La que existe (`staff`) es de **acceso al sistema**, 
 >
 > **No inventar un proveedor "Nómina".** La tabla de gastos exige proveedor; por eso la nómina necesita su propio camino, no el de gastos.
 
+> ### ✅ CONSTRUIDO — 22 Sep 2026 (rama `nomina`, migración 0052)
+>
+> Empleados (catálogo, vacío hasta que Miguel capture), periodos `NOM-` con un renglón por empleado (bruto, deducciones, neto; nombre y partida congelados), cierre que entra al P&L por el **bruto** y por la **fecha de fin del periodo** en la 52500 (mapeo `payroll` en Cuentas), y tres formas de pago: por Chase (un movimiento por empleado, nunca antes del corte), ya pagada sin mover Chase (si la fecha es anterior al corte, no entra al P&L: es del V8), o por pagar (pasivo **20300**). Un gasto con partida "Gasto Nómina" se rechaza para no contarla dos veces. Las retenciones se acumulan en **20350**. La 20100 y el KPI de CxP no se tocan. Un movimiento de nómina se cancela solo desde Nómina. Pantalla: Finanzas → Nómina.
+>
+> **Preguntas abiertas nuevas** *(datos de Miguel)*: ¿cada cuánto se paga (semana, quincena)? — el periodo es de fechas libres, así que funciona con cualquiera. ¿Los 13 registros del V8 ya salieron por Chase antes del 19 Ago 2026? — si sí, se capturan como "ya pagada, Chase ya lo refleja" con su fecha real: quedan marcados "antes del corte" y **no entran al P&L ni a los pasivos** (ese dinero ya vive en el saldo de apertura); sirven de registro y de base para el prorrateo. ¿Qué son las deducciones (retenciones de impuestos, préstamos al empleado)? — hoy se acumulan en la 20350 y **no hay pantalla para enterarlas**: si se pagan como gasto normal se cuentan dos veces. ¿Hay nómina en pesos? — hoy solo dólares.
+
 ---
 
 ## Orden de construcción sugerido
@@ -353,7 +359,7 @@ Este orden minimiza el retrabajo. **No está aprobado** — es la recomendación
 **0.** Bloque 0 — que el P&L lea el catálogo de cuentas y acepte un periodo.
 **1.** Antigüedad por vencimiento — chico, sin riesgo contable, ahorra días de pago.
 **2.** Peso–dólar (A) registrar y (B) diferencial — **el que más vale**, y con el motor de Azagro de referencia.
-**3.** Nómina.
+**3.** Nómina. ✅ (22 Sep 2026)
 **4.** Indirectos por carga.
 **5.** Flete de salida y FOB.
 **6.** JEAM.

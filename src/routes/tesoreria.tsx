@@ -32,13 +32,15 @@ export const Route = createFileRoute("/tesoreria")({
 
 function kindTone(kind: string) {
   if (kind === "cobro") return "ok" as const;
-  if (kind === "pago") return "danger" as const;
+  if (kind === "pago" || kind === "nomina") return "danger" as const;
   return "mute" as const;
 }
 
 function kindLabel(kind: string) {
   if (kind === "cobro") return "Receipt";
   if (kind === "pago") return "Payment";
+  // Nómina (0052): se paga y se cancela desde Finanzas → Nómina, no desde aquí.
+  if (kind === "nomina") return "Payroll";
   if (kind === "ajuste") return "Adjustment";
   return kind;
 }
@@ -51,12 +53,15 @@ function Page() {
   const movs = data?.movements ?? [];
   const live = movs.filter((m) => !m.cancelled_at);
   const cobros = live.filter((m) => m.kind === "cobro").reduce((s, m) => s + m.amount, 0);
-  const pagos = live.filter((m) => m.kind === "pago").reduce((s, m) => s + m.amount, 0);
+  // Nómina (0052) también es dinero que sale: sin ella, el saldo bajaba y
+  // "Pagos" decía que no había salido nada.
+  const pagos = live.filter((m) => m.kind === "pago" || m.kind === "nomina").reduce((s, m) => s + m.amount, 0);
   const [regOpen, setRegOpen] = useState(false);
   const [cancelMov, setCancelMov] = useState<{ id: number; folio: string; kind: string } | null>(null);
 
   if (tab === "reconcile") {
-    return <Reconcile cash={movs} />;
+    // Un movimiento cancelado no salió del banco: no se ofrece para cuadrar.
+    return <Reconcile cash={live} />;
   }
 
   return (
