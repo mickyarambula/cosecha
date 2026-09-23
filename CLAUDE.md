@@ -31,7 +31,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 - Rellenar un dato que el usuario no capturó (origen `'MX'`, precio `$35`, cantidad = lote completo, categoría o monto de gasto). En blanco es honesto; inventado le llega al productor en su liquidación o al cliente en su factura.
 - Publicar una server fn de **escritura** con solo `authMiddleware`. Pide el módulo de la pantalla donde vive (`moduleMiddleware("orders")`, o varios si vive en dos). Lo que no es de un módulo pide `staffMiddleware` (staff activo). Única excepción a propósito: `getMyAccess` y los tres enlaces públicos por token (portal del productor, documento impreso, membrete). Y si el candado es de otro módulo que el de la pantalla, **esconde el botón** con `useHasModule` — un botón que truena al guardar es peor que no tenerlo.
 - Fechar con `new Date()` en el servidor. La fecha del negocio es la de Nogales: `todayISO()` / `todayYYMM()` de `src/lib/utils.ts`. El servidor corre en UTC y después de las 5 de la tarde fecha mañana.
-- Sumar pesos con dólares. Los libros van en **dólares**: `unit_cost`, `total`, `amount`, `paid`, `saldo`, `lots.unit_cost` y `cash_movements.amount` son dólares SIEMPRE. Un documento en pesos guarda el original en `*_fx` y su TC (`fx_rate` / `fx_agreed`, pesos por dólar) y se convierte UNA vez con `src/lib/fx.ts` (`toUsd`, `unitCostToUsd`) antes de escribir. Sin TC no se guarda; nunca se inventa uno; la factura del proveedor se congela al TC pactado de su carga. El diferencial al pagar es la parte B (pendiente).
+- Sumar pesos con dólares. Los libros van en **dólares**: `unit_cost`, `total`, `amount`, `paid`, `saldo`, `lots.unit_cost` y `cash_movements.amount` son dólares SIEMPRE. Un documento en pesos guarda el original en `*_fx` y su TC (`fx_rate` / `fx_agreed`, pesos por dólar) y se convierte UNA vez con `src/lib/fx.ts` (`toUsd`, `unitCostToUsd`) antes de escribir. Sin TC no se guarda; nunca se inventa uno; la factura del proveedor se congela al TC pactado de su carga. Al pagar en pesos, `cash_movements.amount` es lo que SALIÓ de Chase (TC del banco) y lo abonado a la deuda es `|amount| + fx_result`; toda reversa (cancelar pago, BORRAR) resta lo abonado, nunca `|amount|` solo. El resultado cambiario vive en los pagos (`fx_result`), no en `expenses` — un gasto podría cargárselo al productor.
 - Mandar correo desde la app. Enviar = Outlook `mailto` + WhatsApp `wa.me` + PDF descargado.
 - `window.print()` como camino de PDF. Usar `src/lib/doc-pdf.ts` (jspdf, descarga).
 - Modales hijos de sticky / `backdrop-filter`. Portal a `document.body`.
@@ -42,7 +42,7 @@ Lee en este orden antes de tocar código: `HANDOFF.md` → `COSECHA.md` → este
 
 TanStack Start + Router + React 19 + Tailwind v4 + Radix.  
 Server fns: `createServerFn` + zod + `authMiddleware` en `src/lib/produce-server.ts`.  
-DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0050` (crece con cada bloque — `ls migrations/` para el número real).  
+DB: Postgres (Neon si hay `DATABASE_URL`; si no, PGLite embebido). Migraciones `migrations/0001`–`0051` (crece con cada bloque — `ls migrations/` para el número real).  
 Auth: Better Auth (Google + correo). Staff por módulos.
 
 ## Dónde está qué
