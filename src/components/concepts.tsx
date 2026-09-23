@@ -15,12 +15,15 @@ export function ConceptSelect({
   value,
   onChange,
   excludePartidas = [],
+  excludeConcepts = [],
 }: {
   kind: "ingreso" | "gasto";
   value: string;
   onChange: (name: string) => void;
   /** Partidas que este selector no ofrece (la nómina se captura en Finanzas → Nómina, no como gasto). */
   excludePartidas?: string[];
+  /** Conceptos sueltos que no ofrece ("Financiamiento" es un adelanto al productor, no un gasto). */
+  excludeConcepts?: string[];
 }) {
   const t = useT();
   const concepts = useAsync(() => listConcepts({ data: { kind, activeOnly: true } }), [kind]);
@@ -33,13 +36,13 @@ export function ConceptSelect({
   const groups = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const r of concepts.data ?? []) {
-      if (excludePartidas.includes(r.partida)) continue;
+      if (excludePartidas.includes(r.partida) || excludeConcepts.includes(r.name)) continue;
       const list = map.get(r.partida) ?? [];
       list.push(r.name);
       map.set(r.partida, list);
     }
     return [...map.entries()];
-  }, [concepts.data, excludePartidas]);
+  }, [concepts.data, excludePartidas, excludeConcepts]);
 
   async function saveNew() {
     if (!name.trim()) return;

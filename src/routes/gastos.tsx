@@ -581,7 +581,7 @@ function CreateExpenseDrawer({
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Type *">
-          <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} excludePartidas={PARTIDAS_NOMINA} />
+          <ConceptSelect kind="gasto" value={form.category} onChange={(category) => setForm({ ...form, category })} excludePartidas={PARTIDAS_NOMINA} excludeConcepts={["Financiamiento"]} />
         </Field>
         <Field label="Fecha del gasto">
           <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />

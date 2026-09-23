@@ -7067,6 +7067,7 @@ export const createExpense = createServerFn({ method: "POST" })
     const sql = await getSql();
     // Nómina (0052): la partida "Gasto Nómina" vive en Finanzas → Nómina.
     await assertNotPayrollConcept(sql, data.category);
+    assertNotFinancing(data.category);
     const fromChase = data.paid_from === "chase";
     const payDate = data.pay_date || data.issue_date || todayISO();
     // Validar la fecha del banco ANTES de escribir nada.
@@ -7195,7 +7196,10 @@ export const updateExpense = createServerFn({ method: "POST" })
     if (!exp) throw new Error("Gasto no encontrado");
     // Nómina (0052): cambiar un gasto a una partida de nómina lo contaría dos
     // veces. Un gasto viejo que ya la tuviera se puede seguir editando.
-    if (raw.category.trim() !== String(exp.category)) await assertNotPayrollConcept(sql, raw.category);
+    if (raw.category.trim() !== String(exp.category)) {
+      await assertNotPayrollConcept(sql, raw.category);
+      assertNotFinancing(raw.category);
+    }
     // Si la pantalla manda en pesos exactamente lo que ya estaba, al mismo TC,
     // se conservan los dólares guardados: reconvertir podría mover un centavo
     // y disparar los candados de "cambió de monto" sin que nadie cambiara nada.
@@ -13697,6 +13701,7 @@ export const registerCashMovement = createServerFn({ method: "POST" })
     // concepto de la línea no lo lee nadie, hallazgo 32). Se captura en
     // Gastos → "Pagado desde Chase", que hace las dos cosas en un paso.
     if (data.direction === "out" && data.concept) {
+      assertNotFinancing(data.concept);
       const [c] = await sql.query(
         `select partida from money_concepts where kind = 'gasto' and name = $1`,
         [data.concept.trim()],
@@ -13768,6 +13773,20 @@ const PAYROLL_AFTER_CORTE = `not (coalesce(p.pay_mode, '') = 'outside' and coale
  * misma nómina dos veces a la 52500. En el registro manual de Chase sí se
  * permiten (es "capturado a mano en Tesorería").
  */
+/**
+ * "Financiamiento" en el V8 es dinero que Plein le presta o le aporta a un
+ * productor (Akambarhu, Baja Plants, Santana…): préstamos con el back to back
+ * y aportaciones que se esperan de regreso. No es gasto — decisión de Miguel,
+ * 23 Sep 2026. Como gasto habría restado $253,344 de utilidad en tres meses.
+ * Se registra como adelanto al productor, que se recupera en su liquidación.
+ */
+const FINANCING_CONCEPT = "Financiamiento";
+const FINANCING_MESSAGE =
+  `"Financiamiento" es dinero prestado o aportado a un productor, no un gasto: regístralo como adelanto en Contactos → Proveedores → (el productor) → Cuenta corriente → Adelanto. Así baja Chase, queda como cuenta por cobrar al productor y se recupera contra su liquidación.`;
+function assertNotFinancing(category: string) {
+  if (category.trim().toLowerCase() === FINANCING_CONCEPT.toLowerCase()) throw new Error(FINANCING_MESSAGE);
+}
+
 async function assertNotPayrollConcept(sql, category: string) {
   const [row] = await sql.query(
     `select name from money_concepts where kind = 'gasto' and partida = $1 and name = $2`,

@@ -229,7 +229,7 @@ function RegisterChase({ onClose, onSaved }: { onClose: () => void; onSaved: () 
           <Field label={t("In / Out")}>
             <Select
               value={form.direction}
-              onChange={(e) => setForm({ ...form, direction: e.target.value as "in" | "out" })}
+              onChange={(e) => setForm({ ...form, direction: e.target.value as "in" | "out", concept: "" })}
             >
               <option value="in">{t("Deposit")}</option>
               <option value="out">{t("Withdrawal")}</option>
@@ -252,13 +252,16 @@ function RegisterChase({ onClose, onSaved }: { onClose: () => void; onSaved: () 
               placeholder="CRI INTERNATIONAL"
             />
           </Field>
-          <Field label={t("Concept")}>
-            <ConceptSelect
-              kind={form.direction === "in" ? "ingreso" : "gasto"}
-              value={form.concept}
-              onChange={(concept) => setForm({ ...form, concept })}
-            />
-          </Field>
+          {form.direction === "in" ? (
+            <Field label={t("Concept")}>
+              <ConceptSelect kind="ingreso" value={form.concept} onChange={(concept) => setForm({ ...form, concept })} />
+            </Field>
+          ) : (
+            <p className="self-end text-xs text-muted">
+              Una salida de aquí solo mueve Chase (traspasos, préstamos, retiros). Un gasto va en Gastos → "Pagado desde Chase"; la
+              nómina en Nómina; lo que se le presta o aporta a un productor, como adelanto en su cuenta corriente.
+            </p>
+          )}
         </div>
         <Field label={t("Notes")}>
           <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />

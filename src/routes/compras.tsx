@@ -2520,7 +2520,7 @@ function ExpenseModal({
             kind="gasto"
             value={form.category}
             onChange={(category) => setForm({ ...form, category })}
-            excludePartidas={PARTIDAS_NOMINA}
+            excludePartidas={PARTIDAS_NOMINA} excludeConcepts={["Financiamiento"]}
           />
         </Field>
         <Field label="Requested date">
