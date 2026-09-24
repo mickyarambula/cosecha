@@ -316,11 +316,35 @@ async function assertAdmin(sql, userId) {
   if (!s || s.role !== "admin" || s.status !== "active") throw new Error("Admin only");
   return s;
 }
+/**
+ * El dueño de Cosecha: el lugar de Miguel (su correo) o, si no existe, el
+ * primer administrador. Solo él puede BORRAR (24 Sep 2026): con todos los
+ * lugares de administrador, cualquiera podía borrar la operación entera.
+ */
+const OWNER_EMAIL = "miguelarambulam@gmail.com";
+async function ownerStaffId(sql): Promise<number | null> {
+  const [row] = await sql.query(
+    `select id from staff
+      order by (lower(coalesce(email,'')) = $1) desc, (role = 'admin') desc, id
+      limit 1`,
+    [OWNER_EMAIL],
+  );
+  return row ? Number(row.id) : null;
+}
+async function assertOwner(sql, userId) {
+  const me = await assertAdmin(sql, userId);
+  if (me.id !== (await ownerStaffId(sql)))
+    throw new Error("Solo el dueño de la cuenta puede borrar las pruebas.");
+  return me;
+}
+
 async function authIdentity(sql, userId) {
-  const [row] = await sql.query(`select email, name from "user" where id = $1`, [userId]);
+  const [row] = await sql.query(`select email, name, "emailVerified" as verified from "user" where id = $1`, [userId]);
   return {
     email: row?.email?.trim().toLowerCase() || null,
     name: row?.name?.trim() || null,
+    /** Google (y cualquier proveedor que lo compruebe) marca el correo como verificado; correo y contraseña no. */
+    verified: row?.verified === true,
   };
 }
 
@@ -12573,10 +12597,42 @@ export const getMyAccess = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const sql = await getSql();
     const ident = await authIdentity(sql, context.userId);
+    const ownerId = await ownerStaffId(sql);
     let staff = await readStaff(sql, "user_id = $1", [context.userId]);
     if (!staff && ident.email)
       staff = await readStaff(sql, "lower(coalesce(email,'')) = $1", [ident.email]);
     if (staff) {
+      // Seguridad (24 Sep 2026): un lugar del equipo que se reclama por
+      // coincidir el CORREO solo se activa solo si ese correo está verificado
+      // (entrar con Google lo verifica). Con correo y contraseña nadie comprueba
+      // que el correo sea de quien lo teclea: el primero que se registrara con
+      // el correo de un invitado se quedaba con su lugar — y hoy todos los
+      // lugares son de administrador. Sin verificar, el lugar queda ligado pero
+      // "en espera" hasta que un administrador lo apruebe en Ajustes → Equipo.
+      const reclamadoPorCorreo = staff.user_id !== context.userId;
+      // Única excepción: el arranque de una base nueva, cuando todavía no hay
+      // NINGÚN administrador dentro — alguien tiene que ser el primero. En
+      // cuanto hay uno, cualquier lugar reclamado sin correo verificado espera.
+      const [{ n: adminsDentro }] = await sql.query(
+        `select count(*)::int as n from staff where role = 'admin' and user_id is not null and status = 'active'`,
+      );
+      const arranque = Number(adminsDentro) === 0 && staff.role === "admin";
+      if (reclamadoPorCorreo && !ident.verified && !arranque && (staff.status === "invited" || staff.status === "active")) {
+        await sql.query(
+          `update staff set user_id = $1, status = 'pending' where id = $2 and (user_id is null or user_id = $1)`,
+          [context.userId, staff.id],
+        );
+        return {
+          id: staff.id,
+          name: staff.name,
+          email: staff.email,
+          role: staff.role,
+          status: "pending",
+          modules: [],
+          linked: true,
+          owner: false,
+        };
+      }
       if (!staff.user_id) {
         await sql.query(`update staff set user_id = $1 where id = $2 and user_id is null`, [
           context.userId,
@@ -12611,6 +12667,7 @@ export const getMyAccess = createServerFn({ method: "GET" })
         status: staff.status,
         modules: staff.modules,
         linked: Boolean(staff.user_id),
+        owner: staff.id === ownerId && staff.status === "active",
       };
     }
     const linkedAdmin = await sql.query(
@@ -12636,6 +12693,7 @@ export const getMyAccess = createServerFn({ method: "GET" })
         status: "active",
         modules: ALL_MODULES,
         linked: true,
+        owner: owner.id === ownerId,
       };
     }
     return {
@@ -12652,6 +12710,7 @@ export const getMyAccess = createServerFn({ method: "GET" })
       status: "pending",
       modules: [],
       linked: true,
+      owner: false,
     };
   });
 export const listStaff = createServerFn({ method: "GET" })
@@ -13541,9 +13600,10 @@ export const previewLiveWipe = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
-    await assertAdmin(sql, context.userId);
+    await assertOwner(sql, context.userId);
     const counts = await countLiveActivity(sql);
-    return { counts, total: wipeTotal(counts) };
+    const [last] = await sql.query(`select value from app_settings where key = 'ultimo_borrar'`);
+    return { counts, total: wipeTotal(counts), last: last?.value ?? null };
   });
 
 export const wipeLiveTests = createServerFn({ method: "POST" })
@@ -13551,10 +13611,16 @@ export const wipeLiveTests = createServerFn({ method: "POST" })
   .validator(z.object({ confirm: z.literal("BORRAR") }))
   .handler(async ({ context }) => {
     const sql = await getSql();
-    await assertAdmin(sql, context.userId);
+    const me = await assertOwner(sql, context.userId);
     const before = await countLiveActivity(sql);
     await wipeLiveActivity(sql);
     const after = await countLiveActivity(sql);
+    // Rastro: quién borró, cuándo y cuánto. app_settings no se borra.
+    await sql.query(
+      `insert into app_settings (key, value) values ('ultimo_borrar', $1)
+       on conflict (key) do update set value = excluded.value`,
+      [`${todayISO()} · ${me.name || me.email} · ${wipeTotal(before)} registros`],
+    );
     return { ok: true, before, after, remaining: wipeTotal(after) };
   });
 export const listSettlements = createServerFn({ method: "GET" })
@@ -14451,4 +14517,121 @@ export const cancelPayrollPeriod = createServerFn({ method: "POST" })
       [staffName, data.reason?.trim() || null, data.id],
     );
     return { period_number: period.period_number };
+  });
+
+// ═══════════════════════════════════════════════════════════════════════
+// SEGURIDAD (24 Sep 2026): quién está dentro, sacar a alguien, y desactivar
+// de golpe todas las ligas públicas si se sospecha que alguna se filtró.
+// Solo administradores; desactivar ligas, solo el dueño.
+// ═══════════════════════════════════════════════════════════════════════
+
+export type ActiveSessionRow = {
+  id: string;
+  user_id: string;
+  name: string;
+  email: string | null;
+  staff_name: string | null;
+  staff_status: string | null;
+  ip: string | null;
+  device: string | null;
+  started_at: string;
+  last_seen: string;
+  expires_at: string;
+  mine: boolean;
+};
+
+export const listActiveSessions = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }): Promise<ActiveSessionRow[]> => {
+    const sql = await getSql();
+    await assertAdmin(sql, context.userId);
+    const rows = await sql.query(
+      `select s.id, s."userId" as user_id, u.name, u.email, st.name as staff_name, st.status as staff_status,
+              s."ipAddress" as ip, s."userAgent" as device,
+              s."createdAt"::text as started_at, s."updatedAt"::text as last_seen, s."expiresAt"::text as expires_at
+         from session s
+         join "user" u on u.id = s."userId"
+         left join staff st on st.user_id = s."userId"
+        where s."expiresAt" > now()
+        order by s."updatedAt" desc`,
+    );
+    return rows.map((r) => ({ ...r, mine: r.user_id === context.userId }));
+  });
+
+export const revokeSession = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(z.object({ session_id: z.string().min(1) }))
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    await assertAdmin(sql, context.userId);
+    const [row] = await sql.query(`delete from session where id = $1 returning "userId" as user_id`, [data.session_id]);
+    if (!row) throw new Error("Esa sesión ya no existe.");
+    return { ok: true };
+  });
+
+/** Saca a una persona de todos sus dispositivos (por ejemplo, si perdió el teléfono). */
+export const revokeUserSessions = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(z.object({ user_id: z.string().min(1) }))
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    await assertAdmin(sql, context.userId);
+    if (data.user_id === context.userId)
+      throw new Error("Para salir de tus propios dispositivos cierra cada sesión aparte; así no te quedas fuera.");
+    const rows = await sql.query(`delete from session where "userId" = $1 returning id`, [data.user_id]);
+    return { closed: rows.length };
+  });
+
+const SHARE_TOKEN_TABLES = [
+  "invoices",
+  "purchase_orders",
+  "sales_orders",
+  "suppliers",
+  "grower_settlements",
+  "grower_settlement_supplements",
+] as const;
+
+/**
+ * Todas las ligas públicas (facturas, órdenes, liquidaciones, cuenta del
+ * productor) dejan de servir y nacen claves nuevas. Para cuando se sospecha
+ * que una liga llegó a quien no debía.
+ */
+export const revokeAllShareLinks = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(z.object({ confirm: z.literal("DESACTIVAR") }))
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    const me = await assertOwner(sql, context.userId);
+    let total = 0;
+    for (const table of SHARE_TOKEN_TABLES) {
+      const rows = await sql.query(
+        `update ${table} set share_token = replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '') returning id`,
+      );
+      total += rows.length;
+    }
+    await sql.query(
+      `insert into app_settings (key, value) values ('ultimas_ligas_desactivadas', $1)
+       on conflict (key) do update set value = excluded.value`,
+      [`${todayISO()} · ${me.name || me.email} · ${total} ligas`],
+    );
+    return { links: total };
+  });
+
+export const getSecurityInfo = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    await assertAdmin(sql, context.userId);
+    const settings = await sql.query(
+      `select key, value from app_settings where key in ('ultimo_borrar','ultimas_ligas_desactivadas')`,
+    );
+    const map = Object.fromEntries(settings.map((r) => [r.key, r.value]));
+    const pending = await sql.query(
+      `select name, email from staff where status = 'pending' and user_id is not null order by id`,
+    );
+    return {
+      last_wipe: map.ultimo_borrar ?? null,
+      last_links_revoked: map.ultimas_ligas_desactivadas ?? null,
+      waiting_approval: pending as { name: string; email: string | null }[],
+    };
   });

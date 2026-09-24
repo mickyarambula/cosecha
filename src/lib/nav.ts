@@ -214,6 +214,7 @@ export const MODULES: ModuleDef[] = [
         tabs: [
           { label: "Appearance", tab: "appearance" },
           { label: "Teams", tab: "teams" },
+          { label: "Security", tab: "security" },
           { label: "Inventory", tab: "inventory" },
           { label: "Orders", tab: "orders" },
           { label: "Accounting", tab: "accounting" },

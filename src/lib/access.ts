@@ -32,6 +32,8 @@ export type StaffAccess = {
   status: "pending" | "invited" | "active" | "disabled";
   modules: string[];
   linked: boolean;
+  /** Dueño de la cuenta: el único que puede BORRAR. */
+  owner?: boolean;
 };
 
 const PATH_MODULE: { prefix: string; module: ModuleId }[] = [

@@ -252,7 +252,25 @@ export const auth = betterAuth({
   session: { cookieCache: { enabled: true, maxAge: 300 } },
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
-  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),
+  // Contraseñas de al menos 10 caracteres (seguridad, 24 Sep 2026). Solo
+  // aplica al crear o cambiar una; las que ya existen siguen sirviendo.
+  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true, minPasswordLength: 10 } } : {}),
+
+  // Límite de intentos (seguridad, 24 Sep 2026, migración 0053). Antes vivía
+  // en la memoria de cada servidor y en Vercel casi nunca aplicaba; ahora el
+  // conteo va en la base, uno solo para todos. Por IP: 10 intentos de entrar
+  // cada 15 minutos y 5 registros por hora; el resto de /api/auth, 300 por
+  // minuto (holgado a propósito: la oficina entera sale por la misma IP).
+  rateLimit: {
+    enabled: true,
+    storage: "database",
+    window: 60,
+    max: 300,
+    customRules: {
+      "/sign-in/*": { window: 900, max: 10 },
+      "/sign-up/*": { window: 3600, max: 5 },
+    },
+  },
 
   // Signup allowlist — applies to every path a new user row can be created
   // (Google, email/password, and any future provider), since they all go
@@ -280,6 +298,9 @@ export const auth = betterAuth({
   // Secure + the names ourselves. (Browsers allow Secure cookies on
   // `http://localhost`, so local dev still works.)
   advanced: {
+    // La IP real del visitante la pone Vercel (no la puede falsear el
+    // navegador); sin esto el límite de intentos contaría a todos juntos.
+    ipAddress: { ipAddressHeaders: ["x-vercel-forwarded-for", "x-real-ip", "x-forwarded-for"] },
     useSecureCookies: false,
     defaultCookieAttributes: { secure: true, sameSite: "lax", path: "/" },
     cookies: {

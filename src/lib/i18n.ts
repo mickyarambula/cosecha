@@ -1269,6 +1269,7 @@ const ES: Record<string, string> = {
   "Period closed.": "Periodo cerrado.",
   "Payment registered.": "Pago registrado.",
   "Chase": "Chase",
+  "Security": "Seguridad",
 };
 
 export function translate(locale: Locale, key: string | number | null | undefined, vars?: Vars): string {

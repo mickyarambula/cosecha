@@ -12,6 +12,11 @@ import {
   addDepartment,
   addConcept,
   getAppSettings,
+  getSecurityInfo,
+  listActiveSessions,
+  revokeAllShareLinks,
+  revokeSession,
+  revokeUserSessions,
   getCompany,
   grantStaff,
   listConcepts,
@@ -77,7 +82,8 @@ function Page() {
   if (tab === "concepts") return <Concepts />;
   if (tab === "online") return <OnlineSettings map={map} setKey={setKey} />;
   if (tab === "sent") return <SentLog />;
-  if (tab === "tests") return admin ? <WipeTests /> : <Appearance />;
+  if (tab === "tests") return admin && access?.owner ? <WipeTests /> : <Appearance />;
+  if (tab === "security") return admin ? <SecuritySettings owner={Boolean(access?.owner)} /> : <Appearance />;
   return admin ? <Teams /> : <Appearance />;
 }
 
@@ -737,6 +743,10 @@ function WipeTests() {
         <p className="mt-2 text-sm text-muted">
           {t("Clears every purchase, sale, live invoice, lot and Chase line after the corte. Opening Ingresos, Egresos and Chase stay. Catalog, customers and vendors stay. Real live work after the corte is also deleted — only use this after a test with your partners.")}
         </p>
+        <p className="mt-2 text-xs text-muted">
+          Solo el dueño de la cuenta ve y usa este botón.
+          {preview.data?.last ? ` Último borrado: ${preview.data.last}.` : " Nunca se ha usado."}
+        </p>
       </div>
 
       <div className="rounded-lg border border-border bg-surface">
@@ -919,5 +929,140 @@ function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) => void
     >
       <span className={cn("size-5 rounded-full bg-white shadow", on && "ml-auto")} />
     </button>
+  );
+}
+
+/** "Chrome en Mac", "Safari en iPhone"… — lo suficiente para reconocer un dispositivo ajeno. */
+function deviceLabel(ua: string | null): string {
+  if (!ua) return "Dispositivo desconocido";
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "otro sistema";
+  const br = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Chrome\//.test(ua) && !/Chromium/.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "navegador";
+  return `${br} en ${os}`;
+}
+
+function SecuritySettings({ owner }: { owner: boolean }) {
+  const t = useT();
+  const sessions = useAsync(() => listActiveSessions(), []);
+  const info = useAsync(() => getSecurityInfo(), []);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
+
+  async function act(fn: () => Promise<string>) {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      setMsg(await fn());
+      await Promise.all([sessions.reload(), info.reload()]);
+    } catch (e) {
+      setErr(errorMessage(e, "No se pudo."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rows = sessions.data ?? [];
+  return (
+    <div className="mx-auto max-w-4xl space-y-6 p-6">
+      <div>
+        <p className="label-caps">{t("Security")}</p>
+        <h2 className="text-base font-semibold">Quién está dentro de Cosecha</h2>
+        <p className="mt-1 text-sm text-muted">
+          Cada renglón es un dispositivo con la sesión abierta. Si ves uno que no reconoces, ciérralo: esa persona queda fuera en
+          máximo 5 minutos y tiene que volver a entrar con contraseña. Solo pueden crear cuenta los correos autorizados.
+        </p>
+      </div>
+
+      {(info.data?.waiting_approval ?? []).length ? (
+        <p className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-sm text-warn">
+          Esperando tu aprobación en Ajustes → Equipo:{" "}
+          {(info.data?.waiting_approval ?? []).map((w) => w.email || w.name).join(", ")}. Entraron con correo y contraseña; nadie
+          comprobó que el correo sea suyo, por eso no tienen acceso hasta que los apruebes.
+        </p>
+      ) : null}
+
+      <div className="overflow-x-auto rounded-lg border border-border bg-surface">
+        <table className="w-full text-sm">
+          <thead className="bg-surface-2 text-left text-xs uppercase tracking-wide text-muted">
+            <tr>
+              <th className="px-4 py-3 font-medium">Persona</th>
+              <th className="px-4 py-3 font-medium">Dispositivo</th>
+              <th className="px-4 py-3 font-medium">Desde (IP)</th>
+              <th className="px-4 py-3 font-medium">Entró</th>
+              <th className="px-4 py-3 font-medium">Última actividad</th>
+              <th className="px-4 py-3" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-muted">
+                  {sessions.loading ? "…" : "No hay sesiones abiertas."}
+                </td>
+              </tr>
+            ) : null}
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-border">
+                <td className="px-4 py-3">
+                  <p className="font-medium">
+                    {r.staff_name || r.name}
+                    {r.mine ? <span className="ml-2 text-xs text-muted">(tú)</span> : null}
+                  </p>
+                  <p className="text-xs text-muted">{r.email}</p>
+                  {!r.staff_status ? <p className="text-xs text-danger">Sin lugar en el equipo</p> : r.staff_status !== "active" ? <p className="text-xs text-warn">Sin acceso ({r.staff_status})</p> : null}
+                </td>
+                <td className="px-4 py-3">{deviceLabel(r.device)}</td>
+                <td className="px-4 py-3 font-mono text-xs">{r.ip || "—"}</td>
+                <td className="px-4 py-3 text-xs">{new Date(r.started_at).toLocaleString()}</td>
+                <td className="px-4 py-3 text-xs">{new Date(r.last_seen).toLocaleString()}</td>
+                <td className="px-4 py-3 text-right">
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(async () => { await revokeSession({ data: { session_id: r.id } }); return "Sesión cerrada."; })}>
+                      Cerrar esta sesión
+                    </Button>
+                    {!r.mine ? (
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(async () => { const x = await revokeUserSessions({ data: { user_id: r.user_id } }); return `${x.closed} sesiones cerradas de ${r.email}.`; })}>
+                        Sacarlo de todo
+                      </Button>
+                    ) : null}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {msg ? <p className="text-sm text-ok">{msg}</p> : null}
+      {err ? <p className="text-sm text-danger">{err}</p> : null}
+
+      {owner ? (
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Desactivar todas las ligas públicas</h3>
+          <p className="mt-1 text-sm text-muted">
+            Las ligas que mandas por WhatsApp o correo (facturas, órdenes, liquidaciones, cuenta del productor) llevan una clave
+            larga imposible de adivinar. Si crees que alguna llegó a quien no debía, esto las apaga todas y crea claves nuevas: las
+            que ya mandaste dejan de abrir y tendrías que reenviar las que sigan en uso.
+            {info.data?.last_links_revoked ? ` Última vez: ${info.data.last_links_revoked}.` : ""}
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Input className="w-48" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Escribe DESACTIVAR" />
+            <Button
+              variant="danger"
+              disabled={busy || typed.trim().toUpperCase() !== "DESACTIVAR"}
+              onClick={() => void act(async () => { const x = await revokeAllShareLinks({ data: { confirm: "DESACTIVAR" } }); setTyped(""); return `${x.links} ligas desactivadas.`; })}
+            >
+              Desactivar ligas
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="rounded-lg border border-border bg-surface-2 p-4 text-sm text-muted">
+        <p className="font-medium text-fg">Rastro</p>
+        <p>Último borrado de pruebas: {info.data?.last_wipe ?? "nunca"}.</p>
+      </div>
+    </div>
   );
 }
